@@ -17,6 +17,7 @@ pub mod log;
 pub mod manifest;
 pub mod patch;
 pub mod repo;
+pub mod segment;
 pub mod union;
 pub mod views;
 
