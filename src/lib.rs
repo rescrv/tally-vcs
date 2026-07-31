@@ -9,7 +9,9 @@
 use std::fmt;
 
 pub mod blobs;
+pub mod fork;
 pub mod ident;
+pub mod manifest;
 
 pub use ident::{ElementRecord, Sum, canonical_json, record_id, sha3_hex, verify_record_id};
 
