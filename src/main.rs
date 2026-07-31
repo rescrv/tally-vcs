@@ -43,6 +43,10 @@ forks:
   fork <name>                      create a fork (anchor + empty log)
   union <fork>                     bring a fork's log into another (strata 1-4)
 
+authors:
+  submit <file>                    file a human PR (diff or prose) as testimony
+  enact <submission> <patch.json>  apply an agent's re-enactment of a submission
+
 wire:
   clone <store> <dest>             clone a packed repository from an object store
   fetch <store> <cache>            update a packed cache from an object store
@@ -73,6 +77,8 @@ fn main() {
         "claims" => cmd_claims(&rest),
         "fork" => cmd_fork(&rest),
         "union" => cmd_union(&rest),
+        "submit" => cmd_submit(&rest),
+        "enact" => cmd_enact(&rest),
         "clone" => cmd_clone(&rest),
         "fetch" => cmd_fetch(&rest),
         "push" => cmd_push(&rest),
@@ -510,6 +516,87 @@ fn cmd_union(args: &[&str]) -> Result<()> {
              (stratum 5 costs tokens and is never automatic)"
         )));
     }
+    Ok(())
+}
+
+fn cmd_submit(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "Who is submitting.", "AUTHOR")]
+        author: Option<String>,
+    }
+    let (options, free) =
+        Options::from_arguments_relaxed("USAGE: tally submit [--author A] <file|->", args);
+    let Some(path) = free.first() else {
+        return Err(Error::Invalid("submit requires a file (or - for stdin)".to_string()));
+    };
+    let testimony = if *path == "-" {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf).map_err(abelian::ioerr("reading stdin"))?;
+        buf
+    } else {
+        std::fs::read(path).map_err(abelian::ioerr(format!("reading {path}")))?
+    };
+    let repo = repo()?;
+    // A code patch is not applied — it is re-enacted.  The diff is
+    // testimony, evidence of intent, never bytes to copy; it enters the
+    // blob pool because generation costs five orders of magnitude more
+    // than storage.  A natural-language patch is the same thing minus the
+    // worked example: negotiation terminates when a predicate is agreed,
+    // the predicate becomes a claim, and the human signs the predicate,
+    // not the patch.
+    let hash = repo.blobs().put(&testimony)?;
+    let author = options.author.unwrap_or_else(whoami);
+    println!("submission {hash} filed by {author}");
+    println!("next: an agent re-enacts it through its own instrumented toolchain:");
+    println!("  tally enact {hash} <patch.json>");
+    Ok(())
+}
+
+fn cmd_enact(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(optional, "The enacting agent.", "AUTHOR")]
+        author: Option<String>,
+        #[arrrg(optional, "Narrative prose for the annotation.", "PROSE")]
+        prose: Option<String>,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: tally enact [options] <submission-blob> <patch.json>",
+        args,
+    );
+    let (Some(submission), Some(patch_path)) = (free.first(), free.get(1)) else {
+        return Err(Error::Invalid("enact requires <submission-blob> <patch.json>".to_string()));
+    };
+    let repo = repo()?;
+    if !repo.blobs().has(submission)? {
+        return Err(Error::Invalid(format!(
+            "submission {submission} is not in the blob pool; file it with tally submit"
+        )));
+    }
+    let bytes =
+        std::fs::read(patch_path).map_err(abelian::ioerr(format!("reading {patch_path}")))?;
+    let intent: Intent = serde_json::from_slice(&bytes)?;
+    // Provenance is a chain, retained verbatim: human PR → agent session →
+    // span patches + claims.  The session field carries the submission, so
+    // staleness against HEAD is irrelevant — the patch was generated
+    // against the current state by the agent's own toolchain.
+    let annotation = Annotation {
+        author: options.author.unwrap_or_else(whoami),
+        provenance: Provenance::Agent,
+        reason: None,
+        sig: None,
+        session: Some(format!("submission:{submission}")),
+        prose: options.prose,
+        reads: None,
+        claims: Vec::new(),
+        origin: None,
+    };
+    let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
+    println!("{} {} (enacts submission {submission})", line.id, line.sum_after);
     Ok(())
 }
 
