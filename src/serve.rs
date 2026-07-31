@@ -353,7 +353,7 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
     let mut known: BTreeMap<String, Manifest> = BTreeMap::new();
     known.insert(Sum::zero().hexdigest(), Manifest::new());
     let mut parsed: BTreeMap<&String, Vec<LogLine>> = BTreeMap::new();
-    for (fork, _) in &unpacked.manifest.forks {
+    for fork in unpacked.manifest.forks.keys() {
         parsed.insert(fork, parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty))?);
     }
     let mut unresolved: Vec<&String> = unpacked.manifest.forks.keys().collect();
