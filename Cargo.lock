@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "arrrg",
  "arrrg_derive",
+ "getopts",
  "serde",
  "serde_json",
  "setsum",

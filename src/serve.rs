@@ -16,7 +16,7 @@ use crate::fork::ForkFile;
 use crate::ident::{Sum, canonical_json, record_id, verify_record_id};
 use crate::log::{LogLine, parse_log_strict};
 use crate::manifest::Manifest;
-use crate::patch::apply_realized_to_manifest;
+use crate::patch::{apply_realized_to_manifest, apply_realized_to_sum};
 use crate::repo::Repository;
 use crate::segment::{BuiltSegment, Segment, SegmentInput, build_segment, image_setsum};
 use crate::{Error, Result, ioerr};
@@ -370,31 +370,82 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
     for fork in unpacked.manifest.forks.keys() {
         parsed.insert(fork, parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty))?);
     }
+    // Every state a log passes through is derivable by replay, guarded by
+    // arithmetic: a derived manifest is recorded only when its running sum
+    // agrees with the line's sum_after, so a replay in the wrong context
+    // (a fork anchored elsewhere) records nothing wrong — it simply stops.
+    // The state a log begins at never appears among its sum_afters, but
+    // undo is the inverse: pre-state of line 0 = sum_after(line 0) plus the
+    // inverse of its realized delta.
+    let initial_sum = |lines: &[LogLine]| -> Result<Option<String>> {
+        let Some(first) = lines.first() else {
+            return Ok(None);
+        };
+        let mut sum = Sum::from_hexdigest(&first.sum_after)?;
+        for entry in &first.realized {
+            if let Some(added) = entry.added()? {
+                sum.remove(&added.to_bytes());
+            }
+            if let Some(removed) = entry.removed()? {
+                sum.insert(&removed.to_bytes());
+            }
+        }
+        Ok(Some(sum.hexdigest()))
+    };
+    let mut initials: BTreeMap<&String, Option<String>> = BTreeMap::new();
+    for (fork, lines) in &parsed {
+        initials.insert(fork, initial_sum(lines)?);
+    }
+    let derive = |from: &Manifest,
+                      from_sum: &str,
+                      lines: &[LogLine],
+                      initial: &Option<String>,
+                      known: &mut BTreeMap<String, Manifest>| {
+        let start = if initial.as_deref() == Some(from_sum) {
+            0
+        } else {
+            match lines.iter().rposition(|l| l.sum_after == from_sum) {
+                Some(i) => i + 1,
+                None => return, // this starting state is not on this log
+            }
+        };
+        let mut manifest = from.clone();
+        let Ok(mut sum) = Sum::from_hexdigest(from_sum) else {
+            return;
+        };
+        for line in &lines[start..] {
+            if apply_realized_to_manifest(&mut manifest, &line.realized).is_err() {
+                return;
+            }
+            let Ok(next) = apply_realized_to_sum(&sum, &line.realized) else {
+                return;
+            };
+            sum = next;
+            if sum.hexdigest() != line.sum_after {
+                return; // wrong context; record nothing further
+            }
+            known.entry(line.sum_after.clone()).or_insert_with(|| manifest.clone());
+        }
+    };
     let mut unresolved: Vec<&String> = unpacked.manifest.forks.keys().collect();
     while !unresolved.is_empty() {
         let mut progressed = false;
+        // Grow `known` from every log reachable from every known state.
+        let snapshot: Vec<(String, Manifest)> =
+            known.iter().map(|(s, m)| (s.clone(), m.clone())).collect();
+        for (fork, lines) in &parsed {
+            for (sum_hex, manifest) in &snapshot {
+                derive(manifest, sum_hex, lines, &initials[fork], &mut known);
+            }
+        }
         unresolved.retain(|fork| {
             let head = &unpacked.manifest.forks[*fork];
-            let Some(anchor_manifest) = known.get(&head.anchor) else {
-                return true; // keep: anchor not yet derivable
-            };
-            let lines = &parsed[fork];
-            // Replay starts after the last line whose sum_after equals the
-            // anchor (a snapshot repointed it), or at the beginning.
-            let start = lines
-                .iter()
-                .rposition(|l| l.sum_after == head.anchor)
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            let mut manifest = anchor_manifest.clone();
-            for line in &lines[start..] {
-                if apply_realized_to_manifest(&mut manifest, &line.realized).is_err() {
-                    return true; // corrupt replay: surface below as unresolved
-                }
-                known.entry(line.sum_after.clone()).or_insert_with(|| manifest.clone());
+            if known.contains_key(&head.anchor) {
+                progressed = true;
+                false
+            } else {
+                true
             }
-            progressed = true;
-            false
         });
         if !unresolved.is_empty() && !progressed {
             return Err(Error::Corrupt(format!(
@@ -419,7 +470,15 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
                 "fork {fork}: restored head disagrees with the manifest"
             )));
         }
-        repo.materialize(&state.manifest)?;
+    }
+    // One working tree: materialize main if present, else the first fork.
+    let tree_fork = if unpacked.manifest.forks.contains_key("main") {
+        Some("main".to_string())
+    } else {
+        unpacked.manifest.forks.keys().next().cloned()
+    };
+    if let Some(fork) = tree_fork {
+        repo.materialize(&repo.current_state(&fork)?.manifest)?;
     }
     Ok(repo)
 }
@@ -558,6 +617,27 @@ mod tests {
             repacked.total_image().unwrap(),
             "re-encoding preserves the image"
         );
+    }
+
+    #[test]
+    fn snapshotted_anchors_survive_pack_unpack() {
+        // A snapshot repoints a fork's anchor at a mid-log state; unpack
+        // must re-derive that anchor manifest by replay from genesis.
+        let repo = populated("snap");
+        repo.snapshot("main").unwrap();
+        repo.snapshot("session-1").unwrap();
+        repo.apply("main", create("/after-snap.rs", b"a\n"), note()).unwrap();
+        let packed = temp_dir("snap-packed");
+        pack(&repo, &packed, 1, "", 3).unwrap();
+        let restored = unpack_dir(&packed, &temp_dir("snap-restored")).unwrap();
+        for fork in ["main", "session-1"] {
+            assert_eq!(
+                repo.current_state(fork).unwrap().sum,
+                restored.current_state(fork).unwrap().sum,
+                "fork {fork}"
+            );
+            assert_eq!(repo.log_bytes(fork).unwrap(), restored.log_bytes(fork).unwrap());
+        }
     }
 
     #[test]
