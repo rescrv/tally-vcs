@@ -12,6 +12,7 @@ pub mod b64;
 pub mod blobs;
 pub mod fork;
 pub mod ident;
+pub mod log;
 pub mod manifest;
 pub mod patch;
 
