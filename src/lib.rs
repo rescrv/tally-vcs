@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+pub mod blobs;
 pub mod ident;
 
 pub use ident::{ElementRecord, Sum, canonical_json, record_id, sha3_hex, verify_record_id};
