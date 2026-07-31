@@ -49,6 +49,13 @@ impl Repository {
 
     /// Initialize a repository at `root` with an empty `main` fork.
     pub fn init(root: impl Into<PathBuf>) -> Result<Self> {
+        let repo = Repository::init_bare(root)?;
+        repo.create_fork_raw("main", &ForkFile::empty())?;
+        Ok(repo)
+    }
+
+    /// Initialize the layout with no forks (unpack restores its own).
+    pub fn init_bare(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         let dot = root.join(".abelian");
         if dot.exists() {
@@ -65,8 +72,41 @@ impl Repository {
         BlobStore::init(dot.join("blobs"))?;
         let repo = Repository { root, dot };
         repo.write_anchor_manifest(&Manifest::new())?;
-        repo.create_fork_raw("main", &ForkFile::empty())?;
         Ok(repo)
+    }
+
+    /// Restore a fork from its parts, byte-preserved (I4): the exact
+    /// `log.jsonl` bytes an unpack produced.  The anchor manifest must
+    /// already exist.
+    pub fn restore_fork(&self, name: &str, fork_file: &ForkFile, log_bytes: &[u8]) -> Result<()> {
+        self.create_fork_raw(name, fork_file)?;
+        let path = self.log_path(name);
+        fs::write(&path, log_bytes).map_err(ioerr("restoring fork log"))?;
+        fsync_dir(self.fork_dir(name).as_path())?;
+        Ok(())
+    }
+
+    /// Store a claim's exact bytes (byte-preserved, I4), verifying them.
+    pub fn put_claim_bytes(&self, bytes: &[u8]) -> Result<Claim> {
+        let claim = Claim::parse(bytes)?;
+        let path = self.dot.join("claims").join(format!("{}.json", claim.id));
+        if !path.exists() {
+            fs::write(&path, bytes).map_err(ioerr("writing claim bytes"))?;
+            fsync_dir(self.dot.join("claims").as_path())?;
+        }
+        Ok(claim)
+    }
+
+    /// The exact bytes of a fork's log (for byte-preserved packing).
+    pub fn log_bytes(&self, fork: &str) -> Result<Vec<u8>> {
+        validate_fork_name(fork)?;
+        fs::read(self.log_path(fork)).map_err(ioerr(format!("reading log bytes of {fork}")))
+    }
+
+    /// The exact bytes of a claim (for byte-preserved packing).
+    pub fn claim_bytes(&self, id: &str) -> Result<Vec<u8>> {
+        fs::read(self.dot.join("claims").join(format!("{id}.json")))
+            .map_err(ioerr(format!("reading claim bytes {id}")))
     }
 
     /// Open a repository whose working tree is `root`.

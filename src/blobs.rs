@@ -53,6 +53,37 @@ impl BlobStore {
         fs::read(&path).map_err(ioerr(format!("reading blob {blob}")))
     }
 
+    /// List every blob hash in the pool, sorted.
+    pub fn list(&self) -> Result<Vec<String>> {
+        let mut hashes = Vec::new();
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(hashes),
+            Err(err) => return Err(ioerr("listing blob pool")(err)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(ioerr("listing blob pool"))?;
+            let Some(prefix) = entry.file_name().to_str().map(String::from) else {
+                continue;
+            };
+            if prefix.len() != 2 || !entry.path().is_dir() {
+                continue;
+            }
+            let inner = fs::read_dir(entry.path()).map_err(ioerr("listing blob fan-out"))?;
+            for file in inner {
+                let file = file.map_err(ioerr("listing blob fan-out"))?;
+                if let Some(rest) = file.file_name().to_str() {
+                    let hash = format!("{prefix}{rest}");
+                    if is_hex64(&hash) {
+                        hashes.push(hash);
+                    }
+                }
+            }
+        }
+        hashes.sort();
+        Ok(hashes)
+    }
+
     /// Write `content` to the pool; returns its hash.  Idempotent: an
     /// existing blob of the same name is a deduplication hit.
     pub fn put(&self, content: &[u8]) -> Result<String> {
