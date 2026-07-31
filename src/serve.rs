@@ -240,7 +240,7 @@ pub fn unpack_segments(
     fetch: &dyn Fn(&str) -> Result<Vec<u8>>,
 ) -> Result<Unpacked> {
     let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    let mut logs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut spans: BTreeMap<(String, String), Vec<u8>> = BTreeMap::new();
     let mut claims: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut lines_by_id: BTreeMap<String, LogLine> = BTreeMap::new();
 
@@ -274,7 +274,8 @@ pub fn unpack_segments(
                     for line in parse_log_strict(&bytes)? {
                         lines_by_id.insert(line.id.clone(), line);
                     }
-                    logs.entry(fork.clone())
+                    spans
+                        .entry((segid.clone(), fork.clone()))
                         .or_default()
                         .extend_from_slice(&bytes);
                 }
@@ -329,6 +330,19 @@ pub fn unpack_segments(
                  — content forgery"
             )));
         }
+    }
+    // Assemble each fork's log from the segments its head names, in order:
+    // a merged manifest may carry spans of the same fork from several
+    // pushes, and only the head's list is authoritative.
+    let mut logs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for (fork, head) in &manifest.forks {
+        let mut bytes = Vec::new();
+        for segid in &head.log_segments {
+            if let Some(span) = spans.get(&(segid.clone(), fork.clone())) {
+                bytes.extend_from_slice(span);
+            }
+        }
+        logs.insert(fork.clone(), bytes);
     }
     Ok(Unpacked { manifest: manifest.clone(), blobs, logs, claims })
 }

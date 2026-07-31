@@ -21,6 +21,7 @@ pub mod segment;
 pub mod serve;
 pub mod union;
 pub mod views;
+pub mod wire;
 
 pub use ident::{ElementRecord, Sum, canonical_json, record_id, sha3_hex, verify_record_id};
 
