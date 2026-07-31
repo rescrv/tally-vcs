@@ -8,10 +8,12 @@
 
 use std::fmt;
 
+pub mod b64;
 pub mod blobs;
 pub mod fork;
 pub mod ident;
 pub mod manifest;
+pub mod patch;
 
 pub use ident::{ElementRecord, Sum, canonical_json, record_id, sha3_hex, verify_record_id};
 
