@@ -10,6 +10,7 @@ use std::fmt;
 
 pub mod b64;
 pub mod blobs;
+pub mod claims;
 pub mod fork;
 pub mod ident;
 pub mod log;
