@@ -382,6 +382,55 @@ impl Repository {
         Ok(line)
     }
 
+    /// Land an already-realized delta (union stratum 2): membership plus
+    /// addition, no content inspection.  The realized delta is validated
+    /// against the current manifest (I9) and appended with the same
+    /// durability protocol as [`Repository::apply`].
+    pub fn apply_realized(
+        &self,
+        fork: &str,
+        intent: Intent,
+        realized: Vec<crate::patch::RealizedEntry>,
+        annotation: Annotation,
+    ) -> Result<LogLine> {
+        let _lock = self.lock_fork(fork)?;
+        let state = self.current_state(fork)?;
+        let mut manifest = state.manifest.clone();
+        // Membership check against the target manifest, always (I9).
+        apply_realized_to_manifest(&mut manifest, &realized)?;
+        let blobs = self.blobs();
+        for entry in &realized {
+            if let Some(added) = entry.added()?
+                && !blobs.has(&added.blob)?
+            {
+                return Err(Error::Precondition(format!(
+                    "realized add references absent blob {}",
+                    added.blob
+                )));
+            }
+        }
+        let sum_after = apply_realized_to_sum(&state.sum, &realized)?;
+        let mut line = LogLine {
+            id: String::new(),
+            prev: state.head_id.clone(),
+            intent,
+            realized,
+            sum_after: sum_after.hexdigest(),
+            annotation,
+        };
+        let bytes = line.seal(&blobs)?;
+        let path = self.log_path(fork);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(ioerr("opening log for append"))?;
+        file.write_all(&bytes).map_err(ioerr("appending log line"))?;
+        file.sync_all().map_err(ioerr("fsyncing log"))?;
+        fsync_dir(self.fork_dir(fork).as_path())?;
+        let _ = self.refresh_working_tree(&line);
+        Ok(line)
+    }
+
     /// Best-effort working-tree refresh for one applied line.
     fn refresh_working_tree(&self, line: &LogLine) -> Result<()> {
         let blobs = self.blobs();

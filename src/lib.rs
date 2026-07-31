@@ -17,6 +17,7 @@ pub mod log;
 pub mod manifest;
 pub mod patch;
 pub mod repo;
+pub mod union;
 pub mod views;
 
 pub use ident::{ElementRecord, Sum, canonical_json, record_id, sha3_hex, verify_record_id};
