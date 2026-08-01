@@ -440,7 +440,7 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
         let start = if initial.as_deref() == Some(from_sum) {
             0
         } else {
-            match lines.iter().rposition(|l| l.sum_after == from_sum) {
+            match crate::log::last_state_position(lines, from_sum) {
                 Some(i) => i + 1,
                 None => return, // this starting state is not on this log
             }

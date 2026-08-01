@@ -243,6 +243,15 @@ pub fn parse_log_strict(bytes: &[u8]) -> Result<Vec<LogLine>> {
     Ok(parsed.lines)
 }
 
+/// The last position in `lines` whose `sum_after` names the state
+/// `sum_hex`, if any.  Anchors and replay starts are found this way
+/// everywhere: snapshots repoint anchors at states mid-log, and a state
+/// can recur (apply, then undo), so the *last* occurrence is the one that
+/// the chain's suffix extends.
+pub fn last_state_position(lines: &[LogLine], sum_hex: &str) -> Option<usize> {
+    lines.iter().rposition(|l| l.sum_after == sum_hex)
+}
+
 /// Verify a chain: prev linkage from `""`, and each line's arithmetic
 /// against its own `sum_after`, starting from the anchor.  Returns the final
 /// sum.  A line whose arithmetic disagrees with its `sum_after` marks where

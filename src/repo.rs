@@ -12,7 +12,7 @@ use crate::blobs::{BlobStore, fsync_dir};
 use crate::claims::Claim;
 use crate::fork::{ForkFile, validate_fork_name};
 use crate::ident::{ElementRecord, Sum};
-use crate::log::{Annotation, LogLine, parse_log_lenient};
+use crate::log::{Annotation, LogLine, last_state_position, parse_log_lenient};
 use crate::manifest::Manifest;
 use crate::patch::{Intent, Realization, apply_intent, apply_realized_to_manifest,
                    apply_realized_to_sum};
@@ -278,9 +278,7 @@ impl Repository {
         // The anchor may have been repointed by a snapshot; earlier log
         // lines remain (§2.4).  Replay starts after the last line whose
         // sum_after equals the anchor, or at the beginning.
-        let start = lines
-            .iter()
-            .rposition(|l| l.sum_after == fork_file.anchor)
+        let start = last_state_position(&lines, &fork_file.anchor)
             .map(|i| i + 1)
             .unwrap_or(0);
         // Verify linkage and per-line arithmetic across the whole log.
@@ -350,13 +348,9 @@ impl Repository {
         if fork_file.anchor == sum_hex {
             return self.read_anchor_manifest(&fork_file.manifest);
         }
-        let pos = state
-            .lines
-            .iter()
-            .rposition(|l| l.sum_after == sum_hex)
-            .ok_or_else(|| {
-                Error::Invalid(format!("sum {sum_hex} does not name a state on fork {fork}"))
-            })?;
+        let pos = last_state_position(&state.lines, sum_hex).ok_or_else(|| {
+            Error::Invalid(format!("sum {sum_hex} does not name a state on fork {fork}"))
+        })?;
         // Walk backward from the current state, applying inverses.
         let mut manifest = state.manifest;
         for line in state.lines[pos + 1..].iter().rev() {
