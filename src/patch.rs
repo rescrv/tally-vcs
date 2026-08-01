@@ -168,6 +168,31 @@ pub fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
+/// Replace the unique occurrence of `old` in `content` with `new` — the one
+/// span operation, shared by intent application and construct replay.  When
+/// the occurrence count is not exactly one, `Err` carries the count so the
+/// caller can speak its own error vocabulary: a precondition failure at
+/// apply time, corruption at replay time.
+pub fn replace_unique(
+    content: &[u8],
+    old: &[u8],
+    new: &[u8],
+) -> std::result::Result<Vec<u8>, usize> {
+    let n = count_occurrences(content, old);
+    if n != 1 {
+        return Err(n);
+    }
+    let at = content
+        .windows(old.len())
+        .position(|w| w == old)
+        .expect("counted exactly one occurrence");
+    let mut out = Vec::with_capacity(content.len() - old.len() + new.len());
+    out.extend_from_slice(&content[..at]);
+    out.extend_from_slice(new);
+    out.extend_from_slice(&content[at + old.len()..]);
+    Ok(out)
+}
+
 /// Validate and apply an intent against a manifest and blob store.  On any
 /// failure, nothing is written anywhere (§2.8 step 2: any failure → write
 /// nothing).  On success the manifest reflects the new state and the
@@ -197,22 +222,13 @@ pub fn apply_intent(
                     Error::Precondition(format!("edit of absent path: {path}"))
                 })?;
                 let content = read_blob(&element.blob, &realization)?;
-                let n = count_occurrences(&content, old_str.as_bytes());
-                if n != 1 {
-                    return Err(Error::Precondition(format!(
-                        "old_str occurs {n} times in {path}; exactly one required"
-                    )));
-                }
-                let at = content
-                    .windows(old_str.len())
-                    .position(|w| w == old_str.as_bytes())
-                    .expect("counted exactly one occurrence");
-                let mut new_content = Vec::with_capacity(
-                    content.len() - old_str.len() + new_str.len(),
-                );
-                new_content.extend_from_slice(&content[..at]);
-                new_content.extend_from_slice(new_str.as_bytes());
-                new_content.extend_from_slice(&content[at + old_str.len()..]);
+                let new_content =
+                    replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
+                        .map_err(|n| {
+                            Error::Precondition(format!(
+                                "old_str occurs {n} times in {path}; exactly one required"
+                            ))
+                        })?;
                 let new_hash = sha3_hex(&new_content);
                 let new_record = ElementRecord::new(&element.mode, path, &new_hash)?;
                 scratch.remove(&element)?;

@@ -12,7 +12,7 @@ use std::io::Read;
 
 use crate::ident::{Sum, is_hex64, sha3_hex};
 use crate::log::LogLine;
-use crate::patch::{Op, count_occurrences};
+use crate::patch::{Op, replace_unique};
 use crate::{Error, Result};
 
 /////////////////////////////////////////////// enc ///////////////////////////////////////////////
@@ -478,22 +478,13 @@ pub fn construct_blob(base: &[u8], line: &LogLine, target_sha3: &str) -> Result<
         if let Op::Edit { path, old_str, new_str } = op
             && *path == target_path
         {
-            let n = count_occurrences(&content, old_str.as_bytes());
-            if n != 1 {
-                return Err(Error::Corrupt(format!(
-                    "construct: old_str occurs {n} times replaying line {}",
-                    line.id
-                )));
-            }
-            let at = content
-                .windows(old_str.len())
-                .position(|w| w == old_str.as_bytes())
-                .expect("counted one");
-            let mut next = Vec::with_capacity(content.len() - old_str.len() + new_str.len());
-            next.extend_from_slice(&content[..at]);
-            next.extend_from_slice(new_str.as_bytes());
-            next.extend_from_slice(&content[at + old_str.len()..]);
-            content = next;
+            content = replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
+                .map_err(|n| {
+                    Error::Corrupt(format!(
+                        "construct: old_str occurs {n} times replaying line {}",
+                        line.id
+                    ))
+                })?;
         }
     }
     if sha3_hex(&content) != target_sha3 {
