@@ -577,8 +577,13 @@ mod tests {
             format!("{}\n", fields.join(" "))
         };
         let idx_sha3 = sha3_hex(lying_idx_text.as_bytes());
-        let err = Segment::open(&honest.pk, lying_idx_text.as_bytes(), &honest.segid, &idx_sha3);
-        assert!(err.is_err(), "budget from the idx must reject the oversized frame");
+        match Segment::open(&honest.pk, lying_idx_text.as_bytes(), &honest.segid, &idx_sha3) {
+            Err(Error::Corrupt(msg)) => assert_eq!(
+                msg, "frame decompresses past its authenticated budget of 8 bytes",
+                "budget from the idx must reject the oversized frame",
+            ),
+            other => panic!("amplification must be rejected, got {:?}", other.err()),
+        }
     }
 
     #[test]
