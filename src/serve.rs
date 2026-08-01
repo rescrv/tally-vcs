@@ -130,6 +130,33 @@ pub fn swap_delta(prev: &ServeManifest, next: &ServeManifest) -> Result<Sum> {
 
 ////////////////////////////////////////////// pack ///////////////////////////////////////////////
 
+/// Atomically put `bytes` at `path` unless the name already exists: write a
+/// temp file beside it, `link(2)` it into place — creation of the link is
+/// the atomic put-if-absent — and unlink the temp.  No reader ever observes
+/// a partial file, and no writer ever overwrites a committed one.  Returns
+/// false when the name was already present.
+fn put_if_absent(path: &Path, bytes: &[u8]) -> Result<bool> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::Invalid(format!("no parent directory for {}", path.display())))?;
+    let tmp = dir.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    ));
+    fs::write(&tmp, bytes).map_err(ioerr(format!("writing {}", tmp.display())))?;
+    let outcome = match fs::hard_link(&tmp, path) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(err) => Err(ioerr(format!("linking {}", path.display()))(err)),
+    };
+    let _ = fs::remove_file(&tmp);
+    outcome
+}
+
 /// Pack a loose repository into `out_dir` as segments plus a
 /// serve-manifest at `seq` chaining to `prev_id`.  `level` is packing
 /// policy (§5).
@@ -183,10 +210,10 @@ pub fn pack(
     for head in forks.values_mut() {
         head.log_segments = vec![built.segid.clone()];
     }
-    fs::write(out_dir.join("seg").join(format!("{}.pk", built.segid)), &built.pk)
-        .map_err(ioerr("writing .pk"))?;
-    fs::write(out_dir.join("seg").join(format!("{}.idx", built.segid)), &built.idx)
-        .map_err(ioerr("writing .idx"))?;
+    // Segments are content-addressed: an existing name is the same bytes,
+    // so a lost put-if-absent race is a no-op.
+    put_if_absent(&out_dir.join("seg").join(format!("{}.pk", built.segid)), &built.pk)?;
+    put_if_absent(&out_dir.join("seg").join(format!("{}.idx", built.segid)), &built.idx)?;
 
     let mut segments = BTreeMap::new();
     segments.insert(
@@ -211,8 +238,15 @@ pub fn pack(
         retire: Vec::new(),
     };
     manifest.id = record_id(&serde_json::to_value(&manifest)?)?;
-    fs::write(out_dir.join("manifest").join(format!("{seq}.json")), manifest.to_bytes()?)
-        .map_err(ioerr("writing serve-manifest"))?;
+    // Manifests are seq-addressed: losing the put-if-absent means another
+    // packer took this seq, and silently dropping ours would lie.
+    if !put_if_absent(&out_dir.join("manifest").join(format!("{seq}.json")), &manifest.to_bytes()?)?
+    {
+        return Err(Error::Invalid(format!(
+            "manifest {seq}.json already exists in {}; pack lost the put-if-absent",
+            out_dir.display()
+        )));
+    }
     Ok(manifest)
 }
 
