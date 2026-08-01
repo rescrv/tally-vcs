@@ -550,10 +550,16 @@ mod tests {
         let built = build_segment(&[SegmentInput::Blob(b"x".to_vec())], 3).unwrap();
         let mut evil = built.pk.clone();
         evil[0] ^= 1;
-        assert!(Segment::open(&evil, &built.idx, &built.segid, &built.idx_sha3).is_err());
+        match Segment::open(&evil, &built.idx, &built.segid, &built.idx_sha3) {
+            Err(Error::Corrupt(msg)) => assert_eq!(msg, "segment .pk hash mismatch"),
+            other => panic!("tampered .pk must fail its hash check, got {:?}", other.err()),
+        }
         let mut evil_idx = built.idx.clone();
         evil_idx[0] = b'f';
-        assert!(Segment::open(&built.pk, &evil_idx, &built.segid, &built.idx_sha3).is_err());
+        match Segment::open(&built.pk, &evil_idx, &built.segid, &built.idx_sha3) {
+            Err(Error::Corrupt(msg)) => assert_eq!(msg, "segment .idx hash mismatch"),
+            other => panic!("tampered .idx must fail its hash check, got {:?}", other.err()),
+        }
     }
 
     #[test]
