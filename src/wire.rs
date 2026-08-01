@@ -7,6 +7,11 @@
 use std::fs;
 use std::path::PathBuf;
 
+use futures_executor::{block_on, block_on_stream};
+use object_store::ObjectStore as _;
+use object_store::ObjectStoreExt as _;
+use object_store::local::LocalFileSystem;
+
 use crate::repo::Repository;
 use crate::serve::{ServeManifest, pack, restore, unpack_segments};
 use crate::{Error, Result, ioerr};
@@ -27,9 +32,23 @@ pub trait ObjectStore {
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
 }
 
-/// An object store on a filesystem directory: the reference dumb server.
+/// Wrap an `object_store::Error` as a substrate error, annotated with what
+/// was being attempted.
+fn oserr(what: impl std::fmt::Display) -> impl FnOnce(object_store::Error) -> Error {
+    let what = what.to_string();
+    move |err| {
+        Error::Io(
+            handled::SError::new("object-store").with_message(&format!("{what}: {err}")),
+        )
+    }
+}
+
+/// An object store on a filesystem directory: the reference dumb server,
+/// backed by the object_store crate's [`LocalFileSystem`].  Its
+/// `PutMode::Create` is the atomic put-if-absent the wire linearization
+/// point (I8) requires.
 pub struct FsStore {
-    root: PathBuf,
+    store: LocalFileSystem,
 }
 
 impl FsStore {
@@ -37,70 +56,61 @@ impl FsStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(ioerr("creating object store"))?;
-        Ok(FsStore { root })
+        let store = LocalFileSystem::new_with_prefix(&root)
+            .map_err(oserr(format!("opening object store {}", root.display())))?
+            .with_automatic_cleanup(true);
+        Ok(FsStore { store })
     }
 
-    fn path_of(&self, name: &str) -> Result<PathBuf> {
+    fn path_of(&self, name: &str) -> Result<object_store::path::Path> {
         // Object names are relative paths with no traversal.
         if name.starts_with('/') || name.split('/').any(|c| c == ".." || c == "." || c.is_empty())
         {
             return Err(Error::Invalid(format!("bad object name: {name:?}")));
         }
-        Ok(self.root.join(name))
+        object_store::path::Path::parse(name)
+            .map_err(|err| Error::Invalid(format!("bad object name {name:?}: {err}")))
     }
 }
 
 impl ObjectStore for FsStore {
     fn get(&self, name: &str) -> Result<Option<Vec<u8>>> {
-        match fs::read(self.path_of(name)?) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(ioerr(format!("GET {name}"))(err)),
+        let path = self.path_of(name)?;
+        match block_on(async { self.store.get(&path).await?.bytes().await }) {
+            Ok(bytes) => Ok(Some(bytes.to_vec())),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(err) => Err(oserr(format!("GET {name}"))(err)),
         }
     }
 
     fn put(&self, name: &str, bytes: &[u8]) -> Result<()> {
-        let path = self.path_of(name)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(ioerr("creating store prefix"))?;
-        }
-        // Existing names are content-addressed no-ops.
-        if path.exists() {
-            return Ok(());
-        }
-        fs::write(&path, bytes).map_err(ioerr(format!("PUT {name}")))
+        // Existing names are content-addressed no-ops, so put-if-absent
+        // losing the race is success.
+        self.put_if_absent(name, bytes).map(|_| ())
     }
 
     fn put_if_absent(&self, name: &str, bytes: &[u8]) -> Result<bool> {
         let path = self.path_of(name)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(ioerr("creating store prefix"))?;
-        }
-        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(bytes).map_err(ioerr(format!("PUT {name}")))?;
-                file.sync_all().map_err(ioerr(format!("fsync {name}")))?;
-                Ok(true)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(err) => Err(ioerr(format!("put-if-absent {name}"))(err)),
+        let payload = object_store::PutPayload::from(bytes.to_vec());
+        match block_on(self.store.put_opts(&path, payload, object_store::PutMode::Create.into()))
+        {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::AlreadyExists { .. }) => Ok(false),
+            Err(err) => Err(oserr(format!("put-if-absent {name}"))(err)),
         }
     }
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
-        let dir = self.root.join(prefix);
+        let path = self.path_of(prefix)?;
         let mut names = Vec::new();
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(names),
-            Err(err) => return Err(ioerr(format!("LIST {prefix}"))(err)),
-        };
-        for entry in entries {
-            let entry = entry.map_err(ioerr("listing store"))?;
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(format!("{prefix}/{name}"));
-            }
+        for meta in block_on_stream(self.store.list(Some(&path))) {
+            let meta = meta.map_err(|err| {
+                Error::Io(
+                    handled::SError::new("object-store")
+                        .with_message(&format!("LIST {prefix}: {err}")),
+                )
+            })?;
+            names.push(meta.location.to_string());
         }
         names.sort();
         Ok(names)
