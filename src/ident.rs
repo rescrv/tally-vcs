@@ -220,26 +220,85 @@ pub fn sum_of_records<'a>(records: impl IntoIterator<Item = &'a ElementRecord>) 
 /////////////////////////////////////////// canonical JSON ////////////////////////////////////////
 
 /// Canonical JSON (§1.3): UTF-8, object keys sorted bytewise, separators `,`
-/// and `:` with no whitespace, no floats.  serde_json's default map is a
-/// BTreeMap, so serializing a Value yields sorted keys; compact output has
-/// the required separators; non-ASCII passes through unescaped.
+/// and `:` with no whitespace, no floats.  The serializer is written out
+/// here rather than delegated to serde_json: canonical bytes are hash
+/// preimages, so their exact form must not depend on a dependency's
+/// defaults (a transitively enabled `preserve_order` feature would silently
+/// unsort serde_json's maps).  Output matches
+/// `json.dumps(x, sort_keys=True, separators=(',',':'), ensure_ascii=False)`.
 pub fn canonical_json(value: &serde_json::Value) -> Result<String> {
-    reject_floats(value)?;
-    serde_json::to_string(value).map_err(Error::from)
+    let mut out = String::new();
+    write_canonical(value, &mut out)?;
+    Ok(out)
 }
 
-fn reject_floats(value: &serde_json::Value) -> Result<()> {
+fn write_canonical(value: &serde_json::Value, out: &mut String) -> Result<()> {
     match value {
+        serde_json::Value::Null => out.push_str("null"),
+        serde_json::Value::Bool(true) => out.push_str("true"),
+        serde_json::Value::Bool(false) => out.push_str("false"),
         serde_json::Value::Number(n) => {
-            if n.is_f64() && n.as_i64().is_none() && n.as_u64().is_none() {
+            if let Some(i) = n.as_i64() {
+                out.push_str(&i.to_string());
+            } else if let Some(u) = n.as_u64() {
+                out.push_str(&u.to_string());
+            } else {
                 return Err(Error::Invalid(format!("canonical JSON forbids floats: {n}")));
             }
-            Ok(())
         }
-        serde_json::Value::Array(a) => a.iter().try_for_each(reject_floats),
-        serde_json::Value::Object(o) => o.values().try_for_each(reject_floats),
-        _ => Ok(()),
+        serde_json::Value::String(s) => write_canonical_string(s, out),
+        serde_json::Value::Array(a) => {
+            out.push('[');
+            for (i, item) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out)?;
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(o) => {
+            // Sort keys bytewise here, every time: the map's own iteration
+            // order is a serde_json implementation detail, not a guarantee.
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            out.push('{');
+            for (i, key) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical_string(key, out);
+                out.push(':');
+                write_canonical(&o[key.as_str()], out)?;
+            }
+            out.push('}');
+        }
     }
+    Ok(())
+}
+
+/// Escape a string exactly as Python's `json.dumps(..., ensure_ascii=False)`
+/// does: `"` and `\` escaped, control characters below 0x20 as the short
+/// forms `\b \t \n \f \r` or `\u00xx`, everything else (non-ASCII included)
+/// passed through unescaped.
+fn write_canonical_string(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// The id of an identified record (§1.3): the lowercase hex SHA3-256 of the
@@ -382,6 +441,93 @@ mod tests {
     fn canonical_json_rejects_floats() {
         let v: serde_json::Value = serde_json::from_str(r#"{"x": 1.5}"#).unwrap();
         assert!(canonical_json(&v).is_err());
+    }
+
+    #[test]
+    fn canonical_json_rejects_integer_valued_floats() {
+        // 1.0 is a float even though its value is integral: the preimage
+        // must never depend on float formatting.
+        let v = serde_json::Value::from(1.0f64);
+        assert!(matches!(canonical_json(&v), Err(Error::Invalid(_))));
+        let v = serde_json::Value::from(-0.0f64);
+        assert!(matches!(canonical_json(&v), Err(Error::Invalid(_))));
+        let v: serde_json::Value = serde_json::from_str("[1, 2.0, 3]").unwrap();
+        assert!(matches!(canonical_json(&v), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn canonical_json_escapes_exactly_like_python() {
+        // json.dumps("\u0001\b\t\n\u000b\f\r\u001f\"\\/é😀",
+        //            ensure_ascii=False)
+        let v = serde_json::Value::String("\u{1}\u{8}\t\n\u{b}\u{c}\r\u{1f}\"\\/é😀".to_string());
+        assert_eq!(
+            canonical_json(&v).unwrap(),
+            "\"\\u0001\\b\\t\\n\\u000b\\f\\r\\u001f\\\"\\\\/é😀\"",
+        );
+    }
+
+    #[test]
+    fn canonical_json_does_not_escape_del_or_non_ascii() {
+        // DEL (0x7f) is not below 0x20; Python passes it through, so must we.
+        let v = serde_json::Value::String("\u{7f}\u{80}\u{2028}\u{2029}".to_string());
+        assert_eq!(canonical_json(&v).unwrap(), "\"\u{7f}\u{80}\u{2028}\u{2029}\"");
+    }
+
+    #[test]
+    fn canonical_json_sorts_keys_bytewise_not_by_length_or_locale() {
+        // Bytewise: "Z" (0x5a) < "a" (0x61) < "aa" < "é" (0xc3 0xa9).
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"é": 4, "aa": 3, "a": 2, "Z": 1}"#).unwrap();
+        assert_eq!(canonical_json(&v).unwrap(), r#"{"Z":1,"a":2,"aa":3,"é":4}"#);
+    }
+
+    #[test]
+    fn canonical_json_sorts_and_escapes_hostile_keys() {
+        let v = serde_json::json!({
+            "\n": "newline key",
+            "\"": "quote key",
+            "\\": "backslash key",
+        });
+        // Bytewise: 0x0a < 0x22 < 0x5c.
+        assert_eq!(
+            canonical_json(&v).unwrap(),
+            r#"{"\n":"newline key","\"":"quote key","\\":"backslash key"}"#,
+        );
+    }
+
+    #[test]
+    fn canonical_json_covers_every_scalar() {
+        let v = serde_json::json!({
+            "null": null,
+            "true": true,
+            "false": false,
+            "min": i64::MIN,
+            "max": u64::MAX,
+            "empty_obj": {},
+            "empty_arr": [],
+            "empty_str": "",
+        });
+        assert_eq!(
+            canonical_json(&v).unwrap(),
+            format!(
+                r#"{{"empty_arr":[],"empty_obj":{{}},"empty_str":"","false":false,"max":{},"min":{},"null":null,"true":true}}"#,
+                u64::MAX,
+                i64::MIN,
+            ),
+        );
+    }
+
+    #[test]
+    fn canonical_json_is_stable_for_identified_records() {
+        // Ids hash canonical bytes; a fixed input must hash identically
+        // forever, independent of serde_json's own serializer.
+        let v = serde_json::json!({"b": [1, "two", null], "a": {"n": -7}});
+        let canonical = canonical_json(&v).unwrap();
+        assert_eq!(canonical, r#"{"a":{"n":-7},"b":[1,"two",null]}"#);
+        assert_eq!(
+            sha3_hex(canonical.as_bytes()),
+            sha3_hex(br#"{"a":{"n":-7},"b":[1,"two",null]}"#),
+        );
     }
 
     #[test]
