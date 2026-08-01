@@ -404,6 +404,7 @@ impl Repository {
             intent,
             realized: realization.realized,
             sum_after: sum_after.hexdigest(),
+            committed_ms: 0,
             annotation,
         };
         let bytes = line.seal(&blobs)?;
@@ -456,6 +457,7 @@ impl Repository {
             intent,
             realized,
             sum_after: sum_after.hexdigest(),
+            committed_ms: 0,
             annotation,
         };
         let bytes = line.seal(&blobs)?;

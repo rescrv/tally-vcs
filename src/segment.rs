@@ -621,6 +621,7 @@ mod tests {
                 add: Some(format!("100644\t/src/main.rs\t{target}")),
             }],
             sum_after: "0".repeat(64),
+            committed_ms: 0,
             annotation: Annotation::default(),
         };
         let out = construct_blob(&base, &line, &target).unwrap();

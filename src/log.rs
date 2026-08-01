@@ -81,6 +81,12 @@ pub struct LogLine {
     pub realized: Vec<RealizedEntry>,
     /// The state sum after this line; redundant on purpose.
     pub sum_after: String,
+    /// Commit time: milliseconds since the Unix epoch, stamped when the
+    /// line is sealed.  Time is annotation, never arithmetic: nothing
+    /// orders or verifies by it (the chain orders; the sums verify), but a
+    /// narrative without a clock is a poorer narrative.
+    #[serde(default)]
+    pub committed_ms: u64,
     /// The exhaust.
     pub annotation: Annotation,
 }
@@ -117,10 +123,17 @@ impl LogLine {
         record_id(&serde_json::to_value(self)?)
     }
 
-    /// Seal the line: apply the spill rule, then compute and set `id`.
-    /// Returns the canonical bytes to append, trailing LF included.
+    /// Seal the line: stamp the commit time, apply the spill rule, then
+    /// compute and set `id`.  Returns the canonical bytes to append,
+    /// trailing LF included.
     pub fn seal(&mut self, blobs: &BlobStore) -> Result<Vec<u8>> {
         self.validate()?;
+        if self.committed_ms == 0 {
+            self.committed_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+        }
         self.spill_reads_if_needed(blobs)?;
         self.id = self.compute_id()?;
         let mut bytes = canonical_json(&serde_json::to_value(&*self)?)?.into_bytes();
@@ -279,6 +292,7 @@ mod tests {
             intent: Intent::default(),
             realized: vec![RealizedEntry { remove: None, add: Some(record.to_line()) }],
             sum_after: sum.hexdigest(),
+            committed_ms: 0,
             annotation: Annotation { author: "test".to_string(), ..Annotation::default() },
         }
     }
@@ -290,8 +304,10 @@ mod tests {
         let mut line = line_adding("/a", b"a", "", &mut sum);
         let bytes = line.seal(&store).unwrap();
         assert!(bytes.ends_with(b"\n"));
+        assert!(line.committed_ms > 0, "seal stamps the commit time");
         let parsed = LogLine::parse(std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap()).unwrap();
         assert_eq!(parsed, line);
+        assert_eq!(parsed.committed_ms, line.committed_ms);
         let final_sum = verify_chain(&Sum::zero(), &[parsed]).unwrap();
         assert_eq!(final_sum, sum);
     }

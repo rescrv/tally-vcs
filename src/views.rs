@@ -119,6 +119,7 @@ mod tests {
             intent: Intent::default(),
             realized: vec![],
             sum_after: "0".repeat(64),
+            committed_ms: 0,
             annotation: Annotation::default(),
         }
     }
