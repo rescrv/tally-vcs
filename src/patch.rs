@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(sum, manifest.sum(), "arithmetic must agree with the manifest");
         let (hash, content) = &realization.new_blobs[0];
         assert_eq!(*hash, sha3_hex(content));
-        assert!(content.windows(7).any(|w| w == b"abelian"));
+        assert_eq!(content, b"fn main() { println!(\"hello, abelian\"); }\n");
     }
 
     #[test]
