@@ -9,6 +9,7 @@ dependencies = [
  "arrrg",
  "arrrg_derive",
  "getopts",
+ "handled",
  "serde",
  "serde_json",
  "setsum",
@@ -36,6 +37,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "biometrics"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf193ddd596699ae71581d7d22907e65fd9ad2a6f02e8e5efc85fb5e0b44694b"
+dependencies = [
+ "sig_fig_histogram",
 ]
 
 [[package]]
@@ -139,6 +149,15 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
+]
+
+[[package]]
+name = "handled"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a292658b13eb1e1dbf6cb7591c18aba2e7cee3855f85e3da9ccb8df3e2dbc46"
+dependencies = [
+ "biometrics",
 ]
 
 [[package]]
@@ -275,6 +294,12 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "sig_fig_histogram"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb8eb9b8c3a3af35c531d0963c516adadea3f464efdcc8bdd1c9db50d95d3b77"
 
 [[package]]
 name = "syn"

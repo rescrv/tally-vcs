@@ -8,6 +8,8 @@
 
 use std::fmt;
 
+use handled::SError;
+
 pub mod b64;
 pub mod blobs;
 pub mod claims;
@@ -26,10 +28,16 @@ pub mod wire;
 pub use ident::{ElementRecord, Sum, canonical_json, record_id, sha3_hex, verify_record_id};
 
 /// Errors across the substrate.
+///
+/// `Corrupt`, `Invalid`, `Precondition`, and `NeedsReenactment` are the API
+/// boundary: the substrate's own vocabulary, matched on by callers.  `Io`
+/// and `Json` are incidental — foreign failures wrapped in transit — so
+/// they carry a structured [`handled::SError`] instead of leaking
+/// `std::io::Error` or `serde_json::Error` through the public type.
 #[derive(Debug)]
 pub enum Error {
     /// An I/O error, annotated with what was being attempted.
-    Io(String, std::io::Error),
+    Io(SError),
     /// Bytes that should have been well-formed were not: the repository (or
     /// a fetched artifact) is corrupt.
     Corrupt(String),
@@ -41,13 +49,13 @@ pub enum Error {
     /// stratum 5) is required and costs tokens, so it is never automatic.
     NeedsReenactment(String),
     /// JSON (de)serialization failed.
-    Json(serde_json::Error),
+    Json(SError),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io(what, err) => write!(f, "io: {what}: {err}"),
+            Error::Io(err) => write!(f, "io: {err}"),
             Error::Corrupt(what) => write!(f, "corrupt: {what}"),
             Error::Invalid(what) => write!(f, "invalid: {what}"),
             Error::Precondition(what) => write!(f, "precondition: {what}"),
@@ -61,7 +69,12 @@ impl std::error::Error for Error {}
 
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
-        Error::Json(err)
+        Error::Json(
+            SError::new("json")
+                .with_atom_field("line", err.line())
+                .with_atom_field("column", err.column())
+                .with_message(&err.to_string()),
+        )
     }
 }
 
@@ -69,7 +82,13 @@ impl From<serde_json::Error> for Error {
 /// `.map_err(ioerr("writing the log"))`.
 pub fn ioerr(what: impl fmt::Display) -> impl FnOnce(std::io::Error) -> Error {
     let what = what.to_string();
-    move |err| Error::Io(what, err)
+    move |err| {
+        Error::Io(
+            SError::new("io")
+                .with_atom_field("kind", format_args!("{:?}", err.kind()))
+                .with_message(&format!("{what}: {err}")),
+        )
+    }
 }
 
 /// Result alias for the substrate.
