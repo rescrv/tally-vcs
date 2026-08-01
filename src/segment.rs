@@ -475,16 +475,34 @@ pub fn construct_blob(base: &[u8], line: &LogLine, target_sha3: &str) -> Result<
     })?;
     let mut content = base.to_vec();
     for op in &line.intent.ops {
-        if let Op::Edit { path, old_str, new_str } = op
-            && *path == target_path
-        {
-            content = replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
-                .map_err(|n| {
-                    Error::Corrupt(format!(
-                        "construct: old_str occurs {n} times replaying line {}",
-                        line.id
-                    ))
-                })?;
+        match op {
+            Op::Edit { path, old_str, new_str } if *path == target_path => {
+                content = replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
+                    .map_err(|n| {
+                        Error::Corrupt(format!(
+                            "construct: old_str occurs {n} times replaying line {}",
+                            line.id
+                        ))
+                    })?;
+            }
+            // A create for the target path restarts its content: whatever
+            // base the entry named, the bytes from here on derive from the
+            // create (a delete-then-recreate line), never from the base.
+            Op::Create { path, content_b64, blob, .. } if *path == target_path => {
+                match (content_b64, blob) {
+                    (Some(b64_content), None) => {
+                        content = crate::b64::decode(b64_content)?;
+                    }
+                    _ => {
+                        return Err(Error::Corrupt(format!(
+                            "construct: line {} creates {target_path} by blob \
+                             reference; the blob is a keyframe, not a construct",
+                            line.id
+                        )));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     if sha3_hex(&content) != target_sha3 {
@@ -619,6 +637,55 @@ mod tests {
         assert_eq!(out, new_content);
         // A wrong target hash is caught: every materialization self-verifies.
         assert!(construct_blob(&base, &line, &sha3_hex(b"other")).is_err());
+    }
+
+    #[test]
+    fn construct_replays_a_create_preceding_an_edit() {
+        use crate::log::Annotation;
+        use crate::patch::{Intent, RealizedEntry};
+        // A delete-then-recreate-then-edit line: the target derives from
+        // the create's content, never from the base blob.
+        let base = b"the old file, wholly unrelated\n".to_vec();
+        let created = b"fresh start: hello\n";
+        let new_content = b"fresh start: hello, abelian\n".to_vec();
+        let target = sha3_hex(&new_content);
+        let intent_with_create = |blob: Option<String>, content_b64: Option<String>| Intent {
+            ops: vec![
+                Op::Delete { path: "/f".to_string(), blob: sha3_hex(&base) },
+                Op::Create {
+                    path: "/f".to_string(),
+                    mode: "100644".to_string(),
+                    blob,
+                    content_b64,
+                },
+                Op::Edit {
+                    path: "/f".to_string(),
+                    old_str: "hello".to_string(),
+                    new_str: "hello, abelian".to_string(),
+                },
+            ],
+        };
+        let line = |intent: Intent| LogLine {
+            id: "test-line".to_string(),
+            prev: String::new(),
+            intent,
+            realized: vec![RealizedEntry {
+                remove: Some(format!("100644\t/f\t{}", sha3_hex(&base))),
+                add: Some(format!("100644\t/f\t{target}")),
+            }],
+            sum_after: "0".repeat(64),
+            committed_ms: 0,
+            annotation: Annotation::default(),
+        };
+        // Create by inline content: the construct restarts from it.
+        let inline = line(intent_with_create(None, Some(crate::b64::encode(created))));
+        assert_eq!(construct_blob(&base, &inline, &target).unwrap(), new_content);
+        // Create by blob reference: not constructible from this entry.
+        let by_ref = line(intent_with_create(Some(sha3_hex(created)), None));
+        assert!(matches!(
+            construct_blob(&base, &by_ref, &target),
+            Err(Error::Corrupt(_)),
+        ));
     }
 
     #[test]
