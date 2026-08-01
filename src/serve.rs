@@ -318,7 +318,9 @@ pub fn unpack_segments(
                     let claim = crate::claims::Claim::parse(&bytes)?;
                     claims.insert(claim.id, bytes);
                 }
-                _ => {
+                crate::segment::Enc::Raw
+                | crate::segment::Enc::Zstd
+                | crate::segment::Enc::Zstdd { .. } => {
                     let bytes = segment.materialize(entry, &no_blob, &no_line)?;
                     blobs.insert(entry.sha3.clone(), bytes);
                 }
