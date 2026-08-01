@@ -249,7 +249,7 @@ impl Repository {
         let path = self.log_path(fork);
         let bytes =
             fs::read(&path).map_err(ioerr(format!("reading log of fork {fork}")))?;
-        let parsed = parse_log_lenient(&bytes);
+        let parsed = parse_log_lenient(&bytes)?;
         if parsed.valid_prefix != bytes.len() {
             let file = fs::OpenOptions::new()
                 .write(true)

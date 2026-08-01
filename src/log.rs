@@ -177,8 +177,12 @@ pub struct ParsedLog {
     pub valid_prefix: usize,
 }
 
-/// Parse `log.jsonl` bytes, stopping at the first torn line.
-pub fn parse_log_lenient(bytes: &[u8]) -> ParsedLog {
+/// Parse `log.jsonl` bytes, stopping at the first torn line.  Leniency
+/// covers exactly one shape of damage: a torn *tail*, the residue of a
+/// crash mid-append.  If any line past the sheer point parses as a valid
+/// log line, the damage is in the middle of the log — that is corruption,
+/// never truncated, always an error.
+pub fn parse_log_lenient(bytes: &[u8]) -> Result<ParsedLog> {
     let mut lines = Vec::new();
     let mut valid_prefix = 0;
     let mut offset = 0;
@@ -197,12 +201,25 @@ pub fn parse_log_lenient(bytes: &[u8]) -> ParsedLog {
         valid_prefix = end;
         offset = end;
     }
-    ParsedLog { lines, valid_prefix }
+    // Verify there are no valid lines after the sheered line.
+    let torn = &bytes[valid_prefix..];
+    for (i, chunk) in torn.split(|&b| b == b'\n').enumerate().skip(1) {
+        let Ok(text) = std::str::from_utf8(chunk) else {
+            continue;
+        };
+        if LogLine::parse(text).is_ok() {
+            return Err(Error::Corrupt(format!(
+                "valid log line follows a torn line {i} past byte {valid_prefix}: \
+                 corruption mid-log, not a torn tail"
+            )));
+        }
+    }
+    Ok(ParsedLog { lines, valid_prefix })
 }
 
 /// Strictly parse a log: any torn or trailing garbage is corruption.
 pub fn parse_log_strict(bytes: &[u8]) -> Result<Vec<LogLine>> {
-    let parsed = parse_log_lenient(bytes);
+    let parsed = parse_log_lenient(bytes)?;
     if parsed.valid_prefix != bytes.len() {
         return Err(Error::Corrupt(format!(
             "log has {} bytes of garbage after byte {}",
@@ -308,10 +325,27 @@ mod tests {
         let mut bytes = line.seal(&store).unwrap();
         let good_len = bytes.len();
         bytes.extend_from_slice(b"{\"id\":\"torn");
-        let parsed = parse_log_lenient(&bytes);
+        let parsed = parse_log_lenient(&bytes).unwrap();
         assert_eq!(parsed.lines.len(), 1);
         assert_eq!(parsed.valid_prefix, good_len);
         assert!(parse_log_strict(&bytes).is_err());
+    }
+
+    #[test]
+    fn corruption_mid_log_is_an_error_not_a_truncation() {
+        let store = blobs("midlog");
+        let mut sum = Sum::zero();
+        let mut first = line_adding("/a", b"a", "", &mut sum);
+        let mut bytes = first.seal(&store).unwrap();
+        let mut second = line_adding("/b", b"b", &first.id, &mut sum);
+        let second_bytes = second.seal(&store).unwrap();
+        // Corrupt the middle: a torn fragment with a valid line after it.
+        bytes.extend_from_slice(b"{\"id\":\"torn\n");
+        bytes.extend_from_slice(&second_bytes);
+        assert!(
+            matches!(parse_log_lenient(&bytes), Err(Error::Corrupt(_))),
+            "a valid line after the sheer point is corruption, not a torn tail"
+        );
     }
 
     #[test]
