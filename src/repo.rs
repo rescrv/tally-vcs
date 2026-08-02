@@ -12,6 +12,7 @@ use crate::blobs::{BlobStore, fsync_dir};
 use crate::claims::Claim;
 use crate::fork::{ForkFile, validate_fork_name};
 use crate::ident::{ElementRecord, Sum};
+use crate::ignore::Ignore;
 use crate::log::{Annotation, LogLine, last_state_position, parse_log_lenient};
 use crate::manifest::Manifest;
 use crate::patch::{Intent, Realization, apply_intent, apply_realized_to_manifest,
@@ -529,13 +530,23 @@ impl Repository {
     /// element record (`tally sum`).  Blob contents are ingested into the
     /// pool so the records are always materializable.
     pub fn records_of_working_tree(&self) -> Result<Vec<ElementRecord>> {
+        let ignore = match fs::read_to_string(self.root.join(".abelianignore")) {
+            Ok(text) => Ignore::parse(&text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ignore::empty(),
+            Err(err) => return Err(ioerr("reading .abelianignore")(err)),
+        };
         let mut records = Vec::new();
-        self.walk_tree(&self.root.clone(), &mut records)?;
+        self.walk_tree(&self.root.clone(), &ignore, &mut records)?;
         records.sort();
         Ok(records)
     }
 
-    fn walk_tree(&self, dir: &Path, records: &mut Vec<ElementRecord>) -> Result<()> {
+    fn walk_tree(
+        &self,
+        dir: &Path,
+        ignore: &Ignore,
+        records: &mut Vec<ElementRecord>,
+    ) -> Result<()> {
         let entries = fs::read_dir(dir).map_err(ioerr(format!("walking {}", dir.display())))?;
         for entry in entries {
             let entry = entry.map_err(ioerr("walking working tree"))?;
@@ -555,6 +566,9 @@ impl Repository {
                     rel.display()
                 )))?
             );
+            if ignore.is_ignored(&element_path[1..], meta.is_dir()) {
+                continue;
+            }
             if meta.file_type().is_symlink() {
                 let target = fs::read_link(&path).map_err(ioerr("readlink"))?;
                 let target = target.to_str().ok_or_else(|| {
@@ -563,7 +577,7 @@ impl Repository {
                 let blob = self.blobs().put(target.as_bytes())?;
                 records.push(ElementRecord::new("120000", &element_path, &blob)?);
             } else if meta.is_dir() {
-                self.walk_tree(&path, records)?;
+                self.walk_tree(&path, ignore, records)?;
             } else {
                 let content = fs::read(&path).map_err(ioerr("reading working tree file"))?;
                 let blob = self.blobs().put(&content)?;
@@ -710,6 +724,24 @@ mod tests {
 
     fn note(author: &str) -> Annotation {
         Annotation { author: author.to_string(), ..Annotation::default() }
+    }
+
+    #[test]
+    fn abelianignore_prunes_the_walk() {
+        let repo = temp_repo("ignore");
+        fs::write(repo.root().join(".abelianignore"), "*.log\n/target\n").unwrap();
+        fs::create_dir_all(repo.root().join("target/debug")).unwrap();
+        fs::create_dir_all(repo.root().join("src")).unwrap();
+        fs::write(repo.root().join("target/debug/junk"), b"x").unwrap();
+        fs::write(repo.root().join("src/main.rs"), b"fn main() {}\n").unwrap();
+        fs::write(repo.root().join("src/debug.log"), b"noise").unwrap();
+        let paths: Vec<String> = repo
+            .records_of_working_tree()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        assert_eq!(paths, vec!["/.abelianignore", "/src/main.rs"]);
     }
 
     #[test]

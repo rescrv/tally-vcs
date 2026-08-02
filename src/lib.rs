@@ -16,6 +16,7 @@ pub mod claims;
 pub mod fork;
 pub mod git;
 pub mod ident;
+pub mod ignore;
 pub mod log;
 pub mod manifest;
 pub mod patch;
