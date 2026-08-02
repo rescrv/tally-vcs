@@ -13,11 +13,11 @@ use crate::blobs::{BlobStore, fsync_dir};
 use crate::fork::{ForkFile, validate_fork_name};
 use crate::ident::{ElementRecord, Sum};
 use crate::ignore::Ignore;
-use crate::log::{Annotation, LogLine, last_state_position, parse_log_lenient};
+use crate::log::{Annotation, LogLine, Provenance, ViewSpan, last_state_position,
+                 parse_log_lenient};
 use crate::manifest::Manifest;
 use crate::patch::{Intent, Realization, apply_intent, apply_realized_to_manifest,
                    apply_realized_to_sum};
-use crate::views::{View, parse_views, view_line};
 use crate::{Error, Result, ioerr};
 
 /// The contents of `.abelian/version`.
@@ -186,7 +186,6 @@ impl Repository {
         fs::create_dir_all(&dir).map_err(ioerr("creating fork directory"))?;
         fs::write(dir.join("fork"), fork.to_bytes()).map_err(ioerr("writing fork file"))?;
         fs::write(dir.join("log.jsonl"), b"").map_err(ioerr("creating log"))?;
-        fs::write(dir.join("views.jsonl"), b"").map_err(ioerr("creating views"))?;
         Ok(())
     }
 
@@ -215,8 +214,10 @@ impl Repository {
     /// of that work; `force` is the `-D` escape hatch that deletes anyway.  A
     /// line counts as taken up when another fork carries it outright or
     /// carries a union line whose `origin` names it (union re-seals ids, so
-    /// the origin is the linkage, §2.5).  The `main` fork is never removable —
-    /// the empty repository always has it (§2.3).
+    /// the origin is the linkage, §2.5).  Views are log lines (§2.6), so an
+    /// uncarried view refuses too — a fused rendering is never silently
+    /// dropped.  The `main` fork is never removable — the empty repository
+    /// always has it (§2.3).
     pub fn remove_fork(&self, name: &str, force: bool) -> Result<()> {
         validate_fork_name(name)?;
         if name == "main" {
@@ -656,23 +657,40 @@ impl Repository {
 
     ///////////////////////////////////////// views ///////////////////////////////////////////
 
-    /// Read a fork's views.
-    pub fn read_views(&self, fork: &str) -> Result<Vec<View>> {
-        let bytes = fs::read(self.fork_dir(fork).join("views.jsonl"))
-            .map_err(ioerr(format!("reading views of fork {fork}")))?;
-        parse_views(&bytes)
-    }
-
-    /// Append a view (a rendering, never a mutation of the log).
-    pub fn append_view(&self, fork: &str, view: &View) -> Result<()> {
-        let bytes = view_line(view)?;
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(self.fork_dir(fork).join("views.jsonl"))
-            .map_err(ioerr("opening views for append"))?;
-        file.write_all(&bytes).map_err(ioerr("appending view"))?;
-        file.sync_all().map_err(ioerr("fsyncing views"))?;
-        Ok(())
+    /// §2.6 Fuse: append a view line — provenance `view`, a span
+    /// annotation, and an empty realized delta (an arithmetic identity), so
+    /// it is a log line like any other: it travels through union, it counts
+    /// as unmerged work, and it is ordered, so a later view supersedes an
+    /// earlier one it overlaps.  A rendering, never a mutation: the fused
+    /// lines remain underneath.
+    pub fn fuse(
+        &self,
+        fork: &str,
+        from: &str,
+        to: &str,
+        prose: Option<String>,
+        author: &str,
+    ) -> Result<LogLine> {
+        let state = self.current_state(fork)?;
+        let index_of = |id: &str| state.lines.iter().position(|l| l.id == id);
+        let (Some(a), Some(b)) = (index_of(from), index_of(to)) else {
+            return Err(Error::Invalid(format!(
+                "fuse span {from}..{to} does not name lines on fork {fork}"
+            )));
+        };
+        if a > b {
+            return Err(Error::Invalid(format!(
+                "fuse span {from}..{to} is reversed on fork {fork}"
+            )));
+        }
+        let annotation = Annotation {
+            author: author.to_string(),
+            provenance: Provenance::View,
+            prose,
+            view: Some(ViewSpan { from: from.to_string(), to: to.to_string() }),
+            ..Annotation::default()
+        };
+        self.apply(fork, Intent::default(), annotation)
     }
 
     /// The blob hashes any fork reaches: every fork's anchor manifest
@@ -925,6 +943,22 @@ mod tests {
         crate::union::union(&repo, "done", "main", "maintainer").unwrap();
         repo.remove_fork("done", false).unwrap();
         assert_eq!(repo.fork_names().unwrap(), vec!["main".to_string()]);
+    }
+
+    #[test]
+    fn remove_fork_never_drops_the_only_view() {
+        // A view is a log line, so the unmerged-work check protects it: a
+        // fused rendering is never silently deleted with its fork.
+        let repo = temp_repo("rm-view");
+        repo.create_fork("s", "main").unwrap();
+        let l1 = repo.apply("s", create("/a", b"a\n"), note("t")).unwrap();
+        crate::union::union(&repo, "s", "main", "maintainer").unwrap();
+        // Fuse after the fact: the fork now holds the only copy of the view.
+        repo.fuse("s", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
+        assert!(repo.remove_fork("s", false).is_err(), "the view is unmerged work");
+        // Union carries the view; then removal is safe.
+        crate::union::union(&repo, "s", "main", "maintainer").unwrap();
+        repo.remove_fork("s", false).unwrap();
     }
 
     #[test]

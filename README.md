@@ -296,18 +296,26 @@ stops before stratum 4 unless invited.
 ## 7. Fuse and reading
 
 `fuse` composes a span of patches into one narrative beat — what git called a
-commit, squash, and fixup, unified. It is **lossless**: a fuse is a view
-record in a sidecar file, never a mutation of the log:
+commit, squash, and fixup, unified. It is **lossless**: a fuse is a view — a
+log line with an empty realized delta, never a mutation of the lines it
+covers:
 
 ```json
-{"kind": "fuse", "from": "id-17", "to": "id-42",
- "annotation": {"prose": "retry loop: bounded backoff", "author": "…"}}
+{"intent": {"ops": []}, "realized": [], "sum_after": "…",
+ "annotation": {"provenance": "view", "view": {"from": "id-17", "to": "id-42"},
+                "prose": "retry loop: bounded backoff", "author": "…"}}
 ```
 
 The fine structure — every tool call — remains underneath, forever, at
-$0.02/GB-month. `tally read` renders at a chosen zoom: `--fused` for the
-human narrative, `--raw` for the tool-call stream. The human view of history
-is a default zoom level, not a different interface.
+$0.02/GB-month. Because a view is a line, it travels: union lands it like
+any other patch (its arithmetic is the identity) and re-keys the span onto
+the target's ids, so the narrative survives fuse → union → remove-fork. And
+because views are ordered, a span can be annotated after the fact and a
+later view supersedes an earlier one it overlaps — fuse a span as an active
+incident, later mark it resolved; both lines stay, and any log prefix
+renders the status it had then. `tally read` renders at a chosen zoom:
+`--fused` for the human narrative, `--raw` for the tool-call stream. The
+human view of history is a default zoom level, not a different interface.
 
 ## 8. Authors
 

@@ -14,7 +14,7 @@ use abelian::log::{Annotation, Provenance};
 use abelian::patch::Intent;
 use abelian::repo::Repository;
 use abelian::union::{Stratum, union};
-use abelian::views::{Beat, View, ViewAnnotation, fused_beats};
+use abelian::views::{Beat, fused_beats};
 use abelian::wire::FsStore;
 use abelian::{Error, Result};
 
@@ -280,6 +280,7 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
         prose: options.prose.clone(),
         reads: None,
         origin: None,
+        view: None,
     };
     let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
     println!("{} {}", line.id, line.sum_after);
@@ -301,14 +302,26 @@ fn print_line_brief(line: &abelian::log::LogLine) {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
         Provenance::Union => "union",
+        Provenance::View => "view",
     };
-    println!(
-        "{}  {}  {}  {}",
-        line.id,
-        provenance,
-        line.annotation.author,
-        line.annotation.prose.as_deref().unwrap_or(""),
-    );
+    let header = format!("{}  {}  {}", line.id, provenance, line.annotation.author);
+    print_prose(&header, line.annotation.prose.as_deref().unwrap_or(""));
+}
+
+/// Render a header line followed by prose, git-log style: the subject shares
+/// the header line, and any body lines are indented four spaces.  Blank body
+/// lines stay blank (no trailing whitespace).
+fn print_prose(header: &str, prose: &str) {
+    let mut lines = prose.trim_end_matches('\n').split('\n');
+    let subject = lines.next().unwrap_or("");
+    println!("{header}  {subject}");
+    for line in lines {
+        if line.is_empty() {
+            println!();
+        } else {
+            println!("    {line}");
+        }
+    }
 }
 
 fn cmd_show(args: &[&str]) -> Result<()> {
@@ -352,18 +365,16 @@ fn cmd_read(args: &[&str]) -> Result<()> {
     }
     // Default zoom: fused — the human view of history is a zoom level, not
     // a different interface.
-    let views = repo.read_views(options.fork.as_deref().unwrap_or("main"))?;
-    for beat in fused_beats(&state.lines, &views) {
+    for beat in fused_beats(&state.lines) {
         match beat {
             Beat::Fused { view, lines } => {
-                let View::Fuse { annotation, .. } = view;
-                println!(
-                    "{}  fuse({} lines)  {}  {}",
+                let header = format!(
+                    "{}  fuse({} lines)  {}",
                     lines.last().map(|l| l.id.as_str()).unwrap_or(""),
                     lines.len(),
-                    annotation.author,
-                    annotation.prose,
+                    view.annotation.author,
                 );
+                print_prose(&header, view.annotation.prose.as_deref().unwrap_or(""));
             }
             Beat::Single(line) => print_line_brief(line),
         }
@@ -389,16 +400,17 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         return Err(Error::Invalid("fuse requires <from-id> <to-id>".to_string()));
     };
     let repo = repo()?;
-    let view = View::Fuse {
-        from: from.clone(),
-        to: to.clone(),
-        annotation: ViewAnnotation {
-            prose: options.prose.unwrap_or_default(),
-            author: options.author.unwrap_or_else(whoami),
-        },
-    };
-    repo.append_view(options.fork.as_deref().unwrap_or("main"), &view)?;
-    println!("fused {from}..{to} (lossless: the fine structure remains underneath)");
+    let line = repo.fuse(
+        options.fork.as_deref().unwrap_or("main"),
+        from,
+        to,
+        options.prose,
+        &options.author.unwrap_or_else(whoami),
+    )?;
+    println!(
+        "{} fused {from}..{to} (lossless: the fine structure remains underneath)",
+        line.id
+    );
     Ok(())
 }
 
@@ -478,7 +490,6 @@ fn cmd_union(args: &[&str]) -> Result<()> {
     let outcome = union(&repo, source, target, &author)?;
     if outcome.already_identical {
         println!("already identical (stratum 1: arithmetic)");
-        return Ok(());
     }
     for landed in &outcome.landed {
         let stratum = match landed.stratum {
@@ -569,6 +580,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
         prose: options.prose,
         reads: None,
         origin: None,
+        view: None,
     };
     let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
     println!("{} {} (enacts submission {submission})", line.id, line.sum_after);

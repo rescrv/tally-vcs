@@ -28,6 +28,18 @@ pub enum Provenance {
     Andon,
     /// Landed by union from another fork; `origin` names the source line.
     Union,
+    /// A fuse view (§2.6): a rendering appended to the log.  Carries a
+    /// `view` span and an empty realized delta — an arithmetic identity.
+    View,
+}
+
+/// The span a view fuses, by line id, inclusive (§2.6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewSpan {
+    /// First line id of the span.
+    pub from: String,
+    /// Last line id of the span, inclusive.
+    pub to: String,
 }
 
 /// For `provenance: union`, the source line.
@@ -62,6 +74,11 @@ pub struct Annotation {
     pub reads: Option<serde_json::Value>,
     /// For union lines, the source line.
     pub origin: Option<Origin>,
+    /// For view lines, the fused span (§2.6).  A line carrying a view MUST
+    /// have an empty realized delta: a view is a rendering, never a
+    /// mutation.  Union re-keys `from`/`to` when the line lands elsewhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<ViewSpan>,
 }
 
 /// One applied patch, as the log records it: intent plus realization plus
@@ -91,8 +108,28 @@ pub struct LogLine {
 impl LogLine {
     /// Validate provenance-dependent requirements (§2.5).
     pub fn validate(&self) -> Result<()> {
+        if self.annotation.view.is_some() && !self.realized.is_empty() {
+            return Err(Error::Invalid(
+                "view lines carry an empty realized delta: a view is a rendering, \
+                 never a mutation"
+                    .to_string(),
+            ));
+        }
         match self.annotation.provenance {
             Provenance::Agent => Ok(()),
+            Provenance::View => {
+                if self.annotation.view.is_none() {
+                    return Err(Error::Invalid(
+                        "view lines require a view span".to_string(),
+                    ));
+                }
+                if !self.intent.ops.is_empty() {
+                    return Err(Error::Invalid(
+                        "view lines carry no intent ops".to_string(),
+                    ));
+                }
+                Ok(())
+            }
             Provenance::Andon => {
                 if self.annotation.reason.as_deref().unwrap_or("").is_empty() {
                     return Err(Error::Invalid(

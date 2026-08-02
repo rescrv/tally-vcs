@@ -1,65 +1,24 @@
-//! §2.6 Views: fuse records.
+//! §2.6 Views: fuse records, rendered.
 //!
 //! `fuse` composes a span of patches into one narrative beat — what git
-//! called a commit, squash, and fixup, unified.  It is lossless by
-//! construction because it writes here and never to the log.  Views are
-//! unordered, unchained, and carry no authority: they are renderings, and
-//! the human view of history is a default zoom level, not a different
-//! interface.
-
-use serde::{Deserialize, Serialize};
+//! called a commit, squash, and fixup, unified.  A view is a log line with
+//! provenance `view`, a `view` span in its annotation, and an empty
+//! realized delta: an arithmetic identity, so it travels through union like
+//! any other line.  It is lossless by construction because the fused lines
+//! remain in the log underneath, forever.  Views are ordered by chain
+//! position, so a later view supersedes an earlier one it overlaps — the
+//! rendering at any log prefix is a pure function of that prefix.
 
 use crate::log::LogLine;
-use crate::{Error, Result};
-
-/// The annotation on a view.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ViewAnnotation {
-    /// The narrative beat.
-    pub prose: String,
-    /// Who fused.
-    pub author: String,
-}
-
-/// One record in `views.jsonl`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum View {
-    /// A fuse of the span `from..=to`, by line id.
-    Fuse {
-        /// First line id of the span.
-        from: String,
-        /// Last line id of the span, inclusive.
-        to: String,
-        /// The narrative.
-        annotation: ViewAnnotation,
-    },
-}
-
-/// Parse `views.jsonl`; unordered, so any well-formed subset is valid.
-pub fn parse_views(bytes: &[u8]) -> Result<Vec<View>> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| Error::Corrupt("views.jsonl is not UTF-8".to_string()))?;
-    text.lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str(l).map_err(Error::from))
-        .collect()
-}
-
-/// Serialize one view as a JSONL line, trailing LF included.
-pub fn view_line(view: &View) -> Result<Vec<u8>> {
-    let mut bytes = crate::ident::canonical_json(&serde_json::to_value(view)?)?.into_bytes();
-    bytes.push(b'\n');
-    Ok(bytes)
-}
 
 /// One beat of a fused rendering: either a fused span or a single line.
 #[derive(Debug)]
 pub enum Beat<'a> {
     /// Lines composed into one narrative beat by a fuse view.
     Fused {
-        /// The view that fused them.
-        view: &'a View,
+        /// The view line that fused them; its annotation carries the span,
+        /// the prose, and the author.
+        view: &'a LogLine,
         /// The underlying lines — the fine structure remains underneath,
         /// forever.
         lines: &'a [LogLine],
@@ -68,24 +27,34 @@ pub enum Beat<'a> {
     Single(&'a LogLine),
 }
 
-/// Render a log at the fused zoom level: fuse views collapse their spans;
-/// everything else renders singly.  Overlapping or dangling views are
-/// ignored rather than fatal — views carry no authority.
-pub fn fused_beats<'a>(lines: &'a [LogLine], views: &'a [View]) -> Vec<Beat<'a>> {
+/// Render a log at the fused zoom level: active fuse views collapse their
+/// spans; view lines themselves do not render; everything else renders
+/// singly.  Views are ordered by chain position, so a later view supersedes
+/// any earlier view whose span it overlaps — both lines are retained, and
+/// rendering a shorter prefix shows the earlier view again.  Dangling views
+/// (ids not in the prefix) are ignored rather than fatal — views carry no
+/// authority.
+pub fn fused_beats(lines: &[LogLine]) -> Vec<Beat<'_>> {
     let index_of = |id: &str| lines.iter().position(|l| l.id == id);
-    let mut spans: Vec<(usize, usize, &View)> = Vec::new();
-    for view in views {
-        let View::Fuse { from, to, .. } = view;
-        if let (Some(a), Some(b)) = (index_of(from), index_of(to))
-            && a <= b
-        {
-            spans.push((a, b, view));
+    // Views in chain order: later supersedes earlier on overlap.
+    let mut spans: Vec<(usize, usize, &LogLine)> = Vec::new();
+    for line in lines {
+        let Some(view) = &line.annotation.view else {
+            continue;
+        };
+        let (Some(a), Some(b)) = (index_of(&view.from), index_of(&view.to)) else {
+            continue;
+        };
+        if a > b {
+            continue;
         }
+        spans.retain(|&(x, y, _)| y < a || b < x);
+        spans.push((a, b, line));
     }
     spans.sort_by_key(|&(a, _, _)| a);
     let mut beats = Vec::new();
-    let mut i = 0;
     let mut spans = spans.into_iter().peekable();
+    let mut i = 0;
     while i < lines.len() {
         match spans.peek() {
             Some(&(a, b, view)) if a == i => {
@@ -93,12 +62,10 @@ pub fn fused_beats<'a>(lines: &'a [LogLine], views: &'a [View]) -> Vec<Beat<'a>>
                 i = b + 1;
                 spans.next();
             }
-            Some(&(a, _, _)) if a < i => {
-                // Overlaps a prior beat: no authority, skip it.
-                spans.next();
-            }
             _ => {
-                beats.push(Beat::Single(&lines[i]));
+                if lines[i].annotation.view.is_none() {
+                    beats.push(Beat::Single(&lines[i]));
+                }
                 i += 1;
             }
         }
@@ -109,7 +76,7 @@ pub fn fused_beats<'a>(lines: &'a [LogLine], views: &'a [View]) -> Vec<Beat<'a>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log::Annotation;
+    use crate::log::{Annotation, Provenance, ViewSpan};
     use crate::patch::Intent;
 
     fn line(id: &str, prev: &str) -> LogLine {
@@ -124,31 +91,25 @@ mod tests {
         }
     }
 
-    fn fuse(from: &str, to: &str) -> View {
-        View::Fuse {
-            from: from.to_string(),
-            to: to.to_string(),
-            annotation: ViewAnnotation {
-                prose: "retry loop: bounded backoff".to_string(),
-                author: "sid@fable-5".to_string(),
-            },
-        }
-    }
-
-    #[test]
-    fn views_round_trip() {
-        let v = fuse("id-17", "id-42");
-        let bytes = view_line(&v).unwrap();
-        let parsed = parse_views(&bytes).unwrap();
-        assert_eq!(parsed, vec![v]);
+    fn fuse(id: &str, prev: &str, from: &str, to: &str, prose: &str) -> LogLine {
+        let mut l = line(id, prev);
+        l.annotation.provenance = Provenance::View;
+        l.annotation.view =
+            Some(ViewSpan { from: from.to_string(), to: to.to_string() });
+        l.annotation.prose = Some(prose.to_string());
+        l
     }
 
     #[test]
     fn fusing_is_a_rendering() {
-        let lines =
-            vec![line("a", ""), line("b", "a"), line("c", "b"), line("d", "c")];
-        let views = vec![fuse("b", "c")];
-        let beats = fused_beats(&lines, &views);
+        let lines = vec![
+            line("a", ""),
+            line("b", "a"),
+            line("c", "b"),
+            line("d", "c"),
+            fuse("v", "d", "b", "c", "retry loop: bounded backoff"),
+        ];
+        let beats = fused_beats(&lines);
         assert_eq!(beats.len(), 3);
         assert!(matches!(beats[0], Beat::Single(l) if l.id == "a"));
         assert!(matches!(beats[1], Beat::Fused { lines, .. } if lines.len() == 2));
@@ -162,10 +123,57 @@ mod tests {
 
     #[test]
     fn dangling_views_are_ignored() {
-        let lines = vec![line("a", "")];
-        let views = vec![fuse("nope", "a")];
-        let beats = fused_beats(&lines, &views);
+        let lines = vec![line("a", ""), fuse("v", "a", "nope", "a", "x")];
+        let beats = fused_beats(&lines);
         assert_eq!(beats.len(), 1);
-        assert!(matches!(beats[0], Beat::Single(_)));
+        assert!(matches!(beats[0], Beat::Single(l) if l.id == "a"));
+    }
+
+    #[test]
+    fn later_views_supersede_and_prefixes_render_the_past() {
+        // The motivating case: fuse a span as an active incident, then
+        // append a second view marking it resolved.  The status is a pure
+        // function of the log prefix, with both lines retained.
+        let lines = vec![
+            line("a", ""),
+            line("b", "a"),
+            fuse("v1", "b", "a", "b", "incident: active"),
+            fuse("v2", "v1", "a", "b", "incident: resolved"),
+        ];
+        // Any read between the two views shows it active…
+        let beats = fused_beats(&lines[..3]);
+        assert_eq!(beats.len(), 1);
+        let Beat::Fused { view, lines: fused } = &beats[0] else {
+            panic!("expected a fused beat");
+        };
+        assert_eq!(view.id, "v1");
+        assert_eq!(view.annotation.prose.as_deref(), Some("incident: active"));
+        assert_eq!(fused.len(), 2);
+        // …and any read after shows it resolved, v1 superseded but retained.
+        let beats = fused_beats(&lines);
+        assert_eq!(beats.len(), 1);
+        let Beat::Fused { view, lines: fused } = &beats[0] else {
+            panic!("expected a fused beat");
+        };
+        assert_eq!(view.id, "v2");
+        assert_eq!(view.annotation.prose.as_deref(), Some("incident: resolved"));
+        assert_eq!(fused.len(), 2);
+        assert!(lines.iter().any(|l| l.id == "v1"), "superseded views are retained");
+    }
+
+    #[test]
+    fn non_overlapping_views_coexist() {
+        let lines = vec![
+            line("a", ""),
+            line("b", "a"),
+            line("c", "b"),
+            line("d", "c"),
+            fuse("v1", "d", "a", "b", "first"),
+            fuse("v2", "v1", "c", "d", "second"),
+        ];
+        let beats = fused_beats(&lines);
+        assert_eq!(beats.len(), 2);
+        assert!(matches!(&beats[0], Beat::Fused { view, .. } if view.id == "v1"));
+        assert!(matches!(&beats[1], Beat::Fused { view, .. } if view.id == "v2"));
     }
 }

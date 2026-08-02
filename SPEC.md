@@ -98,8 +98,7 @@ edge of the Wall:
   blobs/ab/cdef01…           # raw content; filename is the sha3-256 hex
   forks/<name>/
     fork                     # anchor reference
-    log.jsonl                # the primary artifact
-    views.jsonl              # fuses; unordered annotations
+    log.jsonl                # the primary artifact; fuse views are lines in it
     lock
   anchors/<sum>.manifest
   index/                     # derived; deleting it is always safe
@@ -190,13 +189,22 @@ Semantics, pinned:
   independently verifiable and corruption bisectable. A line whose arithmetic
   disagrees with its own `sum_after` marks where history stops being
   trustworthy.
-- `provenance` ∈ `"agent" | "andon" | "union"`. When `"andon"`: `reason` MUST
+- `provenance` ∈ `"agent" | "andon" | "union" | "view"`. When `"andon"`: `reason` MUST
   be a non-empty string, `sig` MUST be present (scheme: v0 accepts a detached
   signature blob hash; do not over-specify yet), and `reads` MAY be absent —
   degraded provenance is marked, never faked. When `"union"`: `origin` MUST
   be `{"fork": "…", "id": "…"}` naming the source line; landed lines are new
   lines with new ids, because strata 2–3 may realize fresh deltas and the
-  target chain needs its own linkage.
+  target chain needs its own linkage. When `"view"`: the annotation MUST
+  carry `view` (§2.6), `intent.ops` MUST be empty, and `realized` MUST be
+  empty — a view is an arithmetic identity, so `sum_after` equals the
+  preceding line's.
+- `view`, when present on a line of any provenance, is
+  `{"from": "<line id>", "to": "<line id>"}` naming a fused span (§2.6),
+  and `realized` MUST be empty: a view is a rendering, never a mutation.
+  When union lands a view line, it re-keys `from` and `to` through the
+  `origin → landed id` correspondence it already computes, so the span
+  names lines on the target chain.
 - **Spill rule.** A log line MUST be under 65536 bytes. If `reads` pushes
   past the limit, the array moves whole into a blob and the field becomes
   `{"reads_blob": "<hex>"}`. The log stays line-scannable; the exhaust stays
@@ -204,16 +212,31 @@ Semantics, pinned:
 
 ### §2.6 Views
 
-`views.jsonl` holds fuse records:
+A view is a log line whose annotation carries a fused span:
 
 ```json
-{"kind": "fuse", "from": "<line id>", "to": "<line id>",
- "annotation": {"prose": "…", "author": "…"}}
+{"id": "…", "prev": "…",
+ "intent": {"ops": []}, "realized": [], "sum_after": "<64 hex>",
+ "annotation": {"author": "…", "provenance": "view",
+                "prose": "one narrative beat",
+                "view": {"from": "<line id>", "to": "<line id>"}, …}}
 ```
 
-Views are unordered, unchained, and carry no authority: they are renderings.
-Fusing is lossless by construction because it writes here and never to the
-log.
+Views carry no authority over content: `realized` is empty, so a view is an
+arithmetic identity and every sum, replay, and inversion is blind to it. But
+a view is a line, so it inherits everything lines have: durability (I3),
+byte preservation (I4), transport (§3, §4), union travel (strata 1–2 land an
+identity trivially, re-keying `from`/`to` per §2.5), and the unmerged-work
+protection of fork removal. Fusing is lossless by construction because the
+fused lines remain in the log underneath, forever.
+
+Views are **ordered** by chain position, and rendering at any log prefix is
+a pure function of that prefix: a later view supersedes any earlier view
+whose span it overlaps, with both lines retained. A span may be annotated
+after the fact, and a later view may answer or supersede an earlier one —
+mark a fused span as an active incident, then append a second view marking
+it resolved; any read between the two shows it active, any read after shows
+it resolved. Dangling or reversed spans are ignored at render, never fatal.
 
 ### §2.7 Apply
 
@@ -467,7 +490,8 @@ so it is versioned with the format.
 - **I6** — the native format is human-writable: an editor and one static
   binary suffice to operate the emergency path, and the walkthrough in the
   README is that path's documentation.
-- **I7** — retention is lossless: fuse writes views, never mutations;
+- **I7** — retention is lossless: fuse appends a view line whose realized
+  delta is empty, never a mutation, and the fused lines remain underneath;
   observed exhaust is never discarded; the only deletion is a retired
   re-encoding.
 - **I8** — one writer per fork; the fsync'd log append (loose) and the
