@@ -107,6 +107,23 @@ impl BlobStore {
         fsync_dir(dst.parent().unwrap_or(&self.root))?;
         Ok(hash)
     }
+
+    /// Remove a blob from the pool.  The pool is otherwise append-only (I3);
+    /// the sole sanctioned caller is garbage collection, which removes only
+    /// content no fork or active claim reaches.  An absent blob is a no-op,
+    /// so removal is idempotent.
+    pub fn remove(&self, blob: &str) -> Result<()> {
+        let path = self.path_for(blob)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(ioerr(format!("removing blob {blob}"))(err)),
+        }
+        if let Some(parent) = path.parent() {
+            fsync_dir(parent)?;
+        }
+        Ok(())
+    }
 }
 
 /// fsync a directory so a rename into it is durable.
@@ -149,6 +166,17 @@ mod tests {
         let hash = store.put(b"x").unwrap();
         let path = store.path_for(&hash).unwrap();
         assert!(path.ends_with(format!("{}/{}", &hash[..2], &hash[2..])));
+    }
+
+    #[test]
+    fn remove_is_idempotent() {
+        let store = BlobStore::init(tempdir("remove")).unwrap();
+        let hash = store.put(b"collectible").unwrap();
+        assert!(store.has(&hash).unwrap());
+        store.remove(&hash).unwrap();
+        assert!(!store.has(&hash).unwrap());
+        // Removing an absent blob is a no-op, not an error.
+        store.remove(&hash).unwrap();
     }
 
     #[test]

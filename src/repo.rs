@@ -738,6 +738,66 @@ impl Repository {
         }
         Ok(collected)
     }
+
+    /// The blob hashes any fork or active claim reaches: every fork's anchor
+    /// manifest records, every log line's realized adds (which name every
+    /// blob ever added along the history), each line's spilled read set
+    /// (`reads_blob`) and andon signature (`sig`), and each active claim's
+    /// transcript.  This is the reachability root for [`Repository::gc_blobs`].
+    ///
+    /// Active claims are roots so blob collection never orphans a claim's
+    /// transcript: collect the claim first (`gc-claims`), then the transcript
+    /// becomes collectible in turn.
+    pub fn referenced_blobs(&self) -> Result<BTreeSet<String>> {
+        let mut referenced = BTreeSet::new();
+        for fork in self.fork_names()? {
+            let fork_file = self.read_fork(&fork)?;
+            for record in self.read_anchor_manifest(&fork_file.manifest)?.records() {
+                referenced.insert(record.blob.clone());
+            }
+            for line in self.current_state(&fork)?.lines {
+                for entry in &line.realized {
+                    if let Some(added) = entry.added()? {
+                        referenced.insert(added.blob);
+                    }
+                }
+                if let Some(sig) = &line.annotation.sig {
+                    referenced.insert(sig.clone());
+                }
+                if let Some(reads) = &line.annotation.reads
+                    && let Some(blob) = reads.get("reads_blob").and_then(|v| v.as_str())
+                {
+                    referenced.insert(blob.to_string());
+                }
+            }
+        }
+        for id in self.claim_ids()? {
+            referenced.insert(self.get_claim(&id)?.transcript_sha3);
+        }
+        Ok(referenced)
+    }
+
+    /// Collect blobs no fork or active claim reaches (§2.2).  The pool is
+    /// otherwise append-only (I3); this is the one sanctioned reclamation.
+    /// It removes only unreachable content — e.g. file bytes `tally sum`
+    /// ingested for a working-tree state no fork ever committed, or the
+    /// transcript of a since-collected claim.  Returns the hashes collected,
+    /// or, when `dry_run`, those that would be.
+    pub fn gc_blobs(&self, dry_run: bool) -> Result<Vec<String>> {
+        let referenced = self.referenced_blobs()?;
+        let blobs = self.blobs();
+        let mut collected = Vec::new();
+        for hash in blobs.list()? {
+            if referenced.contains(&hash) {
+                continue;
+            }
+            if !dry_run {
+                blobs.remove(&hash)?;
+            }
+            collected.push(hash);
+        }
+        Ok(collected)
+    }
 }
 
 /// A fork's current state: manifest, sum, head line id, and the verified
@@ -955,5 +1015,42 @@ mod tests {
         assert_eq!(repo.claim_ids().unwrap(), vec![referenced.id.clone()]);
         // Idempotent: a second pass collects nothing.
         assert!(repo.gc_claims(false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn gc_blobs_collects_only_unreachable() {
+        let repo = temp_repo("gc-blobs");
+        // Committed content: reachable through main's log.
+        repo.apply("main", create("/lib.rs", b"committed\n"), note("t")).unwrap();
+        let committed = sha3_hex(b"committed\n");
+        // An active claim's transcript is a root (as `tally claim` writes it).
+        let transcript = repo.blobs().put(b"transcript").unwrap();
+        let claim =
+            Claim::new(&Sum::zero(), "true", Vec::new(), 0, &transcript).unwrap();
+        repo.put_claim(&claim).unwrap();
+        // Exhaust: bytes ingested into the pool but reachable from nowhere,
+        // as `tally sum` leaves for a working-tree file no fork committed.
+        let orphan = repo.blobs().put(b"never committed\n").unwrap();
+
+        let reachable = repo.referenced_blobs().unwrap();
+        assert!(reachable.contains(&committed));
+        assert!(reachable.contains(&transcript));
+        assert!(!reachable.contains(&orphan));
+
+        // Dry run names the orphan without removing it.
+        assert_eq!(repo.gc_blobs(true).unwrap(), vec![orphan.clone()]);
+        assert!(repo.blobs().has(&orphan).unwrap());
+        // Collection removes only the orphan; roots survive.
+        assert_eq!(repo.gc_blobs(false).unwrap(), vec![orphan.clone()]);
+        assert!(!repo.blobs().has(&orphan).unwrap());
+        assert!(repo.blobs().has(&committed).unwrap());
+        assert!(repo.blobs().has(&transcript).unwrap());
+        // Idempotent.
+        assert!(repo.gc_blobs(false).unwrap().is_empty());
+
+        // Collecting the claim unroots its transcript, which then collects.
+        repo.gc_claims(false).unwrap();
+        assert_eq!(repo.gc_blobs(false).unwrap(), vec![transcript.clone()]);
+        assert!(!repo.blobs().has(&transcript).unwrap());
     }
 }

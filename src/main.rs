@@ -41,6 +41,7 @@ claims:
   claims                           list claims (--stale for drifted ones)
   archive-claims <store>           move claims verifiably retained by the store to archive/ (--dry-run)
   gc-claims                        collect local claims no fork's log refers to (--dry-run)
+  gc-blobs                         collect blobs no fork or active claim reaches (--dry-run)
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
@@ -81,6 +82,7 @@ fn main() {
         "claims" => cmd_claims(&rest),
         "archive-claims" => cmd_archive_claims(&rest),
         "gc-claims" => cmd_gc_claims(&rest),
+        "gc-blobs" => cmd_gc_blobs(&rest),
         "fork" => cmd_fork(&rest),
         "union" => cmd_union(&rest),
         "submit" => cmd_submit(&rest),
@@ -577,6 +579,27 @@ fn cmd_gc_claims(args: &[&str]) -> Result<()> {
         }
     }
     println!("{} unreferenced claim(s)", collected.len());
+    Ok(())
+}
+
+fn cmd_gc_blobs(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(flag, "Report what would be collected without removing anything.")]
+        dry_run: bool,
+    }
+    let (options, _) =
+        Options::from_arguments_relaxed("USAGE: tally gc-blobs [--dry-run]", args);
+    let repo = repo()?;
+    let collected = repo.gc_blobs(options.dry_run)?;
+    for hash in &collected {
+        if options.dry_run {
+            println!("would collect {hash}");
+        } else {
+            println!("collected {hash}");
+        }
+    }
+    println!("{} unreachable blob(s)", collected.len());
     Ok(())
 }
 
