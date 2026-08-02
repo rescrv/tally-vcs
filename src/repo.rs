@@ -4,6 +4,7 @@
 //! `blobs/`, `forks/*/log.jsonl`, `anchors/`, and `claims/` are append-only
 //! or immutable (I3); `index/` is a cache and deleting it is always safe.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -697,6 +698,46 @@ impl Repository {
         ids.sort();
         Ok(ids)
     }
+
+    /// The claim ids some fork's log refers to (`annotation.claims`, §2.7).
+    /// A reference is the only durable link between a fork and a claim; a
+    /// claim no line names is exhaust, kept until collected.
+    pub fn referenced_claim_ids(&self) -> Result<BTreeSet<String>> {
+        let mut referenced = BTreeSet::new();
+        for fork in self.fork_names()? {
+            for line in self.current_state(&fork)?.lines {
+                for id in line.annotation.claims {
+                    referenced.insert(id);
+                }
+            }
+        }
+        Ok(referenced)
+    }
+
+    /// Collect active claims no fork's log refers to (§2.7).  Unlike
+    /// [`Repository::archive_claim`], this is a deletion: the claim's bytes
+    /// are removed.  It is safe because the collected claims are unreachable
+    /// — no line names them, so no history depends on them; a bare `tally
+    /// claim` result no narrative ever wove in is exhaust.  Returns the ids
+    /// collected, or, when `dry_run`, those that would be.
+    pub fn gc_claims(&self, dry_run: bool) -> Result<Vec<String>> {
+        let referenced = self.referenced_claim_ids()?;
+        let mut collected = Vec::new();
+        for id in self.claim_ids()? {
+            if referenced.contains(&id) {
+                continue;
+            }
+            if !dry_run {
+                let path = self.dot.join("claims").join(format!("{id}.json"));
+                fs::remove_file(&path).map_err(ioerr(format!("removing claim {id}")))?;
+            }
+            collected.push(id);
+        }
+        if !dry_run && !collected.is_empty() {
+            fsync_dir(self.dot.join("claims").as_path())?;
+        }
+        Ok(collected)
+    }
 }
 
 /// A fork's current state: manifest, sum, head line id, and the verified
@@ -881,5 +922,38 @@ mod tests {
         assert_eq!(back, claim);
         assert!(!back.is_stale_at(&state.manifest).unwrap());
         assert_eq!(repo.claim_ids().unwrap(), vec![claim.id.clone()]);
+    }
+
+    #[test]
+    fn gc_claims_collects_only_unreferenced() {
+        let repo = temp_repo("gc-claims");
+        repo.apply("main", create("/lib.rs", b"v1\n"), note("t")).unwrap();
+        let state = repo.current_state("main").unwrap();
+        let inputs: Vec<ElementRecord> = state.manifest.records().cloned().collect();
+        // A referenced claim: a later line names it in its annotation.
+        let referenced =
+            Claim::new(&state.sum, "cargo test", inputs, 0, &sha3_hex(b"ok")).unwrap();
+        repo.put_claim(&referenced).unwrap();
+        let mut annotation = note("t");
+        annotation.claims = vec![referenced.id.clone()];
+        repo.apply("main", create("/new.rs", b"n\n"), annotation).unwrap();
+        // An orphan claim no line ever names.
+        let orphan =
+            Claim::new(&Sum::zero(), "true", Vec::new(), 0, &sha3_hex(b"bare")).unwrap();
+        repo.put_claim(&orphan).unwrap();
+
+        // The referenced set is exactly the woven-in claim.
+        assert_eq!(
+            repo.referenced_claim_ids().unwrap().into_iter().collect::<Vec<_>>(),
+            vec![referenced.id.clone()],
+        );
+        // Dry run reports the orphan without deleting it.
+        assert_eq!(repo.gc_claims(true).unwrap(), vec![orphan.id.clone()]);
+        assert!(repo.claim_ids().unwrap().contains(&orphan.id));
+        // The real collection removes only the orphan.
+        assert_eq!(repo.gc_claims(false).unwrap(), vec![orphan.id.clone()]);
+        assert_eq!(repo.claim_ids().unwrap(), vec![referenced.id.clone()]);
+        // Idempotent: a second pass collects nothing.
+        assert!(repo.gc_claims(false).unwrap().is_empty());
     }
 }
