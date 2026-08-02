@@ -555,7 +555,7 @@ impl Repository {
     }
 
     /// Materialize a full working tree for `manifest` under the repository
-    /// root (`tally materialize`).
+    /// root (`abelian materialize`).
     pub fn materialize(&self, manifest: &Manifest) -> Result<()> {
         let blobs = self.blobs();
         for record in manifest.records() {
@@ -565,7 +565,7 @@ impl Repository {
     }
 
     /// §1 by hand, automated: walk the working tree and produce every
-    /// element record (`tally sum`).  Blob contents are ingested into the
+    /// element record (`abelian sum`).  Blob contents are ingested into the
     /// pool so the records are always materializable.
     pub fn records_of_working_tree(&self) -> Result<Vec<ElementRecord>> {
         let ignore = match fs::read_to_string(self.root.join(".abelianignore")) {
@@ -632,7 +632,7 @@ impl Repository {
         Ok(())
     }
 
-    /// `tally check`: recompute the working tree's sum and compare against
+    /// `abelian check`: recompute the working tree's sum and compare against
     /// the log's expectation.
     pub fn check(&self, fork: &str) -> Result<(Sum, Sum)> {
         let expected = self.current_state(fork)?.sum;
@@ -643,7 +643,7 @@ impl Repository {
         Ok((expected, actual))
     }
 
-    /// `tally snapshot`: write a manifest at the current state and repoint
+    /// `abelian snapshot`: write a manifest at the current state and repoint
     /// the fork file at it; earlier log lines remain (§2.4).
     pub fn snapshot(&self, fork: &str) -> Result<String> {
         let _lock = self.lock_fork(fork)?;
@@ -726,7 +726,7 @@ impl Repository {
 
     /// Collect blobs no fork reaches (§2.2).  The pool is otherwise
     /// append-only (I3); this is the one sanctioned reclamation.  It removes
-    /// only unreachable content — e.g. file bytes `tally sum` ingested for a
+    /// only unreachable content — e.g. file bytes `abelian sum` ingested for a
     /// working-tree state no fork ever committed.  Returns the hashes
     /// collected, or, when `dry_run`, those that would be.
     pub fn gc_blobs(&self, dry_run: bool) -> Result<Vec<String>> {
@@ -839,7 +839,7 @@ mod tests {
         // The working tree reflects the applied state.
         let on_disk = fs::read(repo.root().join("src/main.rs")).unwrap();
         assert!(on_disk.windows(8).any(|w| w == b"/* ed */"));
-        // And tally check agrees.
+        // And abelian check agrees.
         let (expected, actual) = repo.check("main").unwrap();
         assert_eq!(expected, actual);
     }
@@ -981,7 +981,7 @@ mod tests {
         annotation.reads = Some(serde_json::json!({"reads_blob": spilled}));
         repo.apply("main", create("/read.rs", b"r\n"), annotation).unwrap();
         // Exhaust: bytes ingested into the pool but reachable from nowhere,
-        // as `tally sum` leaves for a working-tree file no fork committed.
+        // as `abelian sum` leaves for a working-tree file no fork committed.
         let orphan = repo.blobs().put(b"never committed\n").unwrap();
 
         let reachable = repo.referenced_blobs().unwrap();

@@ -1,8 +1,9 @@
-//! tally: the command over the abelian substrate.
+//! abelian: the command over the abelian substrate.
 //!
-//! Named for the split tally stick — the twelfth century's distributed,
-//! two-party, checksummed ledger.  Every subcommand here automates a step
-//! the README teaches by hand; with zero `tally` binaries available, the
+//! Named for the group.  Its merge takes after the split tally stick — the
+//! twelfth century's distributed, two-party, checksummed ledger.  Every
+//! subcommand here automates a step
+//! the README teaches by hand; with zero `abelian` binaries available, the
 //! README remains a complete, operable version control system.
 
 use std::process::exit;
@@ -18,7 +19,7 @@ use abelian::views::{Beat, fused_beats};
 use abelian::wire::FsStore;
 use abelian::{Error, Result};
 
-const USAGE: &str = "USAGE: tally <command> [options] [args]
+const USAGE: &str = "USAGE: abelian <command> [options] [args]
 
 repository:
   init [--from-git COMMIT]         create a repository here (anchored at a git commit's tree)
@@ -88,13 +89,13 @@ fn main() {
             return;
         }
         other => {
-            eprintln!("tally: unknown command {other:?}\n");
+            eprintln!("abelian: unknown command {other:?}\n");
             eprint!("{USAGE}");
             exit(64);
         }
     };
     if let Err(err) = result {
-        eprintln!("tally {command}: {err}");
+        eprintln!("abelian {command}: {err}");
         exit(1);
     }
 }
@@ -149,7 +150,7 @@ fn cmd_init(args: &[&str]) -> Result<()> {
         git: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally init [--from-git COMMIT] [dir]", args);
+        Options::from_arguments_relaxed("USAGE: abelian init [--from-git COMMIT] [dir]", args);
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
         None => std::env::current_dir().map_err(abelian::ioerr("getting cwd"))?,
@@ -179,7 +180,7 @@ fn cmd_sum(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print only the sum, not the records.")]
         quiet: bool,
     }
-    let (options, _) = Options::from_arguments_relaxed("USAGE: tally sum [--quiet]", args);
+    let (options, _) = Options::from_arguments_relaxed("USAGE: abelian sum [--quiet]", args);
     let repo = repo()?;
     let records = repo.records_of_working_tree()?;
     let mut sum = Sum::zero();
@@ -195,7 +196,7 @@ fn cmd_sum(args: &[&str]) -> Result<()> {
 
 fn cmd_check(args: &[&str]) -> Result<()> {
     let (options, _) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally check [--fork FORK]", args);
+        ForkOptions::from_arguments_relaxed("USAGE: abelian check [--fork FORK]", args);
     let repo = repo()?;
     let (expected, actual) = repo.check(options.fork())?;
     println!("log expects   {}", expected.hexdigest());
@@ -211,7 +212,7 @@ fn cmd_check(args: &[&str]) -> Result<()> {
 
 fn cmd_snapshot(args: &[&str]) -> Result<()> {
     let (options, _) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally snapshot [--fork FORK]", args);
+        ForkOptions::from_arguments_relaxed("USAGE: abelian snapshot [--fork FORK]", args);
     let repo = repo()?;
     let sum = repo.snapshot(options.fork())?;
     println!("anchored {} at {sum}", options.fork());
@@ -220,7 +221,7 @@ fn cmd_snapshot(args: &[&str]) -> Result<()> {
 
 fn cmd_materialize(args: &[&str]) -> Result<()> {
     let (options, free) = ForkOptions::from_arguments_relaxed(
-        "USAGE: tally materialize [--fork FORK] <sum>",
+        "USAGE: abelian materialize [--fork FORK] <sum>",
         args,
     );
     let Some(sum_hex) = free.first() else {
@@ -235,7 +236,7 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
 
 fn cmd_apply(args: &[&str]) -> Result<()> {
     let (options, free) = ApplyOptions::from_arguments_relaxed(
-        "USAGE: tally apply [options] <patch.json>",
+        "USAGE: abelian apply [options] <patch.json>",
         args,
     );
     let Some(patch_path) = free.first() else {
@@ -288,7 +289,7 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_log(args: &[&str]) -> Result<()> {
-    let (options, _) = ForkOptions::from_arguments_relaxed("USAGE: tally log [--fork FORK]", args);
+    let (options, _) = ForkOptions::from_arguments_relaxed("USAGE: abelian log [--fork FORK]", args);
     let repo = repo()?;
     let state = repo.current_state(options.fork())?;
     for line in state.lines.iter().rev() {
@@ -326,7 +327,7 @@ fn print_prose(header: &str, prose: &str) {
 
 fn cmd_show(args: &[&str]) -> Result<()> {
     let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally show [--fork FORK] <id>", args);
+        ForkOptions::from_arguments_relaxed("USAGE: abelian show [--fork FORK] <id>", args);
     let Some(id) = free.first() else {
         return Err(Error::Invalid("show requires a line id".to_string()));
     };
@@ -352,7 +353,7 @@ fn cmd_read(args: &[&str]) -> Result<()> {
         raw: bool,
     }
     let (options, _) = Options::from_arguments_relaxed(
-        "USAGE: tally read [--fork FORK] [--fused|--raw]",
+        "USAGE: abelian read [--fork FORK] [--fused|--raw]",
         args,
     );
     let repo = repo()?;
@@ -393,7 +394,7 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         author: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally fuse [--fork FORK] [--prose P] <from-id> <to-id>",
+        "USAGE: abelian fuse [--fork FORK] [--prose P] <from-id> <to-id>",
         args,
     );
     let (Some(from), Some(to)) = (free.first(), free.get(1)) else {
@@ -421,7 +422,7 @@ fn cmd_gc_blobs(args: &[&str]) -> Result<()> {
         dry_run: bool,
     }
     let (options, _) =
-        Options::from_arguments_relaxed("USAGE: tally gc-blobs [--dry-run]", args);
+        Options::from_arguments_relaxed("USAGE: abelian gc-blobs [--dry-run]", args);
     let repo = repo()?;
     let collected = repo.gc_blobs(options.dry_run)?;
     for hash in &collected {
@@ -442,7 +443,7 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
         from: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally fork [--from FORK] <name>", args);
+        Options::from_arguments_relaxed("USAGE: abelian fork [--from FORK] <name>", args);
     let Some(name) = free.first() else {
         return Err(Error::Invalid("fork requires a name".to_string()));
     };
@@ -459,7 +460,7 @@ fn cmd_remove_fork(args: &[&str]) -> Result<()> {
         force: bool,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally remove-fork [--force] <name>", args);
+        Options::from_arguments_relaxed("USAGE: abelian remove-fork [--force] <name>", args);
     let Some(name) = free.first() else {
         return Err(Error::Invalid("remove-fork requires a fork name".to_string()));
     };
@@ -478,7 +479,7 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         author: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally union [--into FORK] <fork>",
+        "USAGE: abelian union [--into FORK] <fork>",
         args,
     );
     let Some(source) = free.first() else {
@@ -514,7 +515,7 @@ fn cmd_submit(args: &[&str]) -> Result<()> {
         author: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally submit [--author A] <file|->", args);
+        Options::from_arguments_relaxed("USAGE: abelian submit [--author A] <file|->", args);
     let Some(path) = free.first() else {
         return Err(Error::Invalid("submit requires a file (or - for stdin)".to_string()));
     };
@@ -537,7 +538,7 @@ fn cmd_submit(args: &[&str]) -> Result<()> {
     let author = options.author.unwrap_or_else(whoami);
     println!("submission {hash} filed by {author}");
     println!("next: an agent re-enacts it through its own instrumented toolchain:");
-    println!("  tally enact {hash} <patch.json>");
+    println!("  abelian enact {hash} <patch.json>");
     Ok(())
 }
 
@@ -552,7 +553,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
         prose: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally enact [options] <submission-blob> <patch.json>",
+        "USAGE: abelian enact [options] <submission-blob> <patch.json>",
         args,
     );
     let (Some(submission), Some(patch_path)) = (free.first(), free.get(1)) else {
@@ -561,7 +562,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
     let repo = repo()?;
     if !repo.blobs().has(submission)? {
         return Err(Error::Invalid(format!(
-            "submission {submission} is not in the blob pool; file it with tally submit"
+            "submission {submission} is not in the blob pool; file it with abelian submit"
         )));
     }
     let bytes =
@@ -590,7 +591,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
 fn cmd_clone(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally clone <store> <dest>", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: abelian clone <store> <dest>", args);
     let (Some(store), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("clone requires <store> <dest>".to_string()));
     };
@@ -603,7 +604,7 @@ fn cmd_clone(args: &[&str]) -> Result<()> {
 fn cmd_fetch(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally fetch <store> <cache>", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: abelian fetch <store> <cache>", args);
     let (Some(store), Some(cache)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("fetch requires <store> <cache>".to_string()));
     };
@@ -622,7 +623,7 @@ fn cmd_push(args: &[&str]) -> Result<()> {
         level: Option<i32>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally push [--level N] <store>", args);
+        Options::from_arguments_relaxed("USAGE: abelian push [--level N] <store>", args);
     let Some(store) = free.first() else {
         return Err(Error::Invalid("push requires <store>".to_string()));
     };
@@ -640,7 +641,7 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
         level: Option<i32>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally pack [--level N] <dir>", args);
+        Options::from_arguments_relaxed("USAGE: abelian pack [--level N] <dir>", args);
     let Some(dir) = free.first() else {
         return Err(Error::Invalid("pack requires an output directory".to_string()));
     };
@@ -659,7 +660,7 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
 fn cmd_unpack(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally unpack <dir> <dest>", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: abelian unpack <dir> <dest>", args);
     let (Some(dir), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("unpack requires <dir> <dest>".to_string()));
     };

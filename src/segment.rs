@@ -194,7 +194,7 @@ pub struct BuiltSegment {
 }
 
 /// Build a segment from inputs.  The payload is a single standard zstd
-/// frame so a raw segment yields to `zstd -d` without `tally` present;
+/// frame so a raw segment yields to `zstd -d` without `abelian` present;
 /// `level` is a packing policy (§5), on the encoding side of the Wall.
 pub fn build_segment(inputs: &[SegmentInput], level: i32) -> Result<BuiltSegment> {
     let mut frame_plain = Vec::new();
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn pk_is_standard_zstd() {
         // The emergency path: a raw segment yields to plain zstd decoding
-        // without tally present.
+        // without abelian present.
         let built = build_segment(&[SegmentInput::Blob(b"emergency".to_vec())], 19).unwrap();
         let plain = zstd::stream::decode_all(&built.pk[..]).unwrap();
         assert_eq!(plain, b"emergency");

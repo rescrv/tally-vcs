@@ -9,7 +9,7 @@ license = "Apache-2.0"
 name = "abelian"
 
 [[bin]]
-name = "tally"
+name = "abelian"
 path = "src/main.rs"
 
 [dependencies]

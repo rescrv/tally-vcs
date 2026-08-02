@@ -143,7 +143,7 @@ sum <64 hex>
 
 Records sorted bytewise. Sorting serves humans and diff tools; the sum is
 order-blind. A manifest whose `sum` disagrees with the fold of its records is
-corrupt. Manifests are compactions — derived, never primary. `tally snapshot`
+corrupt. Manifests are compactions — derived, never primary. `abelian snapshot`
 writes one and MAY repoint the fork file at it; earlier log lines remain.
 
 ### §2.5 The log
@@ -274,7 +274,7 @@ seg/<segid>.idx              # entry table, plain text
 `segid` is the lowercase hex SHA3-256 of the `.pk` bytes — segments are
 content-addressed, so immutability is enforced by naming, uploads are
 idempotent, and caches never invalidate. `.pk` payloads use standard zstd
-frames so that a raw segment yields to `zstd -d` without `tally` present.
+frames so that a raw segment yields to `zstd -d` without `abelian` present.
 
 `.idx` is one line per entry, space-separated, LF-terminated:
 
@@ -450,7 +450,7 @@ uses against object storage.
 
 **Andon over the wire.** The emergency path is loose-first: fetch, unpack,
 operate per the README with an editor and stdlib Python, repack, push. With
-no `tally` at all this requires `curl`, `zstd`, and Python — acceptable, and
+no `abelian` at all this requires `curl`, `zstd`, and Python — acceptable, and
 the reason `.pk` uses standard zstd frames and `.idx` is plain text.
 
 Authorization is storage ACL plus the `sig` requirement on andon lines;

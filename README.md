@@ -12,10 +12,11 @@ documented below.
 
 The system is named for the group. State identity in abelian forms an abelian
 group: patches are elements, composition is addition, undo is the inverse, and
-order never matters. The command is named `tally`, for the split tally stick —
-the twelfth century's distributed, two-party, checksummed ledger. Notch the
+order never matters. The command shares the name. Its merge takes after the
+split tally stick — the twelfth century's distributed, two-party, checksummed
+ledger. Notch the
 stick, split it lengthwise, keep the *stock*, hand over the *foil*; settlement
-is whether the halves still align. `tally union` is pressing the halves
+is whether the halves still align. `abelian union` is pressing the halves
 together.
 
 abelian descends from the patch-theory lineage of darcs and Pijul —
@@ -28,10 +29,10 @@ abelian's authors do not.
 ## How to read this document
 
 This README teaches abelian by hand: a text editor, coreutils, and a few lines
-of Python. At every step, the `tally` command that automates the step is named
+of Python. At every step, the `abelian` command that automates the step is named
 in passing. Do not skip the by-hand path, because it is not pedagogy alone.
 abelian guarantees that with zero models available — and, if necessary, zero
-`tally` binaries available — the substrate degrades to a complete, operable
+`abelian` binaries available — the substrate degrades to a complete, operable
 version control system. The procedure for operating it in that state is this
 document. If you finish the walkthrough, you have finished the spec, and you
 are holding the emergency cord. We will name it when we get there.
@@ -62,7 +63,7 @@ python3 -c "import hashlib,sys; print(hashlib.sha3_256(open(sys.argv[1],'rb').re
 # then write:  100644 <TAB> /src/main.rs <TAB> <that hex> <LF>
 ```
 
-`tally sum` walks the working tree and produces every record automatically.
+`abelian sum` walks the working tree and produces every record automatically.
 
 ## 2. The sum
 
@@ -104,7 +105,7 @@ Fold every element record in your tree through `add`, starting from zeros.
 The order in which you fold does not matter. That sentence is the entire
 design; everything below is a consequence of it.
 
-Three laws, which you can check by hand and which `tally` property-tests:
+Three laws, which you can check by hand and which `abelian` property-tests:
 
 1. **Commutativity and associativity.** Any fold order yields the same sum.
 2. **Identity and inverses.** Zeros is the empty state; `add(s, neg(s))` is
@@ -121,7 +122,7 @@ attests; the manifest adjudicates.** No remove is ever applied without a
 membership check against the manifest (§3). The checksum proves you did what
 you said; only the manifest can prove what you said was meaningful.
 
-`tally sum` computes the working tree's sum. `tally check` recomputes it and
+`abelian sum` computes the working tree's sum. `abelian check` recomputes it and
 compares against the log's expectation.
 
 ## 3. Snapshots
@@ -147,7 +148,7 @@ log, the way an SST is a compaction of a WAL. You never need a manifest to
 know a state's identity — the log's arithmetic gives you that — only to
 adjudicate membership and to materialize working trees.
 
-`tally snapshot` writes a manifest at the current state. `tally materialize
+`abelian snapshot` writes a manifest at the current state. `abelian materialize
 <sum>` produces a working tree from the nearest anchor plus replayed patches.
 
 ## 4. Patches
@@ -207,7 +208,7 @@ Apply a patch by hand:
 5. Check each removed record against the manifest first — the placeholder-debt
    rule from §2 is enforced *here*, at application, always.
 
-`tally apply <patch.json>` does all five steps, atomically, and appends to the
+`abelian apply <patch.json>` does all five steps, atomically, and appends to the
 log.
 
 ## 5. The log
@@ -246,7 +247,7 @@ model exhaust costs north of $10,000 in tokens; storing it costs about $0.02
 per month. Information the harness observed and discarded is the only true
 waste in this system. `fuse` (§7) is lossless for the same reason.
 
-`tally log` renders the chain; `tally show <id>` renders one line at any
+`abelian log` renders the chain; `abelian show <id>` renders one line at any
 granularity.
 
 ## 6. Fork and union
@@ -261,7 +262,7 @@ anchor 3b9f…e2
 That is the whole file. Forks are what git called branches and also what a
 harness calls sessions; abelian does not distinguish. Abandoned forks are not
 deleted — they are the searchable, auditable exhaust of work that didn't ship.
-`tally fork <name>` writes the file and materializes a working tree if asked.
+`abelian fork <name>` writes the file and materializes a working tree if asked.
 
 **Union** brings a fork's log into a target state, and it is stratified so
 that each stratum is strictly cheaper than the next and almost all work stops
@@ -290,7 +291,7 @@ reordering commuting patches changes nothing the substrate can see, so
 history-rewriting is a rendering option (§7), not an operation.
 
 By hand, union is a loop over incoming log lines applying strata 1–3 with the
-tools you already built in §§2–5. `tally union <fork>` runs the loop and
+tools you already built in §§2–5. `abelian union <fork>` runs the loop and
 stops before stratum 4 unless invited.
 
 ## 7. Fuse and reading
@@ -313,7 +314,7 @@ the target's ids, so the narrative survives fuse → union → remove-fork. And
 because views are ordered, a span can be annotated after the fact and a
 later view supersedes an earlier one it overlaps — fuse a span as an active
 incident, later mark it resolved; both lines stay, and any log prefix
-renders the status it had then. `tally read` renders at a chosen zoom:
+renders the status it had then. `abelian read` renders at a chosen zoom:
 `--fused` for the human narrative, `--raw` for the tool-call stream. The
 human view of history is a default zoom level, not a different interface.
 
@@ -341,7 +342,7 @@ implementation becomes the agent's problem. The human signs the predicate,
 not the patch.
 
 Provenance is a chain, retained verbatim: human PR → agent session → span
-patches. `tally submit` opens the negotiation; `tally enact` runs the
+patches. `abelian submit` opens the negotiation; `abelian enact` runs the
 re-enactment under a maintainer policy.
 
 Policy — which checks must pass for a union into a given fork, who may pull
@@ -352,7 +353,7 @@ in a Datalog layer over the log, not in this document.
 
 Now the reveal, though you may have seen it coming: **you have just operated
 abelian end to end with an editor and eleven lines of Python.** No model. If
-you used the Python instead of the binary, no `tally` either.
+you used the Python instead of the binary, no `abelian` either.
 
 That was the point. This walkthrough is the **Andon cord**: the guaranteed
 path by which a human applies a non-interpreted patch with no LLM in the
@@ -360,8 +361,8 @@ loop. The 3 a.m. security fix, the provider outage, the maintainer-agent that
 *is* the bug — you pull the cord:
 
 1. Write the intent JSON by hand (§4).
-2. Apply it: `tally apply --provenance=andon --reason="CVE-2026-…" --sign`,
-   or, if even `tally` is unavailable, the five steps of §4 and a hand-written
+2. Apply it: `abelian apply --provenance=andon --reason="CVE-2026-…" --sign`,
+   or, if even `abelian` is unavailable, the five steps of §4 and a hand-written
    log line with `"provenance": "andon"`.
 3. The patch is a first-class citizen of the mechanical layer — exact-match
    validation, membership check, sum update, chained log line. What it
@@ -404,6 +405,6 @@ because generation costs five orders of magnitude more than storage.
 
 ---
 
-*abelian* is the group. *tally* is the stick: the stock stays with the
+*abelian* is the group; its merge is the stick: the stock stays with the
 substrate, the foil goes home with you, and history is whatever still aligns
 when you press the halves together.

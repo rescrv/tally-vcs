@@ -179,10 +179,10 @@ pub fn derive_records(git_dir: &Path, commit: &str) -> Result<Vec<ElementRecord>
 /// tree of a git commit.  Returns the repository and the resolved commit.
 ///
 /// `git_dir` names the git repository to read; it defaults to `root` (the
-/// common case: `tally init --from-git HEAD` inside a checkout).  Every
+/// common case: `abelian init --from-git HEAD` inside a checkout).  Every
 /// entry is validated before anything is written; an incompatible entry
 /// errors loudly and leaves no `.abelian` behind.  The working tree is not
-/// touched — `tally materialize` produces one if wanted.
+/// touched — `abelian materialize` produces one if wanted.
 pub fn init_from_git(
     root: impl Into<PathBuf>,
     git_dir: Option<&Path>,
