@@ -232,6 +232,60 @@ impl Repository {
         ForkFile::parse(&bytes)
     }
 
+    /// Remove a fork: delete `forks/<name>/` and everything under it.
+    ///
+    /// Like `git branch -d`, this refuses when the fork carries log lines no
+    /// other fork's log has taken up, so deleting it would drop the only copy
+    /// of that work; `force` is the `-D` escape hatch that deletes anyway.  A
+    /// line counts as taken up when another fork carries it outright or
+    /// carries a union line whose `origin` names it (union re-seals ids, so
+    /// the origin is the linkage, §2.5).  The `main` fork is never removable —
+    /// the empty repository always has it (§2.3).
+    pub fn remove_fork(&self, name: &str, force: bool) -> Result<()> {
+        validate_fork_name(name)?;
+        if name == "main" {
+            return Err(Error::Invalid("refusing to remove the main fork".to_string()));
+        }
+        let dir = self.fork_dir(name);
+        if !dir.exists() {
+            return Err(Error::Invalid(format!("no such fork: {name}")));
+        }
+        if !force {
+            let mine = self.current_state(name)?;
+            if !mine.lines.is_empty() {
+                let mut carried = BTreeSet::new();
+                for other in self.fork_names()? {
+                    if other == name {
+                        continue;
+                    }
+                    for line in self.current_state(&other)?.lines {
+                        if let Some(origin) = &line.annotation.origin
+                            && origin.fork == name
+                        {
+                            carried.insert(origin.id.clone());
+                        }
+                        carried.insert(line.id);
+                    }
+                }
+                let unmerged = mine.lines.iter().filter(|l| !carried.contains(&l.id)).count();
+                if unmerged > 0 {
+                    return Err(Error::Invalid(format!(
+                        "fork {name} has {unmerged} line(s) not merged into another fork; \
+                         pass --force to delete it anyway"
+                    )));
+                }
+            }
+        }
+        // Take the lock so no writer is mid-append, then drop it before the
+        // directory (and the lock file with it) goes away.
+        {
+            let _lock = self.lock_fork(name)?;
+        }
+        fs::remove_dir_all(&dir).map_err(ioerr(format!("removing fork {name}")))?;
+        fsync_dir(self.dot.join("forks").as_path())?;
+        Ok(())
+    }
+
     /// Take the fork's writer lock (I8: one writer per fork log).
     pub fn lock_fork(&self, name: &str) -> Result<ForkLock> {
         let path = self.fork_dir(name).join("lock");
@@ -968,6 +1022,43 @@ mod tests {
         repo.apply("session-1", create("/b", b"b\n"), note("t")).unwrap();
         assert_eq!(repo.current_state("main").unwrap().manifest.len(), 1);
         assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
+    }
+
+    #[test]
+    fn remove_fork_refuses_unmerged_but_force_deletes() {
+        let repo = temp_repo("rm-fork");
+        repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
+        repo.create_fork("scratch", "main").unwrap();
+        repo.apply("scratch", create("/b", b"b\n"), note("t")).unwrap();
+        // Unmerged work: -d equivalent refuses.
+        assert!(repo.remove_fork("scratch", false).is_err());
+        assert!(repo.fork_names().unwrap().contains(&"scratch".to_string()));
+        // -D equivalent deletes it regardless.
+        repo.remove_fork("scratch", true).unwrap();
+        assert!(!repo.fork_names().unwrap().contains(&"scratch".to_string()));
+    }
+
+    #[test]
+    fn remove_fork_allows_merged_and_empty() {
+        let repo = temp_repo("rm-merged");
+        repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
+        // An empty fork carries no work: safe to remove without force.
+        repo.create_fork("empty", "main").unwrap();
+        repo.remove_fork("empty", false).unwrap();
+        // A fork whose work is unioned into main is merged: safe too.
+        repo.create_fork("done", "main").unwrap();
+        repo.apply("done", create("/c", b"c\n"), note("t")).unwrap();
+        crate::union::union(&repo, "done", "main", "maintainer").unwrap();
+        repo.remove_fork("done", false).unwrap();
+        assert_eq!(repo.fork_names().unwrap(), vec!["main".to_string()]);
+    }
+
+    #[test]
+    fn remove_fork_never_removes_main() {
+        let repo = temp_repo("rm-main");
+        assert!(repo.remove_fork("main", false).is_err());
+        assert!(repo.remove_fork("main", true).is_err());
+        assert!(repo.remove_fork("nope", false).is_err());
     }
 
     #[test]

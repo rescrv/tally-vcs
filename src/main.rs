@@ -45,6 +45,7 @@ claims:
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
+  remove-fork <name>               delete a fork; refuses unmerged work unless --force
   union <fork>                     bring a fork's log into another (strata 1-4)
 
 authors:
@@ -84,6 +85,7 @@ fn main() {
         "gc-claims" => cmd_gc_claims(&rest),
         "gc-blobs" => cmd_gc_blobs(&rest),
         "fork" => cmd_fork(&rest),
+        "remove-fork" => cmd_remove_fork(&rest),
         "union" => cmd_union(&rest),
         "submit" => cmd_submit(&rest),
         "enact" => cmd_enact(&rest),
@@ -617,6 +619,23 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
     let repo = repo()?;
     let fork = repo.create_fork(name, options.from.as_deref().unwrap_or("main"))?;
     println!("fork {name} anchored at {}", fork.anchor);
+    Ok(())
+}
+
+fn cmd_remove_fork(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(flag, "Delete even work no other fork has taken up (git branch -D).")]
+        force: bool,
+    }
+    let (options, free) =
+        Options::from_arguments_relaxed("USAGE: tally remove-fork [--force] <name>", args);
+    let Some(name) = free.first() else {
+        return Err(Error::Invalid("remove-fork requires a fork name".to_string()));
+    };
+    let repo = repo()?;
+    repo.remove_fork(name, options.force)?;
+    println!("removed fork {name}");
     Ok(())
 }
 
