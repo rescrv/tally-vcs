@@ -178,8 +178,8 @@ impl ElementRecord {
         format!("{}\t{}\t{}\n", self.mode, self.path, self.blob).into_bytes()
     }
 
-    /// The canonical record as a string sans trailing newline, as claims
-    /// store their inputs (§2.7).
+    /// The canonical record as a string sans trailing newline, as realized
+    /// deltas store their entries (§2.5).
     pub fn to_line(&self) -> String {
         format!("{}\t{}\t{}", self.mode, self.path, self.blob)
     }

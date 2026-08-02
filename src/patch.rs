@@ -194,7 +194,7 @@ pub fn replace_unique(
 }
 
 /// Validate and apply an intent against a manifest and blob store.  On any
-/// failure, nothing is written anywhere (§2.8 step 2: any failure → write
+/// failure, nothing is written anywhere (§2.7 step 2: any failure → write
 /// nothing).  On success the manifest reflects the new state and the
 /// returned realization carries the deltas and new blob contents.
 pub fn apply_intent(

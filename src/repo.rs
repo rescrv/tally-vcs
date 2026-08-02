@@ -1,8 +1,8 @@
 //! §2 The loose format: the logical content, laid out on a filesystem.
 //!
 //! The interchange form, the emergency form, and the definition of truth.
-//! `blobs/`, `forks/*/log.jsonl`, `anchors/`, and `claims/` are append-only
-//! or immutable (I3); `index/` is a cache and deleting it is always safe.
+//! `blobs/`, `forks/*/log.jsonl`, and `anchors/` are append-only or
+//! immutable (I3); `index/` is a cache and deleting it is always safe.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -10,7 +10,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::blobs::{BlobStore, fsync_dir};
-use crate::claims::Claim;
 use crate::fork::{ForkFile, validate_fork_name};
 use crate::ident::{ElementRecord, Sum};
 use crate::ignore::Ignore;
@@ -68,7 +67,7 @@ impl Repository {
         }
         fs::create_dir_all(&dot).map_err(ioerr("creating .abelian"))?;
         fs::write(dot.join("version"), VERSION).map_err(ioerr("writing version"))?;
-        for sub in ["forks", "anchors", "claims", "index"] {
+        for sub in ["forks", "anchors", "index"] {
             fs::create_dir_all(dot.join(sub)).map_err(ioerr("creating layout"))?;
         }
         BlobStore::init(dot.join("blobs"))?;
@@ -88,33 +87,10 @@ impl Repository {
         Ok(())
     }
 
-    /// Store a claim's exact bytes (byte-preserved, I4), verifying them.
-    pub fn put_claim_bytes(&self, bytes: &[u8]) -> Result<Claim> {
-        let claim = Claim::parse(bytes)?;
-        let path = self.dot.join("claims").join(format!("{}.json", claim.id));
-        if !path.exists() {
-            fs::write(&path, bytes).map_err(ioerr("writing claim bytes"))?;
-            fsync_dir(self.dot.join("claims").as_path())?;
-        }
-        Ok(claim)
-    }
-
     /// The exact bytes of a fork's log (for byte-preserved packing).
     pub fn log_bytes(&self, fork: &str) -> Result<Vec<u8>> {
         validate_fork_name(fork)?;
         fs::read(self.log_path(fork)).map_err(ioerr(format!("reading log bytes of {fork}")))
-    }
-
-    /// The exact bytes of a claim (for byte-preserved packing).  Falls back
-    /// to `archive/claims/` so archived claims stay readable; only active
-    /// claims are listed by [`Repository::claim_ids`] and hence packed.
-    pub fn claim_bytes(&self, id: &str) -> Result<Vec<u8>> {
-        let active = self.dot.join("claims").join(format!("{id}.json"));
-        if active.exists() {
-            return fs::read(&active).map_err(ioerr(format!("reading claim bytes {id}")));
-        }
-        fs::read(self.dot.join("archive").join("claims").join(format!("{id}.json")))
-            .map_err(ioerr(format!("reading claim bytes {id}")))
     }
 
     /// Open a repository whose working tree is `root`.
@@ -214,7 +190,7 @@ impl Repository {
         Ok(())
     }
 
-    /// Create a fork anchored at another fork's current state (§7: an
+    /// Create a fork anchored at another fork's current state (§6: an
     /// anchor and an empty log — that is the whole file).
     pub fn create_fork(&self, name: &str, from_fork: &str) -> Result<ForkFile> {
         let state = self.current_state(from_fork)?;
@@ -306,7 +282,7 @@ impl Repository {
     }
 
     /// Read the fork's log, recovering from a torn final line by truncating
-    /// it as never-committed (§2.8 crash recovery).
+    /// it as never-committed (§2.7 crash recovery).
     pub fn read_log(&self, fork: &str) -> Result<Vec<LogLine>> {
         let path = self.log_path(fork);
         let bytes =
@@ -435,7 +411,7 @@ impl Repository {
 
     ////////////////////////////////////////// apply //////////////////////////////////////////
 
-    /// §2.8 Apply: the seven steps, with the fsync'd log append as the sole
+    /// §2.7 Apply: the seven steps, with the fsync'd log append as the sole
     /// linearization point (I8).
     pub fn apply(&self, fork: &str, intent: Intent, annotation: Annotation) -> Result<LogLine> {
         // 0. flock forks/<f>/lock
@@ -699,109 +675,11 @@ impl Repository {
         Ok(())
     }
 
-    ///////////////////////////////////////// claims //////////////////////////////////////////
-
-    /// Store a claim (put-if-absent; claims are immutable).
-    pub fn put_claim(&self, claim: &Claim) -> Result<()> {
-        let path = self.dot.join("claims").join(format!("{}.json", claim.id));
-        if !path.exists() {
-            fs::write(&path, claim.to_bytes()?).map_err(ioerr("writing claim"))?;
-            fsync_dir(self.dot.join("claims").as_path())?;
-        }
-        Ok(())
-    }
-
-    /// Read and verify a claim by id (active or archived).
-    pub fn get_claim(&self, id: &str) -> Result<Claim> {
-        Claim::parse(&self.claim_bytes(id)?)
-    }
-
-    /// Move a claim out of the active set into `archive/claims/`.  This is
-    /// not a deletion — the bytes remain, readable by
-    /// [`Repository::get_claim`] — but the claim leaves
-    /// [`Repository::claim_ids`] and so leaves future packs.  Callers MUST
-    /// have proof the claim's exact bytes are retained elsewhere (I7); the
-    /// wire layer's verified unpack is that proof.
-    pub fn archive_claim(&self, id: &str) -> Result<()> {
-        let active = self.dot.join("claims").join(format!("{id}.json"));
-        if !active.exists() {
-            return Err(Error::Invalid(format!("no active claim {id} to archive")));
-        }
-        let archive_dir = self.dot.join("archive").join("claims");
-        fs::create_dir_all(&archive_dir).map_err(ioerr("creating archive/claims"))?;
-        fs::rename(&active, archive_dir.join(format!("{id}.json")))
-            .map_err(ioerr(format!("archiving claim {id}")))?;
-        fsync_dir(archive_dir.as_path())?;
-        fsync_dir(self.dot.join("claims").as_path())?;
-        Ok(())
-    }
-
-    /// List active (unarchived) claim ids.
-    pub fn claim_ids(&self) -> Result<Vec<String>> {
-        let mut ids = Vec::new();
-        let entries =
-            fs::read_dir(self.dot.join("claims")).map_err(ioerr("listing claims"))?;
-        for entry in entries {
-            let entry = entry.map_err(ioerr("listing claims"))?;
-            if let Some(name) = entry.file_name().to_str()
-                && let Some(id) = name.strip_suffix(".json")
-            {
-                ids.push(id.to_string());
-            }
-        }
-        ids.sort();
-        Ok(ids)
-    }
-
-    /// The claim ids some fork's log refers to (`annotation.claims`, §2.7).
-    /// A reference is the only durable link between a fork and a claim; a
-    /// claim no line names is exhaust, kept until collected.
-    pub fn referenced_claim_ids(&self) -> Result<BTreeSet<String>> {
-        let mut referenced = BTreeSet::new();
-        for fork in self.fork_names()? {
-            for line in self.current_state(&fork)?.lines {
-                for id in line.annotation.claims {
-                    referenced.insert(id);
-                }
-            }
-        }
-        Ok(referenced)
-    }
-
-    /// Collect active claims no fork's log refers to (§2.7).  Unlike
-    /// [`Repository::archive_claim`], this is a deletion: the claim's bytes
-    /// are removed.  It is safe because the collected claims are unreachable
-    /// — no line names them, so no history depends on them; a bare `tally
-    /// claim` result no narrative ever wove in is exhaust.  Returns the ids
-    /// collected, or, when `dry_run`, those that would be.
-    pub fn gc_claims(&self, dry_run: bool) -> Result<Vec<String>> {
-        let referenced = self.referenced_claim_ids()?;
-        let mut collected = Vec::new();
-        for id in self.claim_ids()? {
-            if referenced.contains(&id) {
-                continue;
-            }
-            if !dry_run {
-                let path = self.dot.join("claims").join(format!("{id}.json"));
-                fs::remove_file(&path).map_err(ioerr(format!("removing claim {id}")))?;
-            }
-            collected.push(id);
-        }
-        if !dry_run && !collected.is_empty() {
-            fsync_dir(self.dot.join("claims").as_path())?;
-        }
-        Ok(collected)
-    }
-
-    /// The blob hashes any fork or active claim reaches: every fork's anchor
-    /// manifest records, every log line's realized adds (which name every
-    /// blob ever added along the history), each line's spilled read set
-    /// (`reads_blob`) and andon signature (`sig`), and each active claim's
-    /// transcript.  This is the reachability root for [`Repository::gc_blobs`].
-    ///
-    /// Active claims are roots so blob collection never orphans a claim's
-    /// transcript: collect the claim first (`gc-claims`), then the transcript
-    /// becomes collectible in turn.
+    /// The blob hashes any fork reaches: every fork's anchor manifest
+    /// records, every log line's realized adds (which name every blob ever
+    /// added along the history), each line's spilled read set (`reads_blob`)
+    /// and andon signature (`sig`).  This is the reachability root for
+    /// [`Repository::gc_blobs`].
     pub fn referenced_blobs(&self) -> Result<BTreeSet<String>> {
         let mut referenced = BTreeSet::new();
         for fork in self.fork_names()? {
@@ -825,18 +703,14 @@ impl Repository {
                 }
             }
         }
-        for id in self.claim_ids()? {
-            referenced.insert(self.get_claim(&id)?.transcript_sha3);
-        }
         Ok(referenced)
     }
 
-    /// Collect blobs no fork or active claim reaches (§2.2).  The pool is
-    /// otherwise append-only (I3); this is the one sanctioned reclamation.
-    /// It removes only unreachable content — e.g. file bytes `tally sum`
-    /// ingested for a working-tree state no fork ever committed, or the
-    /// transcript of a since-collected claim.  Returns the hashes collected,
-    /// or, when `dry_run`, those that would be.
+    /// Collect blobs no fork reaches (§2.2).  The pool is otherwise
+    /// append-only (I3); this is the one sanctioned reclamation.  It removes
+    /// only unreachable content — e.g. file bytes `tally sum` ingested for a
+    /// working-tree state no fork ever committed.  Returns the hashes
+    /// collected, or, when `dry_run`, those that would be.
     pub fn gc_blobs(&self, dry_run: bool) -> Result<Vec<String>> {
         let referenced = self.referenced_blobs()?;
         let blobs = self.blobs();
@@ -1062,70 +936,23 @@ mod tests {
     }
 
     #[test]
-    fn claims_round_trip_through_the_repo() {
-        let repo = temp_repo("claims");
-        repo.apply("main", create("/src/lib.rs", b"pub fn f() {}\n"), note("t")).unwrap();
-        let state = repo.current_state("main").unwrap();
-        let inputs: Vec<ElementRecord> = state.manifest.records().cloned().collect();
-        let claim = Claim::new(&state.sum, "cargo test", inputs, 0, &sha3_hex(b"ok")).unwrap();
-        repo.put_claim(&claim).unwrap();
-        let back = repo.get_claim(&claim.id).unwrap();
-        assert_eq!(back, claim);
-        assert!(!back.is_stale_at(&state.manifest).unwrap());
-        assert_eq!(repo.claim_ids().unwrap(), vec![claim.id.clone()]);
-    }
-
-    #[test]
-    fn gc_claims_collects_only_unreferenced() {
-        let repo = temp_repo("gc-claims");
-        repo.apply("main", create("/lib.rs", b"v1\n"), note("t")).unwrap();
-        let state = repo.current_state("main").unwrap();
-        let inputs: Vec<ElementRecord> = state.manifest.records().cloned().collect();
-        // A referenced claim: a later line names it in its annotation.
-        let referenced =
-            Claim::new(&state.sum, "cargo test", inputs, 0, &sha3_hex(b"ok")).unwrap();
-        repo.put_claim(&referenced).unwrap();
-        let mut annotation = note("t");
-        annotation.claims = vec![referenced.id.clone()];
-        repo.apply("main", create("/new.rs", b"n\n"), annotation).unwrap();
-        // An orphan claim no line ever names.
-        let orphan =
-            Claim::new(&Sum::zero(), "true", Vec::new(), 0, &sha3_hex(b"bare")).unwrap();
-        repo.put_claim(&orphan).unwrap();
-
-        // The referenced set is exactly the woven-in claim.
-        assert_eq!(
-            repo.referenced_claim_ids().unwrap().into_iter().collect::<Vec<_>>(),
-            vec![referenced.id.clone()],
-        );
-        // Dry run reports the orphan without deleting it.
-        assert_eq!(repo.gc_claims(true).unwrap(), vec![orphan.id.clone()]);
-        assert!(repo.claim_ids().unwrap().contains(&orphan.id));
-        // The real collection removes only the orphan.
-        assert_eq!(repo.gc_claims(false).unwrap(), vec![orphan.id.clone()]);
-        assert_eq!(repo.claim_ids().unwrap(), vec![referenced.id.clone()]);
-        // Idempotent: a second pass collects nothing.
-        assert!(repo.gc_claims(false).unwrap().is_empty());
-    }
-
-    #[test]
     fn gc_blobs_collects_only_unreachable() {
         let repo = temp_repo("gc-blobs");
         // Committed content: reachable through main's log.
         repo.apply("main", create("/lib.rs", b"committed\n"), note("t")).unwrap();
         let committed = sha3_hex(b"committed\n");
-        // An active claim's transcript is a root (as `tally claim` writes it).
-        let transcript = repo.blobs().put(b"transcript").unwrap();
-        let claim =
-            Claim::new(&Sum::zero(), "true", Vec::new(), 0, &transcript).unwrap();
-        repo.put_claim(&claim).unwrap();
+        // A spilled read set is a root.
+        let spilled = repo.blobs().put(b"[]").unwrap();
+        let mut annotation = note("t");
+        annotation.reads = Some(serde_json::json!({"reads_blob": spilled}));
+        repo.apply("main", create("/read.rs", b"r\n"), annotation).unwrap();
         // Exhaust: bytes ingested into the pool but reachable from nowhere,
         // as `tally sum` leaves for a working-tree file no fork committed.
         let orphan = repo.blobs().put(b"never committed\n").unwrap();
 
         let reachable = repo.referenced_blobs().unwrap();
         assert!(reachable.contains(&committed));
-        assert!(reachable.contains(&transcript));
+        assert!(reachable.contains(&spilled));
         assert!(!reachable.contains(&orphan));
 
         // Dry run names the orphan without removing it.
@@ -1135,13 +962,8 @@ mod tests {
         assert_eq!(repo.gc_blobs(false).unwrap(), vec![orphan.clone()]);
         assert!(!repo.blobs().has(&orphan).unwrap());
         assert!(repo.blobs().has(&committed).unwrap());
-        assert!(repo.blobs().has(&transcript).unwrap());
+        assert!(repo.blobs().has(&spilled).unwrap());
         // Idempotent.
         assert!(repo.gc_blobs(false).unwrap().is_empty());
-
-        // Collecting the claim unroots its transcript, which then collects.
-        repo.gc_claims(false).unwrap();
-        assert_eq!(repo.gc_blobs(false).unwrap(), vec![transcript.clone()]);
-        assert!(!repo.blobs().has(&transcript).unwrap());
     }
 }

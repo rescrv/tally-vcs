@@ -12,7 +12,6 @@ use handled::SError;
 
 pub mod b64;
 pub mod blobs;
-pub mod claims;
 pub mod fork;
 pub mod git;
 pub mod ident;
@@ -48,7 +47,7 @@ pub enum Error {
     /// A patch precondition did not hold; nothing was written.
     Precondition(String),
     /// A conflict that mechanical strata cannot resolve; re-enactment (union
-    /// stratum 5) is required and costs tokens, so it is never automatic.
+    /// stratum 4) is required and costs tokens, so it is never automatic.
     NeedsReenactment(String),
     /// JSON (de)serialization failed.
     Json(SError),

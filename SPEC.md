@@ -74,9 +74,9 @@ every numeric field in every schema in this document is an integer or a hex
 string, so no number-canonicalization question arises. This is reproducible
 as `json.dumps(x, sort_keys=True, separators=(',',':'), ensure_ascii=False)`.
 
-The id of an identified record (log line, claim, serve-manifest) is the
-lowercase hex SHA3-256 of the canonical JSON of the record *with the `id` key
-absent*. The record as stored includes its id. Verification strips `id`,
+The id of an identified record (log line, serve-manifest) is the lowercase
+hex SHA3-256 of the canonical JSON of the record *with the `id` key absent*.
+The record as stored includes its id. Verification strips `id`,
 re-canonicalizes, re-hashes.
 
 Records whose ids hash their bytes are **byte-preserved artifacts**: they MUST
@@ -85,8 +85,8 @@ transcoded). Blobs are **content artifacts**: they verify by content hash
 after decoding, so their encoding is unconstrained. This is the practical
 edge of the Wall:
 
-> **I4.** Log lines, claims, and serve-manifests are byte-preserved. Blobs
-> are re-encodable.
+> **I4.** Log lines and serve-manifests are byte-preserved. Blobs are
+> re-encodable.
 
 ## §2. Loose format
 
@@ -102,13 +102,12 @@ edge of the Wall:
     views.jsonl              # fuses; unordered annotations
     lock
   anchors/<sum>.manifest
-  claims/<id>.json
   index/                     # derived; deleting it is always safe
 ```
 
-> **I3 (append-only).** `blobs/`, `forks/*/log.jsonl`, `anchors/`, and
-> `claims/` are append-only or immutable. Nothing in them is ever rewritten.
-> `index/` is a cache reconstructible from the rest.
+> **I3 (append-only).** `blobs/`, `forks/*/log.jsonl`, and `anchors/` are
+> append-only or immutable. Nothing in them is ever rewritten. `index/` is a
+> cache reconstructible from the rest.
 
 ### §2.2 Blobs
 
@@ -116,8 +115,8 @@ Raw bytes. No framing, no compression, no type tag. The path is
 `blobs/<first 2 hex>/<remaining 62 hex>`. Write protocol: stream to
 `blobs/tmp/<random>` hashing as you go; fsync; `rename(2)` into place. A
 collision on rename is a deduplication hit; discard the temp file. Everything
-content-shaped shares this pool: file contents, claim transcripts, PR prose,
-spilled read sets, zstd dictionaries.
+content-shaped shares this pool: file contents, PR prose, spilled read sets,
+zstd dictionaries.
 
 ### §2.3 Fork file
 
@@ -170,7 +169,6 @@ writes one and MAY repoint the fork file at it; earlier log lines remain.
    "reason": null, "sig": null,
    "session": "…", "prose": "…",
    "reads": [ … ],
-   "claims": ["…"],
    "origin": null}}
 ```
 
@@ -217,22 +215,7 @@ Views are unordered, unchained, and carry no authority: they are renderings.
 Fusing is lossless by construction because it writes here and never to the
 log.
 
-### §2.7 Claims
-
-`claims/<id>.json`, canonical JSON, id per §1.3:
-
-```json
-{"id": "…", "at_sum": "<64 hex>", "cmd": "…",
- "inputs": ["<element record sans LF>", …],
- "input_sum": "<64 hex>",
- "exit": 0, "transcript_sha3": "<hex>"}
-```
-
-`input_sum` is the setsum of the input records; staleness at any state is the
-arithmetic comparison of those inputs against that state's manifest. Claims
-are global — they are facts about states, and states do not belong to forks.
-
-### §2.8 Apply
+### §2.7 Apply
 
 ```
 0. flock forks/<f>/lock
@@ -285,7 +268,6 @@ where offsets and lengths refer to the decompressed frame, and:
 | `zstdd` | zstd with dictionary | dictionary blob hash | — |
 | `construct` | no bytes stored | base blob hash | log line id |
 | `lines` | byte-preserved log span | fork name | first..last line id |
-| `claim` | byte-preserved claim | — | — |
 
 `construct` says: this blob is the result of applying the named line's edit
 ops for this path to the base blob. It stores nothing but the reference —
@@ -303,9 +285,9 @@ versions stored `raw`/`zstd`/`zstdd`.
 > K = 1 for blobs the packer cannot construct (binaries, `create` payloads,
 > union re-enactments).
 
-Log spans (`lines`) and claims are byte-preserved per I4: exact JSONL/JSON
-bytes inside the zstd frame, never transcoded — ids must re-verify after
-decode. Dictionaries are blobs, content-addressed, packed like any other
+Log spans (`lines`) are byte-preserved per I4: exact JSONL bytes inside the
+zstd frame, never transcoded — ids must re-verify after decode.
+Dictionaries are blobs, content-addressed, packed like any other
 entry; `zstdd` references them by hash, so encoding stays deterministic and
 dictionaries travel with the repository.
 
@@ -342,7 +324,6 @@ encoding:
 ```
 blob  <TAB> <content sha3 hex> <LF>     # raw, zstd, zstdd, and construct alike
 line  <TAB> <line id>          <LF>
-claim <TAB> <claim id>         <LF>
 dict  <TAB> <content sha3 hex> <LF>
 ```
 
@@ -410,7 +391,7 @@ order of proof is mandated:
               authenticated idx lengths — amplification is rejected
               by arithmetic, not by running out of memory
 5. entries:   verify logical identity post-decode — blob content hashes,
-              line ids, claim ids — and the segment's image_setsum
+              line ids — and the segment's image_setsum
 6. dicts:     are entries; fully verified (steps 2–5) before any bytes
               are loaded into a decompression context
 7. construct: applies only verified inputs (base blob by content hash,
@@ -451,8 +432,8 @@ the reason `.pk` uses standard zstd frames and `.idx` is plain text.
 
 Authorization is storage ACL plus the `sig` requirement on andon lines;
 abelian adds no auth protocol of its own. Anything smarter — maintainer
-policy, claim-freshness gates on a fork — is the Datalog layer's job,
-enforced by the maintainer agent as *a client*, never by the server.
+policy, review gates on a fork — is the Datalog layer's job, enforced by
+the maintainer agent as *a client*, never by the server.
 
 ## §5. Parameters
 
@@ -479,7 +460,7 @@ so it is versioned with the format.
 - **I2** — loose is truth; pack is an encoding; unpack is total,
   deterministic, model-free, and equivalence-preserving.
 - **I3** — the repository is append-only; `index/` is a deletable cache.
-- **I4** — log lines, claims, and manifests are byte-preserved; blobs are
+- **I4** — log lines and manifests are byte-preserved; blobs are
   re-encodable.
 - **I5** — with zero models available, abelian degrades to a complete,
   operable VCS; the model is a layer, never a load-bearing wall.

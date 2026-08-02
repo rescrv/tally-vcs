@@ -1,8 +1,8 @@
 //! §2.2 Blobs: raw bytes, no framing, no compression, no type tag.
 //!
-//! Everything content-shaped shares this pool: file contents, claim
-//! transcripts, PR prose, spilled read sets, zstd dictionaries.  The pool is
-//! append-only (I3): nothing in it is ever rewritten.
+//! Everything content-shaped shares this pool: file contents, PR prose,
+//! spilled read sets, zstd dictionaries.  The pool is append-only (I3):
+//! nothing in it is ever rewritten.
 
 use std::fs;
 use std::io::Write;
@@ -110,7 +110,7 @@ impl BlobStore {
 
     /// Remove a blob from the pool.  The pool is otherwise append-only (I3);
     /// the sole sanctioned caller is garbage collection, which removes only
-    /// content no fork or active claim reaches.  An absent blob is a no-op,
+    /// content no fork reaches.  An absent blob is a no-op,
     /// so removal is idempotent.
     pub fn remove(&self, blob: &str) -> Result<()> {
         let path = self.path_for(blob)?;

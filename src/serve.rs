@@ -175,9 +175,6 @@ pub fn pack(
     for hash in blobs.list()? {
         inputs.push(SegmentInput::Blob(blobs.get(&hash)?));
     }
-    for id in repo.claim_ids()? {
-        inputs.push(SegmentInput::Claim { bytes: repo.claim_bytes(&id)?, id });
-    }
     let mut forks = BTreeMap::new();
     let mut anchors = Vec::new();
     for fork in repo.fork_names()? {
@@ -261,8 +258,6 @@ pub struct Unpacked {
     pub blobs: BTreeMap<String, Vec<u8>>,
     /// Exact log bytes per fork.
     pub logs: BTreeMap<String, Vec<u8>>,
-    /// Exact claim bytes by id.
-    pub claims: BTreeMap<String, Vec<u8>>,
 }
 
 /// Verify and unpack segments named by `manifest`, reading `.pk`/`.idx`
@@ -275,7 +270,6 @@ pub fn unpack_segments(
 ) -> Result<Unpacked> {
     let mut blobs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut spans: BTreeMap<(String, String), Vec<u8>> = BTreeMap::new();
-    let mut claims: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut lines_by_id: BTreeMap<String, LogLine> = BTreeMap::new();
 
     // Two passes so construct entries can reference bases and lines packed
@@ -313,11 +307,6 @@ pub fn unpack_segments(
                         .or_default()
                         .extend_from_slice(&bytes);
                 }
-                crate::segment::Enc::Claim => {
-                    let bytes = segment.materialize(entry, &no_blob, &no_line)?;
-                    let claim = crate::claims::Claim::parse(&bytes)?;
-                    claims.insert(claim.id, bytes);
-                }
                 crate::segment::Enc::Raw
                 | crate::segment::Enc::Zstd
                 | crate::segment::Enc::Zstdd { .. } => {
@@ -349,7 +338,7 @@ pub fn unpack_segments(
     for (hash, bytes) in constructed {
         blobs.insert(hash, bytes);
     }
-    // Verify each segment's image against the manifest's claim.
+    // Verify each segment's image against the manifest's stated setsum.
     let fetch_blob = |h: &str| -> Result<Vec<u8>> {
         blobs
             .get(h)
@@ -380,7 +369,7 @@ pub fn unpack_segments(
         }
         logs.insert(fork.clone(), bytes);
     }
-    Ok(Unpacked { manifest: manifest.clone(), blobs, logs, claims })
+    Ok(Unpacked { manifest: manifest.clone(), blobs, logs })
 }
 
 /// Materialize an unpacked repository as a loose one at `dest`.  Anchor
@@ -391,9 +380,6 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
     let blobs = repo.blobs();
     for content in unpacked.blobs.values() {
         blobs.put(content)?;
-    }
-    for bytes in unpacked.claims.values() {
-        repo.put_claim_bytes(bytes)?;
     }
     // Anchors are derived, never primary: every anchor sum is a state on
     // some fork's history, so derive manifests to a fixpoint.  Start from
@@ -599,17 +585,6 @@ mod tests {
         .unwrap();
         repo.create_fork("session-1", "main").unwrap();
         repo.apply("session-1", create("/notes.md", b"# notes\n"), note()).unwrap();
-        let state = repo.current_state("main").unwrap();
-        let inputs: Vec<_> = state.manifest.records().cloned().collect();
-        let claim = crate::claims::Claim::new(
-            &state.sum,
-            "cargo test",
-            inputs,
-            0,
-            &crate::ident::sha3_hex(b"ok"),
-        )
-        .unwrap();
-        repo.put_claim(&claim).unwrap();
         repo
     }
 
@@ -630,11 +605,6 @@ mod tests {
                 restored.log_bytes(fork).unwrap(),
                 "log bytes of {fork}"
             );
-        }
-        // Claims are byte-preserved.
-        assert_eq!(repo.claim_ids().unwrap(), restored.claim_ids().unwrap());
-        for id in repo.claim_ids().unwrap() {
-            assert_eq!(repo.claim_bytes(&id).unwrap(), restored.claim_bytes(&id).unwrap());
         }
         // The blob pool survives.
         assert_eq!(repo.blobs().list().unwrap(), restored.blobs().list().unwrap());

@@ -224,15 +224,14 @@ The log is JSONL, one applied patch per line:
    "session": "…", "prose": "narrow the retry loop",
    "reads": [{"path": "/src/retry.rs", "blob": "77aa…",
               "spans": ["fn backoff("]},
-             {"grep": "unwrap\\(\\)", "matches": [], "over_sum": "3b9f…"}],
-   "claims": ["c-0042"]}}
+             {"grep": "unwrap\\(\\)", "matches": [], "over_sum": "3b9f…"}]}}
 ```
 
 `id` is the SHA3-256 of the line's canonical bytes with the `id` field empty;
 `prev` chains the line to its predecessor. The chain orders the *narrative*;
 the arithmetic never needed it.
 
-Two annotation fields carry the whole reason abelian exists:
+One annotation field carries the whole reason abelian exists:
 
 **`reads`** is the patch's observed read set — not what a tool scanned, but
 what entered the author's context. A viewed span is a read. A grep that
@@ -240,49 +239,17 @@ returned three lines read three spans *plus* one universally quantified
 negative — "pattern absent elsewhere at this sum" — and the negative is
 recorded too, because the author may have acted on the absence. Humans cannot
 honestly produce this field, which is why humans do not write to the substrate
-directly (§9).
-
-**`claims`** reference attested executions (§6).
+directly (§8).
 
 Record everything. The economics are not close: generating a gigabyte of
 model exhaust costs north of $10,000 in tokens; storing it costs about $0.02
 per month. Information the harness observed and discarded is the only true
-waste in this system. `fuse` (§8) is lossless for the same reason.
+waste in this system. `fuse` (§7) is lossless for the same reason.
 
 `tally log` renders the chain; `tally show <id>` renders one line at any
 granularity.
 
-## 6. Claims
-
-A **claim** is an attested execution — a fact about a state, not an assertion
-by an author:
-
-```json
-{"id": "c-0042", "at_sum": "3b9f…",
- "cmd": "cargo test -p retry",
- "inputs": [{"path": "/src/retry.rs", "blob": "77aa…"}, …],
- "input_sum": "91c0…",
- "exit": 0, "transcript_sha3": "…"}
-```
-
-Run the command in the most hermetic environment you have, record which
-elements it read, sum them, keep the transcript. A claim is a cached function
-evaluation keyed by its input elements — Nix semantics applied to assertions.
-Its validity *transfers*: the claim holds at any state in which its input
-elements are unchanged. When an input changed, the claim is not violated; it
-is **stale**, and staleness is detected by comparing `input_sum` against the
-current state — arithmetic again.
-
-By hand: run the command, hash the transcript, list what it read as honestly
-as your sandbox allows. `tally claim <cmd>` runs it instrumented and files the
-claim; `tally claims --stale` lists every claim whose inputs have drifted.
-
-Intent that matters is expressed *as* a claim: "reject expired tokens" enters
-the substrate as a characterization test — a command asserting failure before
-the patch and success after. Prose intent is annotation for the narrative;
-predicated intent participates in union. Only the predicate is signed.
-
-## 7. Fork and union
+## 6. Fork and union
 
 A **fork** is an anchor and an empty log:
 
@@ -309,9 +276,7 @@ early:
    Re-validate the *span* precondition against the target's current blob:
    `old_str` still unique? Apply, realize fresh deltas. This is where
    disjoint-span edits to the same file sail through.
-4. **Claim refresh.** Re-execute any mechanical claim whose `input_sum` no
-   longer matches. CPU, not tokens.
-5. **Re-enactment.** All mechanical strata failed: the patch's assumptions are
+4. **Re-enactment.** All mechanical strata failed: the patch's assumptions are
    genuinely dead. Hand the intent, its prose, and the conflict evidence to a
    model to re-derive against the current state. This is the only stratum
    that costs tokens, and the design's job is to make it rare.
@@ -322,13 +287,13 @@ patches is irrelevant — the group guarantees the sum, and the precondition
 discipline guarantees the states. Conflict is not textual overlap; conflict is
 `W₁∩R₂ ≠ ∅`, checked against *observed* reads. Rebase does not exist:
 reordering commuting patches changes nothing the substrate can see, so
-history-rewriting is a rendering option (§8), not an operation.
+history-rewriting is a rendering option (§7), not an operation.
 
-By hand, union is a loop over incoming log lines applying strata 1–4 with the
-tools you already built in §§2–6. `tally union <fork>` runs the loop and
-stops before stratum 5 unless invited.
+By hand, union is a loop over incoming log lines applying strata 1–3 with the
+tools you already built in §§2–5. `tally union <fork>` runs the loop and
+stops before stratum 4 unless invited.
 
-## 8. Fuse and reading
+## 7. Fuse and reading
 
 `fuse` composes a span of patches into one narrative beat — what git called a
 commit, squash, and fixup, unified. It is **lossless**: a fuse is a view
@@ -341,16 +306,14 @@ record in a sidecar file, never a mutation of the log:
 
 The fine structure — every tool call — remains underneath, forever, at
 $0.02/GB-month. `tally read` renders at a chosen zoom: `--fused` for the
-human narrative, `--raw` for the tool-call stream, `--claims` for what was
-proven when. The human view of history is a default zoom level, not a
-different interface.
+human narrative, `--raw` for the tool-call stream. The human view of history
+is a default zoom level, not a different interface.
 
-## 9. Authors
+## 8. Authors
 
 Agents are the only direct writers. An agent's harness emits the applied
-patch, the observed reads, and the claims as a side effect of working — the
-annotation in §5 is not extra work, it is exhaust that the harness stops
-throwing away.
+patch and the observed reads as a side effect of working — the annotation in
+§5 is not extra work, it is exhaust that the harness stops throwing away.
 
 Humans contribute the way maintainers always received work: by submitting a
 PR to an agent. Two forms, one treatment:
@@ -365,19 +328,19 @@ category.
 **A natural-language patch is the same thing minus the worked example.** The
 PR conversation has a defined termination condition: negotiation until a
 predicate is agreed. The agent proposes the characterization test; the human
-confirms *that test is what I meant*; the test becomes a claim and the
+confirms *that test is what I meant*; the test enters the tree and the
 implementation becomes the agent's problem. The human signs the predicate,
 not the patch.
 
 Provenance is a chain, retained verbatim: human PR → agent session → span
-patches + claims. `tally submit` opens the negotiation; `tally enact` runs
-the re-enactment under a maintainer policy.
+patches. `tally submit` opens the negotiation; `tally enact` runs the
+re-enactment under a maintainer policy.
 
-Policy — which claims must be fresh for a union into a given fork, who may
-pull the cord below, what re-enactment may touch — is rules over facts, and
-lives in a Datalog layer over the log, not in this document.
+Policy — which checks must pass for a union into a given fork, who may pull
+the cord below, what re-enactment may touch — is rules over facts, and lives
+in a Datalog layer over the log, not in this document.
 
-## 10. The Andon cord
+## 9. The Andon cord
 
 Now the reveal, though you may have seen it coming: **you have just operated
 abelian end to end with an editor and eleven lines of Python.** No model. If
@@ -395,8 +358,7 @@ loop. The 3 a.m. security fix, the provider outage, the maintainer-agent that
 3. The patch is a first-class citizen of the mechanical layer — exact-match
    validation, membership check, sum update, chained log line. What it
    honestly lacks is instrumented reads, and it does not fake them: the
-   `reads` field is absent, and every claim whose inputs intersect the
-   patch's write set goes stale and must re-derive.
+   `reads` field is absent.
 4. The pull is loud. An andon-provenance line is an event agents are required
    to reconcile against post hoc: review moves after apply; it does not
    disappear.
@@ -423,11 +385,9 @@ sum lives in the free abelian group; validity does not: every remove is
 membership-checked against a manifest, because placeholder debt is silent.
 A patch is span operations with content-addressed, position-independent
 preconditions (`old_str` unique in blob); its application realizes a concrete
-element delta; the log records both, chained, with observed reads and
-referenced claims as annotation. A claim is an attested execution keyed by
-the setsum of its inputs; drift makes it stale, never silently wrong. Union
-is stratified — arithmetic, realized replay, intent replay, claim refresh,
-re-enactment — and only the last stratum costs tokens. Two patches commute
+element delta; the log records both, chained, with observed reads as
+annotation. Union is stratified — arithmetic, realized replay, intent
+replay, re-enactment — and only the last stratum costs tokens. Two patches commute
 iff writes miss each other's reads and each other. Snapshots are compactions;
 forks are anchors plus logs; sessions and branches are the same object;
 fuse is a lossless view; rebase is a rendering option. Agents write; humans

@@ -45,16 +45,14 @@ pub enum Enc {
         /// `first..last` line ids of the span.
         span: String,
     },
-    /// A byte-preserved claim (I4).
-    Claim,
 }
 
 /// One line of the `.idx`: `<entry-sha3> <frame#> <offset> <len> <enc>
 /// [<aux1>] [<aux2>]`, offsets and lengths in the decompressed frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdxEntry {
-    /// Content hash of the item's bytes (blob content, span bytes, claim
-    /// bytes) — identity, never encoding.
+    /// Content hash of the item's bytes (blob content, span bytes) —
+    /// identity, never encoding.
     pub sha3: String,
     /// Which zstd frame holds the bytes.
     pub frame: usize,
@@ -74,7 +72,6 @@ impl IdxEntry {
             Enc::Zstdd { dict } => ("zstdd", Some(dict), None),
             Enc::Construct { base, line_id } => ("construct", Some(base), Some(line_id)),
             Enc::Lines { fork, span } => ("lines", Some(fork), Some(span)),
-            Enc::Claim => ("claim", None, None),
         };
         let mut line = format!("{} {} {} {} {enc}", self.sha3, self.frame, self.offset, self.len);
         if let Some(a) = aux1 {
@@ -112,7 +109,6 @@ impl IdxEntry {
             ("zstdd", Some(dict), None) => Enc::Zstdd { dict },
             ("construct", Some(base), Some(line_id)) => Enc::Construct { base, line_id },
             ("lines", Some(fork), Some(span)) => Enc::Lines { fork, span },
-            ("claim", None, None) => Enc::Claim,
             (enc, _, _) => {
                 return Err(Error::Corrupt(format!("bad idx enc/aux for {enc:?}: {line:?}")));
             }
@@ -134,8 +130,6 @@ pub enum ImageItem {
     Blob(String),
     /// A log line by id.
     Line(String),
-    /// A claim by id.
-    Claim(String),
     /// A dictionary blob by content hash.
     Dict(String),
 }
@@ -146,7 +140,6 @@ impl ImageItem {
         match self {
             ImageItem::Blob(h) => format!("blob\t{h}\n"),
             ImageItem::Line(id) => format!("line\t{id}\n"),
-            ImageItem::Claim(id) => format!("claim\t{id}\n"),
             ImageItem::Dict(h) => format!("dict\t{h}\n"),
         }
         .into_bytes()
@@ -179,13 +172,6 @@ pub enum SegmentInput {
         bytes: Vec<u8>,
         /// The ids of the lines in the span, in order.
         line_ids: Vec<String>,
-    },
-    /// A byte-preserved claim.
-    Claim {
-        /// The exact claim bytes.
-        bytes: Vec<u8>,
-        /// The claim's id.
-        id: String,
     },
 }
 
@@ -266,17 +252,6 @@ pub fn build_segment(inputs: &[SegmentInput], level: i32) -> Result<BuiltSegment
                     None => Some((first, last)),
                     Some((f, _)) => Some((f, last)),
                 };
-            }
-            SegmentInput::Claim { bytes, id } => {
-                frame_plain.extend_from_slice(bytes);
-                entries.push(IdxEntry {
-                    sha3: sha3_hex(bytes),
-                    frame: 0,
-                    offset,
-                    len: bytes.len(),
-                    enc: Enc::Claim,
-                });
-                items.push(ImageItem::Claim(id.clone()));
             }
         }
     }
@@ -383,7 +358,7 @@ impl Segment {
         fetch_line: &dyn Fn(&str) -> Result<LogLine>,
     ) -> Result<Vec<u8>> {
         let bytes = match &entry.enc {
-            Enc::Raw | Enc::Lines { .. } | Enc::Claim => self.stored(entry)?.to_vec(),
+            Enc::Raw | Enc::Lines { .. } => self.stored(entry)?.to_vec(),
             Enc::Zstd => zstd::stream::decode_all(self.stored(entry)?)
                 .map_err(crate::ioerr("zstd-decoding entry"))?,
             Enc::Zstdd { dict } => {
@@ -444,11 +419,6 @@ impl Segment {
                         let parsed = LogLine::parse(line)?;
                         items.push(ImageItem::Line(parsed.id));
                     }
-                }
-                Enc::Claim => {
-                    let bytes = self.materialize(entry, fetch_blob, fetch_line)?;
-                    let claim = crate::claims::Claim::parse(&bytes)?;
-                    items.push(ImageItem::Claim(claim.id));
                 }
             }
         }
@@ -612,7 +582,6 @@ mod tests {
                 len: 5,
                 enc: Enc::Lines { fork: "main".to_string(), span: "a..b".to_string() },
             },
-            IdxEntry { sha3: "ab".repeat(32), frame: 0, offset: 0, len: 5, enc: Enc::Claim },
         ] {
             let line = entry.to_line();
             assert_eq!(IdxEntry::parse(line.trim_end()).unwrap(), entry, "{line}");
@@ -709,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn log_spans_and_claims_are_byte_preserved() {
+    fn log_spans_are_byte_preserved() {
         let span_bytes = b"{\"fake\":\"line\"}\n".to_vec();
         let built = build_segment(
             &[SegmentInput::LogSpan {

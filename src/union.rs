@@ -1,4 +1,4 @@
-//! §7 Union: bring a fork's log into a target state, stratified so that
+//! §6 Union: bring a fork's log into a target state, stratified so that
 //! each stratum is strictly cheaper than the next and almost all work stops
 //! early.
 //!
@@ -6,8 +6,7 @@
 //! 2. Realized replay — membership plus addition, no content inspection.
 //! 3. Intent replay — re-validate span preconditions; disjoint-span edits
 //!    to the same file sail through here.
-//! 4. Claim refresh — CPU, not tokens.
-//! 5. Re-enactment — the only stratum that costs tokens; never automatic.
+//! 4. Re-enactment — the only stratum that costs tokens; never automatic.
 
 use std::collections::BTreeSet;
 
@@ -43,10 +42,7 @@ pub struct UnionOutcome {
     pub already_identical: bool,
     /// Lines landed, in order.
     pub landed: Vec<Landed>,
-    /// Stratum 4: claims referenced by landed lines whose inputs have
-    /// drifted at the target; re-execution is CPU, not tokens.
-    pub stale_claims: Vec<String>,
-    /// Stratum 5 gate: the source line whose assumptions are genuinely
+    /// Stratum 4 gate: the source line whose assumptions are genuinely
     /// dead, with the conflict evidence.  Union stops here unless a model
     /// is invited; it never proceeds on its own.
     pub needs_reenactment: Option<(String, String)>,
@@ -59,7 +55,7 @@ impl UnionOutcome {
     }
 }
 
-/// Run union of `source` into `target`.  Strata 1–4 only: stratum 5 is
+/// Run union of `source` into `target`.  Strata 1–3 only: stratum 4 is
 /// reported, never performed.
 pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Result<UnionOutcome> {
     let source_state = repo.current_state(source)?;
@@ -81,7 +77,6 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             session: line.annotation.session.clone(),
             prose: line.annotation.prose.clone(),
             reads: line.annotation.reads.clone(),
-            claims: line.annotation.claims.clone(),
             origin: Some(Origin { fork: source.to_string(), id: line.id.clone() }),
         };
 
@@ -118,29 +113,13 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
                 });
             }
             Err(Error::Precondition(evidence)) => {
-                // Stratum 5 gate: the patch's assumptions are genuinely
+                // Stratum 4 gate: the patch's assumptions are genuinely
                 // dead.  Stop; hand the intent, its prose, and the evidence
                 // to a model only when invited.
                 outcome.needs_reenactment = Some((line.id.clone(), evidence));
                 break;
             }
             Err(other) => return Err(other),
-        }
-    }
-
-    // Stratum 4: claim refresh.  Any claim referenced by a landed line
-    // whose inputs no longer match the target state is stale.
-    let final_state = repo.current_state(target)?;
-    let mut seen = BTreeSet::new();
-    for landed in &outcome.landed {
-        for claim_id in &landed.line.annotation.claims {
-            if !seen.insert(claim_id.clone()) {
-                continue;
-            }
-            let claim = repo.get_claim(claim_id)?;
-            if claim.is_stale_at(&final_state.manifest)? {
-                outcome.stale_claims.push(claim_id.clone());
-            }
         }
     }
     Ok(outcome)
@@ -183,7 +162,7 @@ pub fn read_paths(line: &LogLine) -> Option<BTreeSet<String>> {
 }
 
 /// Two patches commute iff neither's write spans intersect the other's read
-/// set and their write spans are pairwise disjoint (§7).  Path granularity:
+/// set and their write spans are pairwise disjoint (§6).  Path granularity:
 /// conservative, never unsound.  Conflict is not textual overlap; conflict
 /// is `W₁∩R₂ ≠ ∅`, checked against observed reads.
 pub fn commutes(a: &LogLine, b: &LogLine) -> Result<bool> {
@@ -289,8 +268,8 @@ mod tests {
     }
 
     #[test]
-    fn stratum_5_is_gated_not_performed() {
-        let repo = temp_repo("s5");
+    fn stratum_4_is_gated_not_performed() {
+        let repo = temp_repo("s4");
         repo.apply("main", create("/a", b"needle\n"), note("t")).unwrap();
         repo.create_fork("s", "main").unwrap();
         repo.apply("s", edit("/a", "needle", "thread"), note("t")).unwrap();
@@ -304,33 +283,6 @@ mod tests {
         assert!(evidence.contains("0 times"), "conflict evidence: {evidence}");
         // Nothing landed: the target is untouched.
         assert_eq!(repo.current_state("main").unwrap().sum, before.sum);
-    }
-
-    #[test]
-    fn stratum_4_reports_stale_claims() {
-        let repo = temp_repo("s4");
-        repo.apply("main", create("/lib.rs", b"v1\n"), note("t")).unwrap();
-        repo.create_fork("s", "main").unwrap();
-        // A claim on the fork whose input is /lib.rs at v1.
-        let fork_state = repo.current_state("s").unwrap();
-        let inputs: Vec<_> = fork_state.manifest.records().cloned().collect();
-        let claim = crate::claims::Claim::new(
-            &fork_state.sum,
-            "cargo test",
-            inputs,
-            0,
-            &crate::ident::sha3_hex(b"ok"),
-        )
-        .unwrap();
-        repo.put_claim(&claim).unwrap();
-        let mut annotation = note("t");
-        annotation.claims = vec![claim.id.clone()];
-        repo.apply("s", create("/new.rs", b"n\n"), annotation).unwrap();
-        // Main drifts the claim's input.
-        repo.apply("main", edit("/lib.rs", "v1", "v2"), note("t")).unwrap();
-        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        assert!(outcome.complete());
-        assert_eq!(outcome.stale_claims, vec![claim.id]);
     }
 
     #[test]

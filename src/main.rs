@@ -9,7 +9,6 @@ use std::process::exit;
 
 use arrrg::CommandLine;
 
-use abelian::claims::Claim;
 use abelian::ident::Sum;
 use abelian::log::{Annotation, Provenance};
 use abelian::patch::Intent;
@@ -23,7 +22,6 @@ const USAGE: &str = "USAGE: tally <command> [options] [args]
 
 repository:
   init [--from-git COMMIT]         create a repository here (anchored at a git commit's tree)
-  predecessor [--verify]           show (and verify) the recorded git predecessor
   sum                              print the working tree's element records and sum
   check                            compare the working tree against the log's expectation
   snapshot                         write a manifest at the current state and repoint the fork
@@ -33,20 +31,16 @@ patches:
   apply <patch.json>               validate and apply an intent; append to the log
   log                              render the chain
   show <id>                        render one log line
-  read                             render history (--fused, --raw, --claims)
+  read                             render history (--fused, --raw)
   fuse <from-id> <to-id>           compose a span into one narrative beat (lossless)
 
-claims:
-  claim <cmd>                      run a command attested; file the claim
-  claims                           list claims (--stale for drifted ones)
-  archive-claims <store>           move claims verifiably retained by the store to archive/ (--dry-run)
-  gc-claims                        collect local claims no fork's log refers to (--dry-run)
-  gc-blobs                         collect blobs no fork or active claim reaches (--dry-run)
+exhaust:
+  gc-blobs                         collect blobs no fork reaches (--dry-run)
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
   remove-fork <name>               delete a fork; refuses unmerged work unless --force
-  union <fork>                     bring a fork's log into another (strata 1-4)
+  union <fork>                     bring a fork's log into another (strata 1-3)
 
 authors:
   submit <file>                    file a human PR (diff or prose) as testimony
@@ -69,7 +63,6 @@ fn main() {
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
     let result = match command.as_str() {
         "init" => cmd_init(&rest),
-        "predecessor" => cmd_predecessor(&rest),
         "sum" => cmd_sum(&rest),
         "check" => cmd_check(&rest),
         "snapshot" => cmd_snapshot(&rest),
@@ -79,10 +72,6 @@ fn main() {
         "show" => cmd_show(&rest),
         "read" => cmd_read(&rest),
         "fuse" => cmd_fuse(&rest),
-        "claim" => cmd_claim(&rest),
-        "claims" => cmd_claims(&rest),
-        "archive-claims" => cmd_archive_claims(&rest),
-        "gc-claims" => cmd_gc_claims(&rest),
         "gc-blobs" => cmd_gc_blobs(&rest),
         "fork" => cmd_fork(&rest),
         "remove-fork" => cmd_remove_fork(&rest),
@@ -154,7 +143,7 @@ struct ApplyOptions {
 fn cmd_init(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "Anchor main at a git commit's tree and record the predecessor.", "COMMIT")]
+        #[arrrg(optional, "Anchor main at a git commit's tree.", "COMMIT")]
         from_git: Option<String>,
         #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
         git: Option<String>,
@@ -167,15 +156,13 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     };
     if let Some(committish) = &options.from_git {
         let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
-        let (repo, claim) =
+        let (repo, commit) =
             abelian::git::init_from_git(&dir, git_dir.as_deref(), committish)?;
-        let commit = abelian::git::predecessor_commit(&claim).unwrap_or(committish);
         println!(
             "initialized abelian repository at {} from git commit {commit}",
             repo.root().display()
         );
-        println!("anchor {}", claim.at_sum);
-        println!("predecessor claim {}", claim.id);
+        println!("anchor {}", repo.current_state("main")?.sum.hexdigest());
         return Ok(());
     }
     if options.git.is_some() {
@@ -183,38 +170,6 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     }
     let repo = Repository::init(&dir)?;
     println!("initialized empty abelian repository at {}", repo.root().display());
-    Ok(())
-}
-
-fn cmd_predecessor(args: &[&str]) -> Result<()> {
-    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {
-        #[arrrg(flag, "Re-derive the state from git and check every assertion.")]
-        verify: bool,
-        #[arrrg(optional, "The git repository to verify against (default: the repository root).", "DIR")]
-        git: Option<String>,
-    }
-    let (options, _) =
-        Options::from_arguments_relaxed("USAGE: tally predecessor [--verify] [--git DIR]", args);
-    let repo = repo()?;
-    let claims = abelian::git::predecessor_claims(&repo)?;
-    if claims.is_empty() {
-        println!("no git predecessor recorded");
-        return Ok(());
-    }
-    for claim in claims {
-        let commit = abelian::git::predecessor_commit(&claim).unwrap_or("?");
-        println!("{}  git {commit}  anchor {}", claim.id, claim.at_sum);
-        if options.verify {
-            let git_dir = options
-                .git
-                .as_ref()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| repo.root().to_path_buf());
-            abelian::git::verify_predecessor(&claim, &git_dir)?;
-            println!("  verified: the state re-derives from git commit {commit}");
-        }
-    }
     Ok(())
 }
 
@@ -324,7 +279,6 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
         session: options.session.clone(),
         prose: options.prose.clone(),
         reads: None,
-        claims: Vec::new(),
         origin: None,
     };
     let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
@@ -383,31 +337,13 @@ fn cmd_read(args: &[&str]) -> Result<()> {
         fused: bool,
         #[arrrg(flag, "Render the raw tool-call stream (full lines).")]
         raw: bool,
-        #[arrrg(flag, "Render what was proven when (claims).")]
-        claims: bool,
     }
     let (options, _) = Options::from_arguments_relaxed(
-        "USAGE: tally read [--fork FORK] [--fused|--raw|--claims]",
+        "USAGE: tally read [--fork FORK] [--fused|--raw]",
         args,
     );
     let repo = repo()?;
     let state = repo.current_state(options.fork.as_deref().unwrap_or("main"))?;
-    if options.claims {
-        for line in &state.lines {
-            for claim_id in &line.annotation.claims {
-                let claim = repo.get_claim(claim_id)?;
-                let stale = claim.is_stale_at(&state.manifest)?;
-                println!(
-                    "{}  exit={}  {}  {}",
-                    claim.id,
-                    claim.exit,
-                    if stale { "STALE" } else { "fresh" },
-                    claim.cmd,
-                );
-            }
-        }
-        return Ok(());
-    }
     if options.raw {
         for line in &state.lines {
             println!("{}", serde_json::to_string(line)?);
@@ -463,124 +399,6 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
     };
     repo.append_view(options.fork.as_deref().unwrap_or("main"), &view)?;
     println!("fused {from}..{to} (lossless: the fine structure remains underneath)");
-    Ok(())
-}
-
-fn cmd_claim(args: &[&str]) -> Result<()> {
-    let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally claim [--fork FORK] <cmd>...", args);
-    if free.is_empty() {
-        return Err(Error::Invalid("claim requires a command".to_string()));
-    }
-    let cmd = free.join(" ");
-    let repo = repo()?;
-    let state = repo.current_state(options.fork())?;
-    // Run in the most hermetic environment we have; record what it read as
-    // honestly as the sandbox allows.  v0 is honest about its limits: the
-    // recorded read set is the whole state.
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .current_dir(repo.root())
-        .output()
-        .map_err(abelian::ioerr("running claimed command"))?;
-    let mut transcript = output.stdout.clone();
-    transcript.extend_from_slice(&output.stderr);
-    let transcript_sha3 = repo.blobs().put(&transcript)?;
-    let exit = output.status.code().unwrap_or(-1) as i64;
-    let inputs: Vec<_> = state.manifest.records().cloned().collect();
-    let claim = Claim::new(&state.sum, &cmd, inputs, exit, &transcript_sha3)?;
-    repo.put_claim(&claim)?;
-    println!("{}  exit={}  {}", claim.id, exit, cmd);
-    Ok(())
-}
-
-fn cmd_claims(args: &[&str]) -> Result<()> {
-    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {
-        #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
-        fork: Option<String>,
-        #[arrrg(flag, "List only claims whose inputs have drifted.")]
-        stale: bool,
-    }
-    let (options, _) =
-        Options::from_arguments_relaxed("USAGE: tally claims [--fork FORK] [--stale]", args);
-    let repo = repo()?;
-    let state = repo.current_state(options.fork.as_deref().unwrap_or("main"))?;
-    for id in repo.claim_ids()? {
-        let claim = repo.get_claim(&id)?;
-        let stale = claim.is_stale_at(&state.manifest)?;
-        if options.stale && !stale {
-            continue;
-        }
-        println!(
-            "{}  exit={}  {}  {}",
-            claim.id,
-            claim.exit,
-            if stale { "STALE" } else { "fresh" },
-            claim.cmd,
-        );
-    }
-    Ok(())
-}
-
-fn cmd_archive_claims(args: &[&str]) -> Result<()> {
-    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {
-        #[arrrg(flag, "Report what would be archived without moving anything.")]
-        dry_run: bool,
-    }
-    let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally archive-claims [--dry-run] <store>",
-        args,
-    );
-    let Some(store) = free.first() else {
-        return Err(Error::Invalid("archive-claims requires <store>".to_string()));
-    };
-    let repo = repo()?;
-    let store = FsStore::open(store)?;
-    // The proof: exact claim bytes recoverable from the store's latest
-    // manifest, verified by unpacking (I11).  Only byte-identical claims
-    // qualify (I4); anything else stays active.
-    let remote = abelian::wire::remote_claims(&store)?;
-    let mut archived = 0usize;
-    let mut kept = 0usize;
-    for id in repo.claim_ids()? {
-        let local = repo.claim_bytes(&id)?;
-        if remote.get(&id).is_some_and(|bytes| *bytes == local) {
-            if options.dry_run {
-                println!("would archive {id}");
-            } else {
-                repo.archive_claim(&id)?;
-                println!("archived {id}");
-            }
-            archived += 1;
-        } else {
-            kept += 1;
-        }
-    }
-    println!("{archived} archived, {kept} kept (not verified in the store)");
-    Ok(())
-}
-
-fn cmd_gc_claims(args: &[&str]) -> Result<()> {
-    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {
-        #[arrrg(flag, "Report what would be collected without removing anything.")]
-        dry_run: bool,
-    }
-    let (options, _) =
-        Options::from_arguments_relaxed("USAGE: tally gc-claims [--dry-run]", args);
-    let repo = repo()?;
-    let collected = repo.gc_claims(options.dry_run)?;
-    for id in &collected {
-        if options.dry_run {
-            println!("would collect {id}");
-        } else {
-            println!("collected {id}");
-        }
-    }
-    println!("{} unreferenced claim(s)", collected.len());
     Ok(())
 }
 
@@ -669,13 +487,10 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         };
         println!("landed {} <- {}  ({stratum})", landed.line.id, landed.origin_id);
     }
-    for claim_id in &outcome.stale_claims {
-        println!("stale claim {claim_id} (stratum 4: refresh with `tally claim`; CPU, not tokens)");
-    }
     if let Some((line_id, evidence)) = &outcome.needs_reenactment {
         return Err(Error::NeedsReenactment(format!(
             "line {line_id} of fork {source}: {evidence} \
-             (stratum 5 costs tokens and is never automatic)"
+             (stratum 4 costs tokens and is never automatic)"
         )));
     }
     Ok(())
@@ -706,8 +521,7 @@ fn cmd_submit(args: &[&str]) -> Result<()> {
     // blob pool because generation costs five orders of magnitude more
     // than storage.  A natural-language patch is the same thing minus the
     // worked example: negotiation terminates when a predicate is agreed,
-    // the predicate becomes a claim, and the human signs the predicate,
-    // not the patch.
+    // and the human signs the predicate, not the patch.
     let hash = repo.blobs().put(&testimony)?;
     let author = options.author.unwrap_or_else(whoami);
     println!("submission {hash} filed by {author}");
@@ -743,7 +557,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
         std::fs::read(patch_path).map_err(abelian::ioerr(format!("reading {patch_path}")))?;
     let intent: Intent = serde_json::from_slice(&bytes)?;
     // Provenance is a chain, retained verbatim: human PR → agent session →
-    // span patches + claims.  The session field carries the submission, so
+    // span patches.  The session field carries the submission, so
     // staleness against HEAD is irrelevant — the patch was generated
     // against the current state by the agent's own toolchain.
     let annotation = Annotation {
@@ -754,7 +568,6 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
         session: Some(format!("submission:{submission}")),
         prose: options.prose,
         reads: None,
-        claims: Vec::new(),
         origin: None,
     };
     let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;

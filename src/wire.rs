@@ -4,7 +4,6 @@
 //! supports put-if-absent, and computes nothing an object store cannot.
 //! There is no negotiation because there is nothing to negotiate.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -161,23 +160,6 @@ pub fn clone(store: &dyn ObjectStore, dest: impl Into<PathBuf>) -> Result<Reposi
     restore(&unpacked, &dest.into())
 }
 
-/// The exact claim bytes the store's latest manifest retains, fully
-/// verified in the mandated order (I11) by unpacking its segments.  This is
-/// the proof a local archive requires: a claim whose bytes appear here is
-/// recoverable from the store by `clone` alone.  Empty when the store has
-/// no manifest.
-pub fn remote_claims(store: &dyn ObjectStore) -> Result<BTreeMap<String, Vec<u8>>> {
-    let Some(manifest) = remote_latest(store)? else {
-        return Ok(BTreeMap::new());
-    };
-    let fetch = |name: &str| -> Result<Vec<u8>> {
-        store
-            .get(name)?
-            .ok_or_else(|| Error::Corrupt(format!("manifest references absent object {name}")))
-    };
-    Ok(unpack_segments(&manifest, &fetch)?.claims)
-}
-
 /// Fetch: GET the latest manifest, diff its segment set against a local
 /// packed cache directory, GET the difference.
 pub fn fetch(store: &dyn ObjectStore, cache: &std::path::Path) -> Result<Option<ServeManifest>> {
@@ -332,43 +314,6 @@ mod tests {
             cloned.current_state("main").unwrap().sum,
         );
         assert_eq!(repo.log_bytes("main").unwrap(), cloned.log_bytes("main").unwrap());
-    }
-
-    #[test]
-    fn archiving_requires_and_respects_remote_retention() {
-        let repo = Repository::init(temp_dir("arch-src")).unwrap();
-        repo.apply("main", create("/a.rs", b"a\n"), note()).unwrap();
-        let state = repo.current_state("main").unwrap();
-        let claim = crate::claims::Claim::new(
-            &state.sum,
-            "cargo test",
-            Vec::new(),
-            0,
-            &crate::ident::sha3_hex(b"transcript"),
-        )
-        .unwrap();
-        repo.put_claim(&claim).unwrap();
-
-        // Before any push, the store retains nothing.
-        let store = FsStore::open(temp_dir("arch-store")).unwrap();
-        assert!(remote_claims(&store).unwrap().is_empty());
-
-        // After a push, the claim's exact bytes are recoverable (I4).
-        push(&repo, &store, 3).unwrap();
-        let remote = remote_claims(&store).unwrap();
-        assert_eq!(remote.get(&claim.id), Some(&repo.claim_bytes(&claim.id).unwrap()));
-
-        // Archive: out of the active set, still readable, not lost.
-        repo.archive_claim(&claim.id).unwrap();
-        assert!(repo.claim_ids().unwrap().is_empty());
-        assert_eq!(repo.get_claim(&claim.id).unwrap(), claim);
-        assert!(repo.archive_claim(&claim.id).is_err(), "double archive must fail");
-
-        // A later push carries the winner's segments forward, so the store
-        // still retains the archived claim (I7: nothing is discarded).
-        repo.apply("main", create("/b.rs", b"b\n"), note()).unwrap();
-        push(&repo, &store, 3).unwrap();
-        assert!(remote_claims(&store).unwrap().contains_key(&claim.id));
     }
 
     #[test]

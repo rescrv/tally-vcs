@@ -53,16 +53,13 @@ pub struct Annotation {
     pub sig: Option<String>,
     /// The harness session, if any.
     pub session: Option<String>,
-    /// Narrative for humans; prose intent is annotation, predicated intent
-    /// is a claim.
+    /// Narrative for humans.
     pub prose: Option<String>,
     /// The observed read set: what entered the author's context, including
     /// universally quantified negatives.  Either an array of read records or
     /// `{"reads_blob": "<hex>"}` after spilling.  Absent for andon.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reads: Option<serde_json::Value>,
-    /// Referenced attested executions (§2.7).
-    pub claims: Vec<String>,
     /// For union lines, the source line.
     pub origin: Option<Origin>,
 }
@@ -182,7 +179,7 @@ impl LogLine {
 /// The result of leniently parsing a log: verified lines plus the byte
 /// length of the valid prefix.  A torn final line (invalid JSON, or id fails
 /// re-verification) is not an error; it is truncated as never-committed
-/// (§2.8 crash recovery).
+/// (§2.7 crash recovery).
 pub struct ParsedLog {
     /// The verified lines.
     pub lines: Vec<LogLine>,
