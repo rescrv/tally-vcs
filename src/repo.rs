@@ -193,7 +193,7 @@ impl Repository {
         Ok(names)
     }
 
-    fn create_fork_raw(&self, name: &str, fork: &ForkFile) -> Result<()> {
+    pub(crate) fn create_fork_raw(&self, name: &str, fork: &ForkFile) -> Result<()> {
         validate_fork_name(name)?;
         let dir = self.fork_dir(name);
         if dir.exists() {

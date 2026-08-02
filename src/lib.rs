@@ -14,6 +14,7 @@ pub mod b64;
 pub mod blobs;
 pub mod claims;
 pub mod fork;
+pub mod git;
 pub mod ident;
 pub mod log;
 pub mod manifest;

@@ -22,7 +22,8 @@ use abelian::{Error, Result};
 const USAGE: &str = "USAGE: tally <command> [options] [args]
 
 repository:
-  init                             create a repository here
+  init [--from-git COMMIT]         create a repository here (anchored at a git commit's tree)
+  predecessor [--verify]           show (and verify) the recorded git predecessor
   sum                              print the working tree's element records and sum
   check                            compare the working tree against the log's expectation
   snapshot                         write a manifest at the current state and repoint the fork
@@ -64,6 +65,7 @@ fn main() {
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
     let result = match command.as_str() {
         "init" => cmd_init(&rest),
+        "predecessor" => cmd_predecessor(&rest),
         "sum" => cmd_sum(&rest),
         "check" => cmd_check(&rest),
         "snapshot" => cmd_snapshot(&rest),
@@ -143,14 +145,68 @@ struct ApplyOptions {
 
 fn cmd_init(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally init [dir]", args);
+    struct Options {
+        #[arrrg(optional, "Anchor main at a git commit's tree and record the predecessor.", "COMMIT")]
+        from_git: Option<String>,
+        #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
+        git: Option<String>,
+    }
+    let (options, free) =
+        Options::from_arguments_relaxed("USAGE: tally init [--from-git COMMIT] [dir]", args);
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
         None => std::env::current_dir().map_err(abelian::ioerr("getting cwd"))?,
     };
+    if let Some(committish) = &options.from_git {
+        let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
+        let (repo, claim) =
+            abelian::git::init_from_git(&dir, git_dir.as_deref(), committish)?;
+        let commit = abelian::git::predecessor_commit(&claim).unwrap_or(committish);
+        println!(
+            "initialized abelian repository at {} from git commit {commit}",
+            repo.root().display()
+        );
+        println!("anchor {}", claim.at_sum);
+        println!("predecessor claim {}", claim.id);
+        return Ok(());
+    }
+    if options.git.is_some() {
+        return Err(Error::Invalid("--git requires --from-git".to_string()));
+    }
     let repo = Repository::init(&dir)?;
     println!("initialized empty abelian repository at {}", repo.root().display());
+    Ok(())
+}
+
+fn cmd_predecessor(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(flag, "Re-derive the state from git and check every assertion.")]
+        verify: bool,
+        #[arrrg(optional, "The git repository to verify against (default: the repository root).", "DIR")]
+        git: Option<String>,
+    }
+    let (options, _) =
+        Options::from_arguments_relaxed("USAGE: tally predecessor [--verify] [--git DIR]", args);
+    let repo = repo()?;
+    let claims = abelian::git::predecessor_claims(&repo)?;
+    if claims.is_empty() {
+        println!("no git predecessor recorded");
+        return Ok(());
+    }
+    for claim in claims {
+        let commit = abelian::git::predecessor_commit(&claim).unwrap_or("?");
+        println!("{}  git {commit}  anchor {}", claim.id, claim.at_sum);
+        if options.verify {
+            let git_dir = options
+                .git
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| repo.root().to_path_buf());
+            abelian::git::verify_predecessor(&claim, &git_dir)?;
+            println!("  verified: the state re-derives from git commit {commit}");
+        }
+    }
     Ok(())
 }
 
