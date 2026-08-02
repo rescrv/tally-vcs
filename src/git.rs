@@ -3,7 +3,9 @@
 //! An import walks the commit's tree, ingests every blob into the pool, and
 //! anchors `main` at the resulting state.  The derivation is a pure function
 //! of the commit's tree, so anyone holding the git repository can re-derive
-//! the records and check them against the anchor manifest.
+//! the records and check them against the anchor manifest.  A zero-op first
+//! log line records the provenance for humans: the ref as passed, the
+//! resolved commit digest and its algorithm, and the tree oid.
 //!
 //! Compatibility is checked loudly before anything is written: only modes
 //! `100644`, `100755`, and `120000` import (gitlinks/submodules do not);
@@ -15,7 +17,9 @@ use std::process::Command;
 
 use crate::fork::ForkFile;
 use crate::ident::{ElementRecord, sha3_hex, validate_path};
+use crate::log::Annotation;
 use crate::manifest::Manifest;
+use crate::patch::Intent;
 use crate::repo::Repository;
 use crate::{Error, Result, ioerr};
 
@@ -38,10 +42,9 @@ fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Resolve a committish to its full object name.
-pub fn resolve_commit(git_dir: &Path, committish: &str) -> Result<String> {
-    let spec = format!("{committish}^{{commit}}");
-    let out = git(git_dir, &["rev-parse", "--verify", &spec])?;
+/// `git rev-parse --verify spec`, validated as a hex object name.
+fn rev_parse(git_dir: &Path, spec: &str) -> Result<String> {
+    let out = git(git_dir, &["rev-parse", "--verify", spec])?;
     let hex = String::from_utf8(out)
         .map_err(|_| Error::Corrupt("git rev-parse produced non-UTF-8".to_string()))?
         .trim()
@@ -50,6 +53,29 @@ pub fn resolve_commit(git_dir: &Path, committish: &str) -> Result<String> {
         return Err(Error::Corrupt(format!("git rev-parse produced a non-hex name: {hex:?}")));
     }
     Ok(hex)
+}
+
+/// Resolve a committish to its full object name.
+pub fn resolve_commit(git_dir: &Path, committish: &str) -> Result<String> {
+    rev_parse(git_dir, &format!("{committish}^{{commit}}"))
+}
+
+/// Resolve a commit to its tree's object name.
+pub fn resolve_tree(git_dir: &Path, commit: &str) -> Result<String> {
+    rev_parse(git_dir, &format!("{commit}^{{tree}}"))
+}
+
+/// The git repository's object hash algorithm (`sha1` or `sha256`).
+pub fn object_format(git_dir: &Path) -> Result<String> {
+    let out = git(git_dir, &["rev-parse", "--show-object-format"])?;
+    let name = String::from_utf8(out)
+        .map_err(|_| Error::Corrupt("git rev-parse produced non-UTF-8".to_string()))?
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Err(Error::Corrupt("git reported an empty object format".to_string()));
+    }
+    Ok(name)
 }
 
 /// One entry of a commit's tree, validated as importable.
@@ -169,7 +195,9 @@ pub fn init_from_git(
     // import nothing).
     let entries = commit_entries(&git_dir, &commit)?;
     let repo = Repository::init_bare(&root)?;
-    match import(&repo, &git_dir, &entries) {
+    match import(&repo, &git_dir, &entries)
+        .and_then(|()| annotate_import(&repo, &git_dir, committish, &commit))
+    {
         Ok(()) => Ok((repo, commit)),
         Err(err) => {
             // The layout was ours alone (init_bare refuses an existing
@@ -191,6 +219,29 @@ fn import(repo: &Repository, git_dir: &Path, entries: &[GitEntry]) -> Result<()>
     let sum = manifest.sum();
     repo.write_anchor_manifest(&manifest)?;
     repo.create_fork_raw("main", &ForkFile::at(&sum))?;
+    Ok(())
+}
+
+/// Record where the anchor came from: a zero-op line on `main` whose
+/// annotation names the ref as the user passed it, the resolved commit
+/// digest and its algorithm, and the tree the derivation is a pure
+/// function of.  Anyone reading the log can re-derive the anchor from it.
+fn annotate_import(
+    repo: &Repository,
+    git_dir: &Path,
+    committish: &str,
+    commit: &str,
+) -> Result<()> {
+    let algorithm = object_format(git_dir)?;
+    let tree = resolve_tree(git_dir, commit)?;
+    let annotation = Annotation {
+        author: "git-import".to_string(),
+        prose: Some(format!(
+            "git import: ref {committish} -> commit {algorithm}:{commit} (tree {algorithm}:{tree})"
+        )),
+        ..Annotation::default()
+    };
+    repo.apply("main", Intent::default(), annotation)?;
     Ok(())
 }
 
@@ -260,6 +311,22 @@ mod tests {
 
         // The fork is anchored at the derived state.
         let state = repo.current_state("main").unwrap();
+
+        // The first log line names the provenance: the ref as passed, the
+        // resolved digest and its algorithm, and the tree oid.
+        let algorithm = object_format(&dir).unwrap();
+        let tree = resolve_tree(&dir, &commit).unwrap();
+        let [line] = &state.lines[..] else { panic!("expected one provenance line") };
+        assert!(line.intent.ops.is_empty());
+        assert!(line.realized.is_empty());
+        assert_eq!(line.annotation.author, "git-import");
+        let prose = line.annotation.prose.as_deref().unwrap();
+        assert_eq!(
+            prose,
+            format!(
+                "git import: ref HEAD -> commit {algorithm}:{commit} (tree {algorithm}:{tree})"
+            )
+        );
         assert_eq!(state.manifest.get("/a.txt").unwrap().mode, "100644");
         #[cfg(unix)]
         {
