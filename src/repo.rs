@@ -104,9 +104,15 @@ impl Repository {
         fs::read(self.log_path(fork)).map_err(ioerr(format!("reading log bytes of {fork}")))
     }
 
-    /// The exact bytes of a claim (for byte-preserved packing).
+    /// The exact bytes of a claim (for byte-preserved packing).  Falls back
+    /// to `archive/claims/` so archived claims stay readable; only active
+    /// claims are listed by [`Repository::claim_ids`] and hence packed.
     pub fn claim_bytes(&self, id: &str) -> Result<Vec<u8>> {
-        fs::read(self.dot.join("claims").join(format!("{id}.json")))
+        let active = self.dot.join("claims").join(format!("{id}.json"));
+        if active.exists() {
+            return fs::read(&active).map_err(ioerr(format!("reading claim bytes {id}")));
+        }
+        fs::read(self.dot.join("archive").join("claims").join(format!("{id}.json")))
             .map_err(ioerr(format!("reading claim bytes {id}")))
     }
 
@@ -650,14 +656,32 @@ impl Repository {
         Ok(())
     }
 
-    /// Read and verify a claim by id.
+    /// Read and verify a claim by id (active or archived).
     pub fn get_claim(&self, id: &str) -> Result<Claim> {
-        let bytes = fs::read(self.dot.join("claims").join(format!("{id}.json")))
-            .map_err(ioerr(format!("reading claim {id}")))?;
-        Claim::parse(&bytes)
+        Claim::parse(&self.claim_bytes(id)?)
     }
 
-    /// List all claim ids.
+    /// Move a claim out of the active set into `archive/claims/`.  This is
+    /// not a deletion — the bytes remain, readable by
+    /// [`Repository::get_claim`] — but the claim leaves
+    /// [`Repository::claim_ids`] and so leaves future packs.  Callers MUST
+    /// have proof the claim's exact bytes are retained elsewhere (I7); the
+    /// wire layer's verified unpack is that proof.
+    pub fn archive_claim(&self, id: &str) -> Result<()> {
+        let active = self.dot.join("claims").join(format!("{id}.json"));
+        if !active.exists() {
+            return Err(Error::Invalid(format!("no active claim {id} to archive")));
+        }
+        let archive_dir = self.dot.join("archive").join("claims");
+        fs::create_dir_all(&archive_dir).map_err(ioerr("creating archive/claims"))?;
+        fs::rename(&active, archive_dir.join(format!("{id}.json")))
+            .map_err(ioerr(format!("archiving claim {id}")))?;
+        fsync_dir(archive_dir.as_path())?;
+        fsync_dir(self.dot.join("claims").as_path())?;
+        Ok(())
+    }
+
+    /// List active (unarchived) claim ids.
     pub fn claim_ids(&self) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         let entries =

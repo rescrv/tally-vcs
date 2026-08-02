@@ -39,6 +39,7 @@ patches:
 claims:
   claim <cmd>                      run a command attested; file the claim
   claims                           list claims (--stale for drifted ones)
+  archive-claims <store>           move claims verifiably retained by the store to archive/ (--dry-run)
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
@@ -77,6 +78,7 @@ fn main() {
         "fuse" => cmd_fuse(&rest),
         "claim" => cmd_claim(&rest),
         "claims" => cmd_claims(&rest),
+        "archive-claims" => cmd_archive_claims(&rest),
         "fork" => cmd_fork(&rest),
         "union" => cmd_union(&rest),
         "submit" => cmd_submit(&rest),
@@ -513,6 +515,45 @@ fn cmd_claims(args: &[&str]) -> Result<()> {
             claim.cmd,
         );
     }
+    Ok(())
+}
+
+fn cmd_archive_claims(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(flag, "Report what would be archived without moving anything.")]
+        dry_run: bool,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: tally archive-claims [--dry-run] <store>",
+        args,
+    );
+    let Some(store) = free.first() else {
+        return Err(Error::Invalid("archive-claims requires <store>".to_string()));
+    };
+    let repo = repo()?;
+    let store = FsStore::open(store)?;
+    // The proof: exact claim bytes recoverable from the store's latest
+    // manifest, verified by unpacking (I11).  Only byte-identical claims
+    // qualify (I4); anything else stays active.
+    let remote = abelian::wire::remote_claims(&store)?;
+    let mut archived = 0usize;
+    let mut kept = 0usize;
+    for id in repo.claim_ids()? {
+        let local = repo.claim_bytes(&id)?;
+        if remote.get(&id).is_some_and(|bytes| *bytes == local) {
+            if options.dry_run {
+                println!("would archive {id}");
+            } else {
+                repo.archive_claim(&id)?;
+                println!("archived {id}");
+            }
+            archived += 1;
+        } else {
+            kept += 1;
+        }
+    }
+    println!("{archived} archived, {kept} kept (not verified in the store)");
     Ok(())
 }
 
