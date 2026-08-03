@@ -23,7 +23,7 @@ pub enum Provenance {
     /// An instrumented author; reads are observed, not inferred.
     #[default]
     Agent,
-    /// The emergency cord (README §10): degraded provenance is marked,
+    /// The emergency cord (ANDON §10): degraded provenance is marked,
     /// never faked.
     Andon,
     /// Landed by union from another fork; `origin` names the source line.

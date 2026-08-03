@@ -15,7 +15,7 @@ use crate::{Error, Result, b64};
 
 /////////////////////////////////////////////// ops ///////////////////////////////////////////////
 
-/// One span operation.  Serialized externally tagged, matching the README:
+/// One span operation.  Serialized externally tagged, matching the ANDON:
 /// `{"edit": {...}}`, `{"create": {...}}`, `{"delete": {...}}`,
 /// `{"chmod": {...}}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +43,7 @@ pub enum Op {
         /// bundle is the intent JSON plus its referenced blobs.
         #[serde(skip_serializing_if = "Option::is_none")]
         blob: Option<String>,
-        /// Content inline, base64 (README §4); the Andon path needs no blob
+        /// Content inline, base64 (ANDON §4); the Andon path needs no blob
         /// store to be populated in advance.
         #[serde(skip_serializing_if = "Option::is_none")]
         content_b64: Option<String>,

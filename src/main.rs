@@ -3,8 +3,8 @@
 //! Named for the group.  Its merge takes after the split tally stick — the
 //! twelfth century's distributed, two-party, checksummed ledger.  Every
 //! subcommand here automates a step
-//! the README teaches by hand; with zero `abelian` binaries available, the
-//! README remains a complete, operable version control system.
+//! the ANDON teaches by hand; with zero `abelian` binaries available, the
+//! ANDON remains a complete, operable version control system.
 
 use std::process::exit;
 

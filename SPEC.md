@@ -1,8 +1,8 @@
 # abelian: specification, v0
 
-This document is normative. The [README](README.md) is the walkthrough and the
+This document is normative. The [ANDON](ANDON.md) is the walkthrough and the
 rationale; where the two disagree, this document is wrong and should be fixed,
-because the README was approved first and the design flows from it. Conformance
+because the ANDON was approved first and the design flows from it. Conformance
 language: MUST and MUST NOT mark requirements whose violation makes an
 implementation not-abelian; everything else is stated as fact about the format
 and is equally binding, just less shouted.
@@ -449,7 +449,7 @@ role the fsync'd append plays loose, and deliberately the same shape wal3
 uses against object storage.
 
 **Andon over the wire.** The emergency path is loose-first: fetch, unpack,
-operate per the README with an editor and stdlib Python, repack, push. With
+operate per the ANDON with an editor and stdlib Python, repack, push. With
 no `abelian` at all this requires `curl`, `zstd`, and Python — acceptable, and
 the reason `.pk` uses standard zstd frames and `.idx` is plain text.
 
@@ -489,7 +489,7 @@ so it is versioned with the format.
   operable VCS; the model is a layer, never a load-bearing wall.
 - **I6** — the native format is human-writable: an editor and one static
   binary suffice to operate the emergency path, and the walkthrough in the
-  README is that path's documentation.
+  ANDON is that path's documentation.
 - **I7** — retention is lossless: fuse appends a view line whose realized
   delta is empty, never a mutation, and the fused lines remain underneath;
   observed exhaust is never discarded; the only deletion is a retired

@@ -28,7 +28,7 @@ abelian's authors do not.
 
 ## How to read this document
 
-This README teaches abelian by hand: a text editor, coreutils, and a few lines
+This ANDON.md teaches abelian by hand: a text editor, coreutils, and a few lines
 of Python. At every step, the `abelian` command that automates the step is named
 in passing. Do not skip the by-hand path, because it is not pedagogy alone.
 abelian guarantees that with zero models available — and, if necessary, zero

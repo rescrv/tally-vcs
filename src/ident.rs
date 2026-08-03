@@ -410,12 +410,12 @@ mod tests {
     }
 
     #[test]
-    fn sum_matches_readme_python() {
-        // Cross-checked against the eleven lines of Python in README §2.
+    fn sum_matches_andon_python() {
+        // Cross-checked against the eleven lines of Python in ANDON §2.
         let mut s = Sum::zero();
         s.insert(b"100644\t/src/main.rs\tab12\n");
         // python3: sum_hex(state_of(b"100644\t/src/main.rs\tab12\n")) from
-        // the README's eleven lines of Python produced this constant.
+        // the ANDON's eleven lines of Python produced this constant.
         assert_eq!(
             s.hexdigest(),
             "b1a65b56c64f592d7632225e56240ff6014b090c9679e879609c9ef001acf75e"
