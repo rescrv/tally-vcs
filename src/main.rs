@@ -165,6 +165,7 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian init [--from-git COMMIT] [dir]", args);
+    reject_extra("init", &free, 1)?;
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
         None => std::env::current_dir().map_err(abelian::ioerr("getting cwd"))?,
@@ -194,7 +195,8 @@ fn cmd_sum(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print only the sum, not the records.")]
         quiet: bool,
     }
-    let (options, _) = Options::from_arguments_relaxed("USAGE: abelian sum [--quiet]", args);
+    let (options, free) = Options::from_arguments_relaxed("USAGE: abelian sum [--quiet]", args);
+    reject_extra("sum", &free, 0)?;
     let repo = repo()?;
     let records = repo.records_of_working_tree()?;
     let mut sum = Sum::zero();
@@ -216,8 +218,9 @@ fn cmd_status(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print machine-readable lines: <code> <TAB> <path>.")]
         porcelain: bool,
     }
-    let (options, _) =
+    let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian status [--fork FORK] [--porcelain]", args);
+    reject_extra("status", &free, 0)?;
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
     // The pending patch: what the working tree differs from the ref by.  Not
@@ -258,8 +261,9 @@ fn cmd_status(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_check(args: &[&str]) -> Result<()> {
-    let (options, _) =
+    let (options, free) =
         ForkOptions::from_arguments_relaxed("USAGE: abelian check [--fork FORK]", args);
+    reject_extra("check", &free, 0)?;
     let repo = repo()?;
     let (expected, actual) = repo.check(options.fork())?;
     println!("log expects   {}", expected.hexdigest());
@@ -274,8 +278,9 @@ fn cmd_check(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_snapshot(args: &[&str]) -> Result<()> {
-    let (options, _) =
+    let (options, free) =
         ForkOptions::from_arguments_relaxed("USAGE: abelian snapshot [--fork FORK]", args);
+    reject_extra("snapshot", &free, 0)?;
     let repo = repo()?;
     let sum = repo.snapshot(options.fork())?;
     println!("anchored {} at {sum}", options.fork());
@@ -287,6 +292,7 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
         "USAGE: abelian materialize [--fork FORK] <sum>",
         args,
     );
+    reject_extra("materialize", &free, 1)?;
     let Some(sum_hex) = free.first() else {
         return Err(Error::Invalid("materialize requires a sum".to_string()));
     };
@@ -315,6 +321,7 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
         "USAGE: abelian restore [--fork FORK] [rev] [-- path...]",
         &left,
     );
+    reject_extra("restore", &revs, 1)?;
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
     // Default to HEAD: discard uncommitted working-tree edits.
@@ -342,6 +349,7 @@ fn cmd_reset(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian reset [--fork FORK] <rev>", args);
+    reject_extra("reset", &free, 1)?;
     let Some(spec) = free.first() else {
         return Err(Error::Invalid("reset requires a revision".to_string()));
     };
@@ -373,6 +381,7 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
         "USAGE: abelian rev-parse [--fork FORK] [--line|--verbose] <rev>",
         args,
     );
+    reject_extra("rev-parse", &free, 1)?;
     let Some(spec) = free.first() else {
         return Err(Error::Invalid("rev-parse requires a revision".to_string()));
     };
@@ -526,6 +535,7 @@ fn cmd_blame(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian blame [--fork FORK] <path>", args);
+    reject_extra("blame", &free, 1)?;
     let Some(raw) = free.first() else {
         return Err(Error::Invalid("blame requires a path".to_string()));
     };
@@ -576,11 +586,31 @@ fn short(sum: &str) -> String {
     sum.chars().take(12).collect()
 }
 
+/// Reject positional arguments a command does not consume, rather than
+/// silently ignoring them.  `max` is how many leading free args the command
+/// uses; anything past that is an error.  We parse with arrrg's `relaxed`
+/// variant, which only relaxes the enforcement that flags appear in arrrg's
+/// canonical (sorted) order — the strict variant panics on a non-canonical
+/// command line.  Relaxing that check does not change how leftover positional
+/// arguments are returned, so it is still on each command to reject the
+/// extras; an unrecognized argument almost always means a mistyped flag or a
+/// misplaced word, and swallowing it hides the bug.
+fn reject_extra(command: &str, free: &[String], max: usize) -> Result<()> {
+    if free.len() > max {
+        return Err(Error::Invalid(format!(
+            "{command}: unexpected argument(s): {}",
+            free[max..].join(" ")
+        )));
+    }
+    Ok(())
+}
+
 fn cmd_apply(args: &[&str]) -> Result<()> {
     let (options, free) = ApplyOptions::from_arguments_relaxed(
         "USAGE: abelian apply [options] <patch.json>",
         args,
     );
+    reject_extra("apply", &free, 1)?;
     let Some(patch_path) = free.first() else {
         return Err(Error::Invalid("apply requires a patch file (or - for stdin)".to_string()));
     };
@@ -631,7 +661,9 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_log(args: &[&str]) -> Result<()> {
-    let (options, _) = ForkOptions::from_arguments_relaxed("USAGE: abelian log [--fork FORK]", args);
+    let (options, free) =
+        ForkOptions::from_arguments_relaxed("USAGE: abelian log [--fork FORK]", args);
+    reject_extra("log", &free, 0)?;
     let repo = repo()?;
     // Follow the fork across its lineage: its own log, then—when exhausted—
     // the log of the fork it was forked from, and so on to the root.
@@ -677,6 +709,7 @@ fn print_prose(header: &str, prose: &str) {
 fn cmd_show(args: &[&str]) -> Result<()> {
     let (options, free) =
         ForkOptions::from_arguments_relaxed("USAGE: abelian show [--fork FORK] <id>", args);
+    reject_extra("show", &free, 1)?;
     let Some(id) = free.first() else {
         return Err(Error::Invalid("show requires a line id".to_string()));
     };
@@ -701,10 +734,11 @@ fn cmd_read(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Render the raw tool-call stream (full lines).")]
         raw: bool,
     }
-    let (options, _) = Options::from_arguments_relaxed(
+    let (options, free) = Options::from_arguments_relaxed(
         "USAGE: abelian read [--fork FORK] [--fused|--raw]",
         args,
     );
+    reject_extra("read", &free, 0)?;
     let repo = repo()?;
     let state = repo.current_state(options.fork.as_deref().unwrap_or("main"))?;
     if options.raw {
@@ -746,6 +780,7 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         "USAGE: abelian fuse [--fork FORK] [--prose P] <from-id> <to-id>",
         args,
     );
+    reject_extra("fuse", &free, 2)?;
     let (Some(from), Some(to)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("fuse requires <from-id> <to-id>".to_string()));
     };
@@ -770,8 +805,9 @@ fn cmd_gc_blobs(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Report what would be collected without removing anything.")]
         dry_run: bool,
     }
-    let (options, _) =
+    let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian gc-blobs [--dry-run]", args);
+    reject_extra("gc-blobs", &free, 0)?;
     let repo = repo()?;
     let collected = repo.gc_blobs(options.dry_run)?;
     for hash in &collected {
@@ -793,6 +829,7 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian fork [--from FORK] <name>", args);
+    reject_extra("fork", &free, 1)?;
     let Some(name) = free.first() else {
         return Err(Error::Invalid("fork requires a name".to_string()));
     };
@@ -810,6 +847,7 @@ fn cmd_remove_fork(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian remove-fork [--force] <name>", args);
+    reject_extra("remove-fork", &free, 1)?;
     let Some(name) = free.first() else {
         return Err(Error::Invalid("remove-fork requires a fork name".to_string()));
     };
@@ -831,6 +869,7 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         "USAGE: abelian union [--into FORK] <fork>",
         args,
     );
+    reject_extra("union", &free, 1)?;
     let Some(source) = free.first() else {
         return Err(Error::Invalid("union requires a source fork".to_string()));
     };
@@ -865,6 +904,7 @@ fn cmd_submit(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian submit [--author A] <file|->", args);
+    reject_extra("submit", &free, 1)?;
     let Some(path) = free.first() else {
         return Err(Error::Invalid("submit requires a file (or - for stdin)".to_string()));
     };
@@ -905,6 +945,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
         "USAGE: abelian enact [options] <submission-blob> <patch.json>",
         args,
     );
+    reject_extra("enact", &free, 2)?;
     let (Some(submission), Some(patch_path)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("enact requires <submission-blob> <patch.json>".to_string()));
     };
@@ -941,6 +982,7 @@ fn cmd_clone(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
     let (_, free) = Options::from_arguments_relaxed("USAGE: abelian clone <store> <dest>", args);
+    reject_extra("clone", &free, 2)?;
     let (Some(store), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("clone requires <store> <dest>".to_string()));
     };
@@ -954,6 +996,7 @@ fn cmd_fetch(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
     let (_, free) = Options::from_arguments_relaxed("USAGE: abelian fetch <store> <cache>", args);
+    reject_extra("fetch", &free, 2)?;
     let (Some(store), Some(cache)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("fetch requires <store> <cache>".to_string()));
     };
@@ -973,6 +1016,7 @@ fn cmd_push(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian push [--level N] <store>", args);
+    reject_extra("push", &free, 1)?;
     let Some(store) = free.first() else {
         return Err(Error::Invalid("push requires <store>".to_string()));
     };
@@ -991,6 +1035,7 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: abelian pack [--level N] <dir>", args);
+    reject_extra("pack", &free, 1)?;
     let Some(dir) = free.first() else {
         return Err(Error::Invalid("pack requires an output directory".to_string()));
     };
@@ -1010,6 +1055,7 @@ fn cmd_unpack(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
     let (_, free) = Options::from_arguments_relaxed("USAGE: abelian unpack <dir> <dest>", args);
+    reject_extra("unpack", &free, 2)?;
     let (Some(dir), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("unpack requires <dir> <dest>".to_string()));
     };
