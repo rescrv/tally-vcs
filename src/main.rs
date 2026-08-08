@@ -28,6 +28,9 @@ repository:
   snapshot                         write a manifest at the current state and repoint the fork
   materialize <sum>                produce a working tree at a prior state
 
+revisions:
+  rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum, line id)
+
 patches:
   apply <patch.json>               validate and apply an intent; append to the log
   log                              render the chain
@@ -68,6 +71,7 @@ fn main() {
         "check" => cmd_check(&rest),
         "snapshot" => cmd_snapshot(&rest),
         "materialize" => cmd_materialize(&rest),
+        "rev-parse" => cmd_rev_parse(&rest),
         "apply" => cmd_apply(&rest),
         "log" => cmd_log(&rest),
         "show" => cmd_show(&rest),
@@ -231,6 +235,45 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     let manifest = repo.manifest_at(options.fork(), sum_hex)?;
     repo.materialize(&manifest)?;
     println!("materialized {} elements at {sum_hex}", manifest.len());
+    Ok(())
+}
+
+fn cmd_rev_parse(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to resolve against (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(flag, "Print the resolving line id instead of the state sum.")]
+        line: bool,
+        #[arrrg(flag, "Print sum, line id, and fork, one field per line.")]
+        verbose: bool,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: abelian rev-parse [--fork FORK] [--line|--verbose] <rev>",
+        args,
+    );
+    let Some(spec) = free.first() else {
+        return Err(Error::Invalid("rev-parse requires a revision".to_string()));
+    };
+    let repo = repo()?;
+    let resolved =
+        abelian::revision::resolve(&repo, spec, options.fork.as_deref().unwrap_or("main"))?;
+    if options.verbose {
+        println!("sum  {}", resolved.sum);
+        println!("line {}", resolved.line.as_deref().unwrap_or("(anchor: no line)"));
+        println!("fork {}", resolved.fork);
+    } else if options.line {
+        match &resolved.line {
+            Some(id) => println!("{id}"),
+            None => {
+                return Err(Error::Invalid(format!(
+                    "revision {spec:?} names the base anchor, which no line produced"
+                )));
+            }
+        }
+    } else {
+        println!("{}", resolved.sum);
+    }
     Ok(())
 }
 

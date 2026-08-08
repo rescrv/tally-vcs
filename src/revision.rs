@@ -1,0 +1,323 @@
+//! Revision language: the names every other command takes as arguments.
+//!
+//! gitrevisions(7) is a man page, not a marquee command, but nothing else
+//! can be spelled until it exists: `HEAD`, `HEAD~3`, a fork name, a line id,
+//! a bare sum.  A revision resolves to a *state* — a point on a fork's
+//! lineage, identified by its sum.  Because history here is a chain whose
+//! arithmetic never needed order, "the state N steps back" is a well-defined
+//! index into the lineage, not a graph walk with merge ambiguity.
+//!
+//! The namespace is strictly richer than git's: a resolution carries not
+//! just the sum but the fork it was read on and, when a line named the
+//! state, that line's id — so `blame`, `diff`, and `restore` can speak of
+//! patches and spans, not only commits.
+
+use crate::ident::{Sum, is_hex64};
+use crate::log::LogLine;
+use crate::patch::{RealizedEntry, apply_realized_to_sum};
+use crate::repo::Repository;
+use crate::{Error, Result};
+
+/// A resolved revision: a state on a fork's lineage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    /// The fork whose lineage the revision was read on.
+    pub fork: String,
+    /// The state sum the revision names, 64 hex.
+    pub sum: String,
+    /// The id of the log line whose `sum_after` is this state, if the state
+    /// is one a line produced (the base anchor names no line).
+    pub line: Option<String>,
+}
+
+/// One point on a fork's lineage: a state, and the line (if any) that
+/// produced it.  Index 0 is the base anchor, which no line produced; each
+/// subsequent point is the state after one line of the continuity log.
+struct StatePoint {
+    sum: String,
+    line: Option<String>,
+}
+
+/// Build the lineage as an ordered list of states, oldest first.  Point 0 is
+/// the base anchor — the state before the earliest line of the whole lineage
+/// — recovered by inverting the first line's realized delta; every later
+/// point is a line's `sum_after`.  HEAD is the last point.
+fn lineage_states(repo: &Repository, fork: &str) -> Result<Vec<StatePoint>> {
+    let history = repo.continuity_log(fork)?;
+    let lines: Vec<&LogLine> = history.iter().map(|(_, l)| l).collect();
+    let base = match lines.first() {
+        None => repo.current_state(fork)?.sum.hexdigest(),
+        Some(first) => {
+            // The state before the first line is the inverse of its realized
+            // delta applied to the state after it — undo is the inverse.
+            let after = Sum::from_hexdigest(&first.sum_after)?;
+            let inverse: Vec<RealizedEntry> = first
+                .realized
+                .iter()
+                .map(|e| RealizedEntry { remove: e.add.clone(), add: e.remove.clone() })
+                .collect();
+            apply_realized_to_sum(&after, &inverse)?.hexdigest()
+        }
+    };
+    let mut points = vec![StatePoint { sum: base, line: None }];
+    for line in lines {
+        points.push(StatePoint { sum: line.sum_after.clone(), line: Some(line.id.clone()) });
+    }
+    Ok(points)
+}
+
+/// Split a spec into its base and its suffix operators.  A suffix is `^`,
+/// `~N`, or `@{N}`; everything before the first suffix operator is the base.
+/// `@{...}` is recognized only as a whole `@{N}` group so a bare `@` (an
+/// alias for HEAD) survives.
+fn split_suffixes(spec: &str) -> (&str, Vec<&str>) {
+    let bytes = spec.as_bytes();
+    // A bare "@" or "@{...}" leading the spec is a base, not a suffix.
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'~' | b'^' => break,
+            b'@' if i > 0 => break,
+            b'@' => {
+                // Leading @: consume a following {..} group if present.
+                if bytes.get(i + 1) == Some(&b'{') {
+                    match spec[i..].find('}') {
+                        Some(off) => i += off + 1,
+                        None => i += 1,
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    let base = &spec[..i];
+    let mut suffixes = Vec::new();
+    let rest = &spec[i..];
+    let rb = rest.as_bytes();
+    let mut j = 0;
+    while j < rb.len() {
+        match rb[j] {
+            b'^' => {
+                suffixes.push(&rest[j..j + 1]);
+                j += 1;
+            }
+            b'~' => {
+                let mut k = j + 1;
+                while k < rb.len() && rb[k].is_ascii_digit() {
+                    k += 1;
+                }
+                suffixes.push(&rest[j..k]);
+                j = k;
+            }
+            b'@' if rb.get(j + 1) == Some(&b'{') => {
+                match rest[j..].find('}') {
+                    Some(off) => {
+                        suffixes.push(&rest[j..j + off + 1]);
+                        j += off + 1;
+                    }
+                    None => {
+                        suffixes.push(&rest[j..]);
+                        j = rb.len();
+                    }
+                }
+            }
+            _ => {
+                // Not a recognized suffix operator; fold it back into nothing
+                // (the base already ended here), treat as a stray character.
+                suffixes.push(&rest[j..j + 1]);
+                j += 1;
+            }
+        }
+    }
+    (base, suffixes)
+}
+
+/// Resolve `spec` on `default_fork`'s lineage to a state.
+///
+/// Bases: `HEAD` or `@` (the fork's head), a fork name (that fork's head,
+/// and the resolution is read on that fork), a 64-hex sum (a state on the
+/// lineage), or a log-line id or unambiguous id prefix (the state that line
+/// produced).  Suffixes walk the lineage: `^` and `~N` step back N states
+/// toward the base; `@{N}` selects the state N steps back from head.
+pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Resolved> {
+    if spec.is_empty() {
+        return Err(Error::Invalid("empty revision".to_string()));
+    }
+    let (base, suffixes) = split_suffixes(spec);
+    // Decide which fork's lineage we read on, and the starting index.
+    let known_forks = repo.fork_names()?;
+    let (fork, mut index, points) = if base == "HEAD" || base == "@" || base.is_empty() {
+        let points = lineage_states(repo, default_fork)?;
+        let idx = points.len() - 1;
+        (default_fork.to_string(), idx, points)
+    } else if known_forks.iter().any(|f| f == base) {
+        let points = lineage_states(repo, base)?;
+        let idx = points.len() - 1;
+        (base.to_string(), idx, points)
+    } else {
+        // A 64-hex string could be a state sum or a line id; a shorter
+        // string is a line-id prefix.  Prefer an exact sum match — a sum
+        // names a state directly — then fall back to a line id.
+        let points = lineage_states(repo, default_fork)?;
+        if is_hex64(base)
+            && let Some(idx) = points.iter().rposition(|p| p.sum == base)
+        {
+            (default_fork.to_string(), idx, points)
+        } else {
+            let matches: Vec<usize> = points
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.line.as_deref().is_some_and(|id| id.starts_with(base)))
+                .map(|(i, _)| i)
+                .collect();
+            let idx = match matches.as_slice() {
+                [] => {
+                    return Err(Error::Invalid(format!(
+                        "revision {base:?} is neither HEAD, a fork, a sum, nor a line id \
+                         on fork {default_fork}'s lineage"
+                    )));
+                }
+                [one] => *one,
+                many => {
+                    return Err(Error::Invalid(format!(
+                        "line id prefix {base:?} is ambiguous on fork {default_fork}: \
+                         {} lines match",
+                        many.len()
+                    )));
+                }
+            };
+            (default_fork.to_string(), idx, points)
+        }
+    };
+    // Apply the suffix operators left to right.
+    for suffix in suffixes {
+        let step_back = |index: &mut usize, n: usize, sfx: &str| -> Result<()> {
+            if *index < n {
+                return Err(Error::Invalid(format!(
+                    "revision {spec:?}: {sfx} walks before the base of fork {fork}'s lineage"
+                )));
+            }
+            *index -= n;
+            Ok(())
+        };
+        match suffix {
+            "^" => step_back(&mut index, 1, suffix)?,
+            s if s.starts_with('~') => {
+                let n: usize = s[1..].parse().map_err(|_| {
+                    Error::Invalid(format!("revision {spec:?}: {s} is not ~<number>"))
+                })?;
+                step_back(&mut index, n, suffix)?;
+            }
+            s if s.starts_with("@{") && s.ends_with('}') => {
+                let inner = &s[2..s.len() - 1];
+                let n: usize = inner.parse().map_err(|_| {
+                    Error::Invalid(format!(
+                        "revision {spec:?}: only numeric @{{N}} is supported, not {inner:?}"
+                    ))
+                })?;
+                if n >= points.len() {
+                    return Err(Error::Invalid(format!(
+                        "revision {spec:?}: @{{{n}}} walks before the base of fork {fork}"
+                    )));
+                }
+                index = points.len() - 1 - n;
+            }
+            other => {
+                return Err(Error::Invalid(format!(
+                    "revision {spec:?}: unrecognized suffix {other:?}"
+                )));
+            }
+        }
+    }
+    let point = &points[index];
+    Ok(Resolved { fork, sum: point.sum.clone(), line: point.line.clone() })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::log::Annotation;
+    use crate::patch::{Intent, Op};
+
+    fn temp_repo(name: &str) -> Repository {
+        let dir =
+            std::env::temp_dir().join(format!("abelian-rev-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Repository::init(&dir).unwrap()
+    }
+
+    fn create(path: &str, content: &[u8]) -> Intent {
+        Intent {
+            ops: vec![Op::Create {
+                path: path.to_string(),
+                mode: "100644".to_string(),
+                blob: None,
+                content_b64: Some(crate::b64::encode(content)),
+            }],
+        }
+    }
+
+    fn note() -> Annotation {
+        Annotation { author: "t".to_string(), ..Annotation::default() }
+    }
+
+    #[test]
+    fn head_and_ancestors() {
+        let repo = temp_repo("head");
+        let a = repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        let b = repo.apply("main", create("/b", b"b\n"), note()).unwrap();
+        // HEAD is the latest state.
+        let head = resolve(&repo, "HEAD", "main").unwrap();
+        assert_eq!(head.sum, b.sum_after);
+        assert_eq!(head.line.as_deref(), Some(b.id.as_str()));
+        // @ is an alias for HEAD.
+        assert_eq!(resolve(&repo, "@", "main").unwrap(), head);
+        // HEAD~1 and HEAD^ are the state after a.
+        let back = resolve(&repo, "HEAD~1", "main").unwrap();
+        assert_eq!(back.sum, a.sum_after);
+        assert_eq!(back.line.as_deref(), Some(a.id.as_str()));
+        assert_eq!(resolve(&repo, "HEAD^", "main").unwrap(), back);
+        // HEAD~2 is the base anchor (empty repo): the zero state, no line.
+        let base = resolve(&repo, "HEAD~2", "main").unwrap();
+        assert_eq!(base.sum, "0".repeat(64));
+        assert_eq!(base.line, None);
+        // HEAD~3 walks off the end.
+        assert!(resolve(&repo, "HEAD~3", "main").is_err());
+    }
+
+    #[test]
+    fn sums_and_line_ids_and_prefixes() {
+        let repo = temp_repo("names");
+        let a = repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        // A bare sum resolves to itself.
+        let by_sum = resolve(&repo, &a.sum_after, "main").unwrap();
+        assert_eq!(by_sum.sum, a.sum_after);
+        assert_eq!(by_sum.line.as_deref(), Some(a.id.as_str()));
+        // A full line id resolves to its state.
+        assert_eq!(resolve(&repo, &a.id, "main").unwrap().sum, a.sum_after);
+        // An unambiguous prefix resolves too.
+        let short = &a.id[..8];
+        assert_eq!(resolve(&repo, short, "main").unwrap().sum, a.sum_after);
+        // Garbage does not resolve.
+        assert!(resolve(&repo, "not-a-thing", "main").is_err());
+    }
+
+    #[test]
+    fn fork_names_resolve_on_their_own_lineage() {
+        let repo = temp_repo("forks");
+        repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        repo.create_fork("session", "main").unwrap();
+        let c = repo.apply("session", create("/c", b"c\n"), note()).unwrap();
+        // The fork name resolves to that fork's head, read on that fork.
+        let r = resolve(&repo, "session", "main").unwrap();
+        assert_eq!(r.fork, "session");
+        assert_eq!(r.sum, c.sum_after);
+        // @{1} on the session is the state before c — main's head, across
+        // the lineage boundary.
+        let back = resolve(&repo, "session@{1}", "main").unwrap();
+        assert_eq!(back.sum, repo.current_state("main").unwrap().sum.hexdigest());
+    }
+}
