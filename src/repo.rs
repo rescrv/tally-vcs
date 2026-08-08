@@ -410,6 +410,91 @@ impl Repository {
         Ok(manifest)
     }
 
+    /// Follow a fork across its lineage (§2.3): the fork's own log, then —
+    /// when its log is exhausted — the log of the fork it was forked from,
+    /// up to the state it anchored at, and so on down to the root.  Returns
+    /// lines in chain order (oldest first), each paired with the fork it came
+    /// from; the whole is a single continuous history.
+    ///
+    /// A fork records no parent name; the anchor names a state, so lineage is
+    /// reconstructed by matching anchor sums (see `parent_fork`).
+    pub fn continuity_log(&self, fork: &str) -> Result<Vec<(String, LogLine)>> {
+        // Segments accumulate child-first; we reverse to assemble oldest-first.
+        let mut segments: Vec<(String, Vec<LogLine>)> = Vec::new();
+        let mut current = fork.to_string();
+        // The state the child branched from `current`: emit `current`'s lines
+        // only up to it.  `None` for the starting fork means emit them all.
+        let mut boundary: Option<String> = None;
+        let mut visited = BTreeSet::new();
+        loop {
+            // Guard against cycles that a corrupt anchor graph could form.
+            if !visited.insert(current.clone()) {
+                break;
+            }
+            let fork_file = self.read_fork(&current)?;
+            let mut lines = self.current_state(&current)?.lines;
+            let take = match &boundary {
+                None => lines.len(),
+                // The branch point is a line's state, or the anchor itself
+                // (in which case `current` contributed nothing between them).
+                Some(sum) => last_state_position(&lines, sum).map(|p| p + 1).unwrap_or(0),
+            };
+            lines.truncate(take);
+            segments.push((current.clone(), lines));
+            // The all-zeros anchor is the empty repository: lineage ends.
+            if fork_file.anchor == Sum::zero().hexdigest() {
+                break;
+            }
+            match self.parent_fork(&current, &fork_file.anchor)? {
+                Some(parent) => {
+                    boundary = Some(fork_file.anchor);
+                    current = parent;
+                }
+                None => break,
+            }
+        }
+        // Assemble oldest-first globally: the root-most segment leads.
+        let mut out = Vec::new();
+        for (name, lines) in segments.into_iter().rev() {
+            for line in lines {
+                out.push((name.clone(), line));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Find the fork `child` was forked from: another fork whose history
+    /// includes the state named by `anchor` (§2.3).  Prefers a fork that
+    /// authored the state (a line whose `sum_after` is the anchor) over one
+    /// that merely shares it as its own anchor; `main` breaks remaining ties,
+    /// then name order, so the choice is deterministic.
+    fn parent_fork(&self, child: &str, anchor: &str) -> Result<Option<String>> {
+        let mut authored: Vec<String> = Vec::new();
+        let mut shared: Vec<String> = Vec::new();
+        let mut names = self.fork_names()?;
+        names.sort();
+        for name in names {
+            if name == child {
+                continue;
+            }
+            let fork_file = self.read_fork(&name)?;
+            let state = self.current_state(&name)?;
+            if last_state_position(&state.lines, anchor).is_some() {
+                authored.push(name);
+            } else if fork_file.anchor == anchor {
+                shared.push(name);
+            }
+        }
+        let pick = |candidates: Vec<String>| -> Option<String> {
+            if candidates.iter().any(|n| n == "main") {
+                Some("main".to_string())
+            } else {
+                candidates.into_iter().next()
+            }
+        };
+        Ok(pick(authored).or_else(|| pick(shared)))
+    }
+
     ////////////////////////////////////////// apply //////////////////////////////////////////
 
     /// §2.7 Apply: the seven steps, with the fsync'd log append as the sole
@@ -914,6 +999,49 @@ mod tests {
         repo.apply("session-1", create("/b", b"b\n"), note("t")).unwrap();
         assert_eq!(repo.current_state("main").unwrap().manifest.len(), 1);
         assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
+    }
+
+    #[test]
+    fn continuity_log_follows_the_lineage_to_the_root() {
+        let repo = temp_repo("continuity");
+        // main: A, B.  Fork session-1 off main after B; add C, D.
+        // Fork session-2 off session-1 after C; add E.
+        let a = repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
+        let b = repo.apply("main", create("/b", b"b\n"), note("t")).unwrap();
+        repo.create_fork("session-1", "main").unwrap();
+        let c = repo.apply("session-1", create("/c", b"c\n"), note("t")).unwrap();
+        // session-2 branches from session-1 at the state after C.
+        repo.create_fork("session-2", "session-1").unwrap();
+        let d = repo.apply("session-1", create("/d", b"d\n"), note("t")).unwrap();
+        let e = repo.apply("session-2", create("/e", b"e\n"), note("t")).unwrap();
+
+        // session-2's continuous history: E (session-2), then C (session-1,
+        // up to the branch point — D is on session-1 past it and excluded),
+        // then B, A (main).  Oldest-first.
+        let history = repo.continuity_log("session-2").unwrap();
+        let got: Vec<(String, String)> =
+            history.iter().map(|(f, l)| (f.clone(), l.id.clone())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("main".to_string(), a.id.clone()),
+                ("main".to_string(), b.id.clone()),
+                ("session-1".to_string(), c.id.clone()),
+                ("session-2".to_string(), e.id.clone()),
+            ],
+            "d {} must not appear: it is past session-2's branch point",
+            d.id
+        );
+
+        // session-1's own continuous history includes D and stops at main.
+        let s1: Vec<String> =
+            repo.continuity_log("session-1").unwrap().into_iter().map(|(_, l)| l.id).collect();
+        assert_eq!(s1, vec![a.id.clone(), b.id.clone(), c.id.clone(), d.id.clone()]);
+
+        // main follows nothing but itself.
+        let m: Vec<String> =
+            repo.continuity_log("main").unwrap().into_iter().map(|(_, l)| l.id).collect();
+        assert_eq!(m, vec![a.id, b.id]);
     }
 
     #[test]

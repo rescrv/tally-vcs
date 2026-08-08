@@ -291,8 +291,15 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
 fn cmd_log(args: &[&str]) -> Result<()> {
     let (options, _) = ForkOptions::from_arguments_relaxed("USAGE: abelian log [--fork FORK]", args);
     let repo = repo()?;
-    let state = repo.current_state(options.fork())?;
-    for line in state.lines.iter().rev() {
+    // Follow the fork across its lineage: its own log, then—when exhausted—
+    // the log of the fork it was forked from, and so on to the root.
+    let history = repo.continuity_log(options.fork())?;
+    let mut shown = options.fork().to_string();
+    for (fork, line) in history.iter().rev() {
+        if fork != &shown {
+            println!("--- {fork} ---");
+            shown = fork.clone();
+        }
         print_line_brief(line);
     }
     Ok(())
