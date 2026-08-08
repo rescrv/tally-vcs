@@ -24,6 +24,7 @@ const USAGE: &str = "USAGE: abelian <command> [options] [args]
 repository:
   init [--from-git COMMIT]         create a repository here (anchored at a git commit's tree)
   sum                              print the working tree's element records and sum
+  status                           the pending patch: working tree vs the fork's ref
   check                            compare the working tree against the log's expectation
   snapshot                         write a manifest at the current state and repoint the fork
   materialize <sum>                produce a working tree at a prior state
@@ -68,6 +69,7 @@ fn main() {
     let result = match command.as_str() {
         "init" => cmd_init(&rest),
         "sum" => cmd_sum(&rest),
+        "status" => cmd_status(&rest),
         "check" => cmd_check(&rest),
         "snapshot" => cmd_snapshot(&rest),
         "materialize" => cmd_materialize(&rest),
@@ -195,6 +197,55 @@ fn cmd_sum(args: &[&str]) -> Result<()> {
         sum.insert(&record.to_bytes());
     }
     println!("{}", sum.hexdigest());
+    Ok(())
+}
+
+fn cmd_status(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to compare against (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(flag, "Print machine-readable lines: <code> <TAB> <path>.")]
+        porcelain: bool,
+    }
+    let (options, _) =
+        Options::from_arguments_relaxed("USAGE: abelian status [--fork FORK] [--porcelain]", args);
+    let fork = options.fork.as_deref().unwrap_or("main");
+    let repo = repo()?;
+    // The pending patch: what the working tree differs from the ref by.  Not
+    // index-vs-worktree (there is no index) but materialized-vs-committed.
+    let committed = repo.current_state(fork)?;
+    let working = repo.working_tree_manifest()?;
+    let changes = abelian::diff::diff_manifests(&committed.manifest, &working);
+    let pending = abelian::diff::pending_sum(&committed.sum, &working.sum());
+    if options.porcelain {
+        for change in &changes {
+            println!("{}\t{}", change.code(), change.path);
+        }
+        return Ok(());
+    }
+    println!("fork {fork}");
+    println!("ref     {}", committed.sum.hexdigest());
+    println!("working {}", working.sum().hexdigest());
+    if changes.is_empty() {
+        println!("clean (nothing pending)");
+        return Ok(());
+    }
+    // The setsum difference is a verifiable checksum of the symmetric
+    // difference: it is zero exactly when the states agree, and it names
+    // this pending patch independently of the order the edits were made.
+    println!("pending {}", pending.hexdigest());
+    println!();
+    for change in &changes {
+        println!("  {}  {}", change.code(), change.path);
+    }
+    println!();
+    let (a, d, m) = changes.iter().fold((0, 0, 0), |(a, d, m), c| match c.code() {
+        'A' => (a + 1, d, m),
+        'D' => (a, d + 1, m),
+        _ => (a, d, m + 1),
+    });
+    println!("{a} added, {d} deleted, {m} modified");
     Ok(())
 }
 

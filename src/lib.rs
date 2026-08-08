@@ -12,6 +12,7 @@ use handled::SError;
 
 pub mod b64;
 pub mod blobs;
+pub mod diff;
 pub mod fork;
 pub mod git;
 pub mod ident;

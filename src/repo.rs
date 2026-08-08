@@ -717,6 +717,14 @@ impl Repository {
         Ok(())
     }
 
+    /// The working tree as a manifest: every element record the walk
+    /// produces, adjudicated into a state.  Blob contents are ingested into
+    /// the pool (as [`Repository::records_of_working_tree`] does), so the
+    /// manifest is always materializable.
+    pub fn working_tree_manifest(&self) -> Result<Manifest> {
+        Manifest::from_records(self.records_of_working_tree()?)
+    }
+
     /// `abelian check`: recompute the working tree's sum and compare against
     /// the log's expectation.
     pub fn check(&self, fork: &str) -> Result<(Sum, Sum)> {
