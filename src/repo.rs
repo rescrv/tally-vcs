@@ -806,6 +806,18 @@ impl Repository {
         Ok(sum_hex)
     }
 
+    ///////////////////////////////////////// blame ///////////////////////////////////////////
+
+    /// Blame a path across a fork's whole lineage (§2.3): attribute each line
+    /// to the log line that last produced it.  Unlike git's backward,
+    /// heuristic reconstruction, this is a forward lookup over the spans the
+    /// authors declared at write time.
+    pub fn blame(&self, fork: &str, path: &str) -> Result<Vec<crate::blame::BlamedLine>> {
+        let history = self.continuity_log(fork)?;
+        let lines: Vec<&LogLine> = history.iter().map(|(_, l)| l).collect();
+        crate::blame::blame_path(path, &lines, &self.blobs())
+    }
+
     ///////////////////////////////////////// views ///////////////////////////////////////////
 
     /// §2.6 Fuse: append a view line — provenance `view`, a span

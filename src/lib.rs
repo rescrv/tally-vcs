@@ -11,6 +11,7 @@ use std::fmt;
 use handled::SError;
 
 pub mod b64;
+pub mod blame;
 pub mod blobs;
 pub mod diff;
 pub mod fork;

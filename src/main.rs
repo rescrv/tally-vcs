@@ -32,6 +32,7 @@ repository:
 revisions:
   rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum, line id)
   diff [rev] [rev] [-- path...]    the patch between two states (or working tree vs ref)
+  blame <path>                     attribute each line to the patch that produced it
 
 patches:
   apply <patch.json>               validate and apply an intent; append to the log
@@ -76,6 +77,7 @@ fn main() {
         "materialize" => cmd_materialize(&rest),
         "rev-parse" => cmd_rev_parse(&rest),
         "diff" => cmd_diff(&rest),
+        "blame" => cmd_blame(&rest),
         "apply" => cmd_apply(&rest),
         "log" => cmd_log(&rest),
         "show" => cmd_show(&rest),
@@ -446,6 +448,43 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         let la = format!("{}/{}", label_a, c.path.trim_start_matches('/'));
         let lb = format!("{}/{}", label_b, c.path.trim_start_matches('/'));
         print!("{}", abelian::diff::unified(&old, &new, &la, &lb, context));
+    }
+    Ok(())
+}
+
+fn cmd_blame(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to blame against (default: main).", "FORK")]
+        fork: Option<String>,
+    }
+    let (options, free) =
+        Options::from_arguments_relaxed("USAGE: abelian blame [--fork FORK] <path>", args);
+    let Some(raw) = free.first() else {
+        return Err(Error::Invalid("blame requires a path".to_string()));
+    };
+    let path = normalize_path_filter(raw);
+    let fork = options.fork.as_deref().unwrap_or("main");
+    let repo = repo()?;
+    let blamed = repo.blame(fork, &path)?;
+    // Join owner ids with their annotations so blame reads as provenance,
+    // not just ids: short id, author, one line of text.
+    let state = repo.current_state(fork)?;
+    let history = repo.continuity_log(fork)?;
+    let author_of = |id: &str| -> String {
+        history
+            .iter()
+            .map(|(_, l)| l)
+            .chain(state.lines.iter())
+            .find(|l| l.id == id)
+            .map(|l| l.annotation.author.clone())
+            .unwrap_or_else(|| "?".to_string())
+    };
+    let width = blamed.len().to_string().len();
+    for (n, bl) in blamed.iter().enumerate() {
+        let short_id = bl.owner.chars().take(8).collect::<String>();
+        let author = if bl.owner.is_empty() { "?".to_string() } else { author_of(&bl.owner) };
+        println!("{short_id:8}  {author:>12}  {:>width$}  {}", n + 1, bl.text);
     }
     Ok(())
 }
