@@ -806,6 +806,101 @@ impl Repository {
         Ok(sum_hex)
     }
 
+    ///////////////////////////////////// restore/reset ///////////////////////////////////////
+
+    /// Restore working-tree paths to a target state (`abelian restore`).  A
+    /// working-tree operation, never a log operation: it rematerializes
+    /// bytes, and because the pool is lossless, discarding an uncommitted
+    /// edit costs nothing and loses nothing.  With `filters`, each named path
+    /// is made to match the target — written if the target has it, removed if
+    /// it does not.  Without filters, every path in the target is rewritten
+    /// (discarding modifications), and working-tree-only additions are left
+    /// alone, matching `git restore` of the whole tree.  Returns the actions
+    /// taken as `(code, path)`, `code` one of `restore`/`remove`.
+    pub fn restore(
+        &self,
+        target: &Manifest,
+        filters: Option<&[String]>,
+    ) -> Result<Vec<(&'static str, String)>> {
+        let blobs = self.blobs();
+        let mut actions = Vec::new();
+        let matches = |path: &str| match filters {
+            None => target.get(path).is_some(),
+            Some(fs) => fs.iter().any(|f| {
+                let f = f.trim_end_matches('/');
+                path == f || path.starts_with(&format!("{f}/"))
+            }),
+        };
+        // Candidate paths: target's paths, plus (when filtering) working-tree
+        // paths so an explicit path absent in target can be removed.
+        let mut paths: BTreeSet<String> =
+            target.records().map(|r| r.path.clone()).collect();
+        if filters.is_some() {
+            for record in self.records_of_working_tree()? {
+                paths.insert(record.path);
+            }
+        }
+        for path in paths {
+            if !matches(&path) {
+                continue;
+            }
+            match target.get(&path) {
+                Some(record) => {
+                    self.write_tree_file(&blobs, record)?;
+                    actions.push(("restore", path));
+                }
+                None => {
+                    let _ = fs::remove_file(self.tree_path(&path));
+                    actions.push(("remove", path));
+                }
+            }
+        }
+        Ok(actions)
+    }
+
+    /// Move a fork's state to a target, non-destructively (`abelian reset`).
+    /// Lossless retention means there is no reflog archaeology: rather than
+    /// rewrite the append-only log (I3), reset appends one new line whose
+    /// realized delta carries the current state back to the target.  The
+    /// prior state stays reachable and the reset is itself invertible — undo
+    /// is the inverse.  Returns the appended line.
+    pub fn reset(
+        &self,
+        fork: &str,
+        target: &Manifest,
+        author: &str,
+        prose: Option<String>,
+    ) -> Result<LogLine> {
+        let current = self.current_state(fork)?;
+        // The delta current -> target: remove the current record, add the
+        // target record, for every path that differs.
+        let changes = crate::diff::diff_manifests(&current.manifest, target);
+        if changes.is_empty() {
+            return Err(Error::Invalid(format!(
+                "fork {fork} is already at {}",
+                target.sum().hexdigest()
+            )));
+        }
+        let realized: Vec<crate::patch::RealizedEntry> = changes
+            .iter()
+            .map(|c| crate::patch::RealizedEntry {
+                remove: c.before.as_ref().map(|r| r.to_line()),
+                add: c.after.as_ref().map(|r| r.to_line()),
+            })
+            .collect();
+        let annotation = Annotation {
+            author: author.to_string(),
+            provenance: Provenance::Agent,
+            prose: Some(prose.unwrap_or_else(|| {
+                format!("reset to {}", target.sum().hexdigest())
+            })),
+            ..Annotation::default()
+        };
+        // A state move has no span intent; realized is authoritative for
+        // replay, exactly as it is for union-landed lines.
+        self.apply_realized(fork, Intent::default(), realized, annotation)
+    }
+
     ///////////////////////////////////////// blame ///////////////////////////////////////////
 
     /// Blame a path across a fork's whole lineage (§2.3): attribute each line
@@ -1139,6 +1234,55 @@ mod tests {
         let m: Vec<String> =
             repo.continuity_log("main").unwrap().into_iter().map(|(_, l)| l.id).collect();
         assert_eq!(m, vec![a.id, b.id]);
+    }
+
+    #[test]
+    fn reset_is_non_destructive_and_invertible() {
+        let repo = temp_repo("reset");
+        let l1 = repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
+        repo.apply("main", create("/b", b"b\n"), note("t")).unwrap();
+        let head_before = repo.current_state("main").unwrap().sum.hexdigest();
+        // Reset to the state after l1: /b should disappear from the state.
+        let target = repo.manifest_at_lineage("main", &l1.sum_after).unwrap();
+        let reset_line = repo.reset("main", &target, "t", None).unwrap();
+        let after = repo.current_state("main").unwrap();
+        assert_eq!(after.sum.hexdigest(), l1.sum_after, "state moved to the target");
+        assert!(after.manifest.get("/b").is_none());
+        // Non-destructive: the log grew, nothing was rewritten, and the
+        // pre-reset state is still reachable by its sum.
+        assert_eq!(after.lines.len(), 3, "reset appended a line");
+        let recovered = repo.manifest_at_lineage("main", &head_before).unwrap();
+        assert!(recovered.get("/b").is_some(), "the prior state remains reachable");
+        // The reset line is a real, chained line.
+        assert_eq!(after.head_id, reset_line.id);
+    }
+
+    #[test]
+    fn restore_rewrites_the_working_tree_only() {
+        let repo = temp_repo("restore");
+        repo.apply("main", create("/f.txt", b"committed\n"), note("t")).unwrap();
+        // Corrupt the working copy, as a failed edit would.
+        fs::write(repo.root().join("f.txt"), b"botched\n").unwrap();
+        let target = repo.current_state("main").unwrap().manifest;
+        let actions = repo.restore(&target, None).unwrap();
+        assert_eq!(actions, vec![("restore", "/f.txt".to_string())]);
+        // The working tree matches the ref again; no log line was appended.
+        assert_eq!(fs::read(repo.root().join("f.txt")).unwrap(), b"committed\n");
+        assert_eq!(repo.current_state("main").unwrap().lines.len(), 1);
+    }
+
+    #[test]
+    fn restore_removes_a_path_absent_in_the_target() {
+        let repo = temp_repo("restore-rm");
+        repo.apply("main", create("/keep.txt", b"k\n"), note("t")).unwrap();
+        let target = repo.current_state("main").unwrap().manifest;
+        // A working-tree-only addition; restoring it to a target without it
+        // removes it, because the path was named explicitly.
+        fs::write(repo.root().join("scratch.txt"), b"junk\n").unwrap();
+        let filters = vec!["/scratch.txt".to_string()];
+        let actions = repo.restore(&target, Some(&filters)).unwrap();
+        assert_eq!(actions, vec![("remove", "/scratch.txt".to_string())]);
+        assert!(!repo.root().join("scratch.txt").exists());
     }
 
     #[test]

@@ -28,6 +28,8 @@ repository:
   check                            compare the working tree against the log's expectation
   snapshot                         write a manifest at the current state and repoint the fork
   materialize <sum>                produce a working tree at a prior state
+  restore [rev] [-- path...]       rewrite working-tree paths to a state (discard edits)
+  reset <rev>                      move a fork's state to a prior one, non-destructively
 
 revisions:
   rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum, line id)
@@ -75,6 +77,8 @@ fn main() {
         "check" => cmd_check(&rest),
         "snapshot" => cmd_snapshot(&rest),
         "materialize" => cmd_materialize(&rest),
+        "restore" => cmd_restore(&rest),
+        "reset" => cmd_reset(&rest),
         "rev-parse" => cmd_rev_parse(&rest),
         "diff" => cmd_diff(&rest),
         "blame" => cmd_blame(&rest),
@@ -290,6 +294,68 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     let manifest = repo.manifest_at(options.fork(), sum_hex)?;
     repo.materialize(&manifest)?;
     println!("materialized {} elements at {sum_hex}", manifest.len());
+    Ok(())
+}
+
+fn cmd_restore(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to restore from (default: main).", "FORK")]
+        fork: Option<String>,
+    }
+    // A trailing `--` restricts to a pathspec, as diff does.
+    let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
+        Some(i) => (
+            args[..i].to_vec(),
+            args[i + 1..].iter().map(|p| normalize_path_filter(p)).collect(),
+        ),
+        None => (args.to_vec(), Vec::new()),
+    };
+    let (options, revs) = Options::from_arguments_relaxed(
+        "USAGE: abelian restore [--fork FORK] [rev] [-- path...]",
+        &left,
+    );
+    let fork = options.fork.as_deref().unwrap_or("main");
+    let repo = repo()?;
+    // Default to HEAD: discard uncommitted working-tree edits.
+    let spec = revs.first().map(String::as_str).unwrap_or("HEAD");
+    let resolved = abelian::revision::resolve(&repo, spec, fork)?;
+    let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
+    let filters = if paths.is_empty() { None } else { Some(paths.as_slice()) };
+    let actions = repo.restore(&target, filters)?;
+    for (code, path) in &actions {
+        println!("{code}  {path}");
+    }
+    println!("{} path(s) restored to {}", actions.len(), short(&resolved.sum));
+    Ok(())
+}
+
+fn cmd_reset(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to reset (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(optional, "Author of the reset line.", "AUTHOR")]
+        author: Option<String>,
+        #[arrrg(optional, "Narrative prose for the reset.", "PROSE")]
+        prose: Option<String>,
+    }
+    let (options, free) =
+        Options::from_arguments_relaxed("USAGE: abelian reset [--fork FORK] <rev>", args);
+    let Some(spec) = free.first() else {
+        return Err(Error::Invalid("reset requires a revision".to_string()));
+    };
+    let fork = options.fork.as_deref().unwrap_or("main");
+    let repo = repo()?;
+    let resolved = abelian::revision::resolve(&repo, spec, fork)?;
+    let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
+    let author = options.author.unwrap_or_else(whoami);
+    let line = repo.reset(fork, &target, &author, options.prose)?;
+    println!("{} {}", line.id, line.sum_after);
+    println!(
+        "reset {fork} to {} (non-destructive: the prior state remains reachable)",
+        short(&resolved.sum)
+    );
     Ok(())
 }
 
