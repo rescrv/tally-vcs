@@ -410,6 +410,64 @@ impl Repository {
         Ok(manifest)
     }
 
+    /// The manifest at any state on a fork's whole lineage (§2.3), including
+    /// states an ancestor fork produced.  Where [`Repository::manifest_at`]
+    /// walks one fork's own log, this replays the continuity log forward from
+    /// the lineage's base anchor, so a revision like `HEAD~N` that crosses a
+    /// fork boundary still names a materializable state.
+    pub fn manifest_at_lineage(&self, fork: &str, sum_hex: &str) -> Result<Manifest> {
+        let history = self.continuity_log(fork)?;
+        let lines: Vec<&LogLine> = history.iter().map(|(_, l)| l).collect();
+        // The base is the state before the lineage's first line — the
+        // root-most fork's anchor, whose manifest is always on disk.
+        let base_sum = if lines.is_empty() {
+            self.current_state(fork)?.sum.hexdigest()
+        } else {
+            self.lineage_base_sum(fork)?
+        };
+        let mut manifest = self.read_anchor_manifest(&base_sum)?;
+        if base_sum == sum_hex {
+            return Ok(manifest);
+        }
+        for line in lines {
+            apply_realized_to_manifest(&mut manifest, &line.realized)?;
+            if line.sum_after == sum_hex {
+                if manifest.sum().hexdigest() != sum_hex {
+                    return Err(Error::Corrupt(format!(
+                        "replay to {sum_hex} on fork {fork}'s lineage produced a \
+                         different state"
+                    )));
+                }
+                return Ok(manifest);
+            }
+        }
+        Err(Error::Invalid(format!(
+            "sum {sum_hex} does not name a state on fork {fork}'s lineage"
+        )))
+    }
+
+    /// The base state sum of a fork's whole lineage: the anchor of the
+    /// root-most fork it descends from (§2.3).
+    pub fn lineage_base_sum(&self, fork: &str) -> Result<String> {
+        let mut current = fork.to_string();
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(current.clone()) {
+                break;
+            }
+            let fork_file = self.read_fork(&current)?;
+            if fork_file.anchor == Sum::zero().hexdigest() {
+                return Ok(fork_file.anchor);
+            }
+            match self.parent_fork(&current, &fork_file.anchor)? {
+                Some(parent) => current = parent,
+                None => return Ok(fork_file.anchor),
+            }
+        }
+        // A cycle in the anchor graph: fall back to this fork's own anchor.
+        Ok(self.read_fork(fork)?.anchor)
+    }
+
     /// Follow a fork across its lineage (§2.3): the fork's own log, then —
     /// when its log is exhausted — the log of the fork it was forked from,
     /// up to the state it anchored at, and so on down to the root.  Returns
@@ -975,6 +1033,25 @@ mod tests {
         let zeros = "0".repeat(64);
         let m0 = repo.manifest_at("main", &zeros).unwrap();
         assert!(m0.is_empty());
+    }
+
+    #[test]
+    fn manifest_at_lineage_crosses_fork_boundaries() {
+        let repo = temp_repo("lineage-manifest");
+        let a = repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
+        repo.create_fork("session", "main").unwrap();
+        let c = repo.apply("session", create("/c", b"c\n"), note("t")).unwrap();
+        // The state after a is on main, an ancestor of session; the lineage
+        // materializer finds it from the session fork.
+        let m_a = repo.manifest_at_lineage("session", &a.sum_after).unwrap();
+        assert_eq!(m_a.sum().hexdigest(), a.sum_after);
+        assert!(m_a.get("/a").is_some() && m_a.get("/c").is_none());
+        // The state after c is session's head.
+        let m_c = repo.manifest_at_lineage("session", &c.sum_after).unwrap();
+        assert_eq!(m_c.sum().hexdigest(), c.sum_after);
+        assert!(m_c.get("/a").is_some() && m_c.get("/c").is_some());
+        // The lineage base is the empty root.
+        assert_eq!(repo.lineage_base_sum("session").unwrap(), "0".repeat(64));
     }
 
     #[test]

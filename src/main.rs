@@ -31,6 +31,7 @@ repository:
 
 revisions:
   rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum, line id)
+  diff [rev] [rev] [-- path...]    the patch between two states (or working tree vs ref)
 
 patches:
   apply <patch.json>               validate and apply an intent; append to the log
@@ -74,6 +75,7 @@ fn main() {
         "snapshot" => cmd_snapshot(&rest),
         "materialize" => cmd_materialize(&rest),
         "rev-parse" => cmd_rev_parse(&rest),
+        "diff" => cmd_diff(&rest),
         "apply" => cmd_apply(&rest),
         "log" => cmd_log(&rest),
         "show" => cmd_show(&rest),
@@ -326,6 +328,147 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
         println!("{}", resolved.sum);
     }
     Ok(())
+}
+
+fn cmd_diff(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to resolve revisions against (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(flag, "Summarize changes per file instead of showing hunks.")]
+        stat: bool,
+        #[arrrg(flag, "Do not pair a delete with an add of the same blob as a rename.")]
+        no_renames: bool,
+        #[arrrg(optional, "Lines of context in hunks (default: 3).", "N")]
+        context: Option<usize>,
+    }
+    // Split off an explicit pathspec: everything after `--` restricts the
+    // diff to matching element paths.
+    let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
+        Some(i) => (
+            args[..i].to_vec(),
+            args[i + 1..].iter().map(|p| normalize_path_filter(p)).collect(),
+        ),
+        None => (args.to_vec(), Vec::new()),
+    };
+    let (options, revs) = Options::from_arguments_relaxed(
+        "USAGE: abelian diff [--fork FORK] [--stat] [--no-renames] [rev [rev]] [-- path...]",
+        &left,
+    );
+    let fork = options.fork.as_deref().unwrap_or("main");
+    let context = options.context.unwrap_or(3);
+    let repo = repo()?;
+    // Resolve the two sides.  Zero revs: ref vs working tree.  One rev: that
+    // rev vs working tree.  Two revs: rev vs rev.
+    let (before, after, label_a, label_b) = match revs.as_slice() {
+        [] => {
+            let state = repo.current_state(fork)?;
+            (state.manifest, repo.working_tree_manifest()?, "ref".to_string(), "working".to_string())
+        }
+        [a] => {
+            let ra = abelian::revision::resolve(&repo, a, fork)?;
+            let ma = repo.manifest_at_lineage(&ra.fork, &ra.sum)?;
+            (ma, repo.working_tree_manifest()?, short(&ra.sum), "working".to_string())
+        }
+        [a, b] => {
+            let ra = abelian::revision::resolve(&repo, a, fork)?;
+            let rb = abelian::revision::resolve(&repo, b, fork)?;
+            let ma = repo.manifest_at_lineage(&ra.fork, &ra.sum)?;
+            let mb = repo.manifest_at_lineage(&rb.fork, &rb.sum)?;
+            (ma, mb, short(&ra.sum), short(&rb.sum))
+        }
+        _ => {
+            return Err(Error::Invalid("diff takes at most two revisions".to_string()));
+        }
+    };
+    let mut changes = abelian::diff::diff_manifests(&before, &after);
+    if !paths.is_empty() {
+        changes.retain(|c| path_matches(&c.path, &paths));
+    }
+    let (renames, changes) = if options.no_renames {
+        (Vec::new(), changes)
+    } else {
+        abelian::diff::detect_renames(&changes)
+    };
+    let blobs = repo.blobs();
+    let read = |hash: &str| -> Result<Vec<u8>> { blobs.get(hash) };
+
+    if options.stat {
+        let mut total_ins = 0;
+        let mut total_del = 0;
+        for r in &renames {
+            println!(" {} => {} (rename)", r.from.path, r.to.path);
+        }
+        for c in &changes {
+            let old = match &c.before {
+                Some(rec) => read(&rec.blob)?,
+                None => Vec::new(),
+            };
+            let new = match &c.after {
+                Some(rec) => read(&rec.blob)?,
+                None => Vec::new(),
+            };
+            let (ins, del) = abelian::diff::line_stat(&old, &new);
+            total_ins += ins;
+            total_del += del;
+            println!(" {} | +{ins} -{del}", c.path);
+        }
+        println!(
+            "{} file(s) changed, {total_ins} insertion(s), {total_del} deletion(s)",
+            changes.len() + renames.len()
+        );
+        return Ok(());
+    }
+
+    for r in &renames {
+        println!("rename {} => {}", r.from.path, r.to.path);
+        if r.from.mode != r.to.mode {
+            println!("  mode {} => {}", r.from.mode, r.to.mode);
+        }
+    }
+    for c in &changes {
+        let old = match &c.before {
+            Some(rec) => read(&rec.blob)?,
+            None => Vec::new(),
+        };
+        let new = match &c.after {
+            Some(rec) => read(&rec.blob)?,
+            None => Vec::new(),
+        };
+        // Mode-only change with identical blob: report it, no content hunk.
+        if let (Some(b), Some(a)) = (&c.before, &c.after)
+            && b.blob == a.blob
+            && b.mode != a.mode
+        {
+            println!("mode {} {} => {}", c.path, b.mode, a.mode);
+            continue;
+        }
+        let la = format!("{}/{}", label_a, c.path.trim_start_matches('/'));
+        let lb = format!("{}/{}", label_b, c.path.trim_start_matches('/'));
+        print!("{}", abelian::diff::unified(&old, &new, &la, &lb, context));
+    }
+    Ok(())
+}
+
+/// Normalize a pathspec argument to an absolute element path for matching.
+fn normalize_path_filter(p: &str) -> String {
+    if p.starts_with('/') {
+        p.to_string()
+    } else {
+        format!("/{p}")
+    }
+}
+
+/// True iff `path` is or is under one of the filters.
+fn path_matches(path: &str, filters: &[String]) -> bool {
+    filters
+        .iter()
+        .any(|f| path == f || path.starts_with(&format!("{}/", f.trim_end_matches('/'))))
+}
+
+/// A short, human-readable form of a sum for diff labels.
+fn short(sum: &str) -> String {
+    sum.chars().take(12).collect()
 }
 
 fn cmd_apply(args: &[&str]) -> Result<()> {
