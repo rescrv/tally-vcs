@@ -10,7 +10,7 @@ name = "abelian"
 
 [[bin]]
 name = "abelian"
-path = "src/main.rs"
+path = "src/bin/abelian.rs"
 
 [dependencies]
 arrrg = "0.10.0"
