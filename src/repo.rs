@@ -649,6 +649,77 @@ impl Repository {
         Ok(line)
     }
 
+    /// Fast-forward a fork by appending a batch of already-realized lines,
+    /// durably and under the fork lock (§2.7).  Each entry carries its
+    /// realized delta, the annotation to stamp, and the commit time.  Lines
+    /// chain from the fork's current head; every add's blob must already be
+    /// present (put them before calling).  The whole batch is validated
+    /// against a replayed manifest before a single byte is written, so a
+    /// bad entry leaves the log untouched; then the sealed lines are
+    /// appended in one write with the same durability protocol as
+    /// [`Repository::apply`].  This is the linearization point of an
+    /// incremental git import: many commits fast-forwarded at once.
+    pub fn append_realized_batch(
+        &self,
+        fork: &str,
+        batch: Vec<(Vec<crate::patch::RealizedEntry>, Annotation, u64)>,
+    ) -> Result<usize> {
+        let _lock = self.lock_fork(fork)?;
+        let state = self.current_state(fork)?;
+        let blobs = self.blobs();
+        // Validate the whole batch and seal every line before writing
+        // anything: a bad entry must leave the log untouched.
+        let mut manifest = state.manifest.clone();
+        let mut sum = state.sum.clone();
+        let mut prev = state.head_id.clone();
+        let mut bytes = Vec::new();
+        let mut lines = Vec::with_capacity(batch.len());
+        for (realized, annotation, committed_ms) in batch {
+            // Membership check against the target manifest, always (I9).
+            apply_realized_to_manifest(&mut manifest, &realized)?;
+            for entry in &realized {
+                if let Some(added) = entry.added()?
+                    && !blobs.has(&added.blob)?
+                {
+                    return Err(Error::Precondition(format!(
+                        "realized add references absent blob {}",
+                        added.blob
+                    )));
+                }
+            }
+            sum = apply_realized_to_sum(&sum, &realized)?;
+            let mut line = LogLine {
+                id: String::new(),
+                prev: prev.clone(),
+                intent: Intent::default(),
+                realized,
+                sum_after: sum.hexdigest(),
+                committed_ms,
+                annotation,
+            };
+            bytes.extend_from_slice(&line.seal(&blobs)?);
+            prev = line.id.clone();
+            lines.push(line);
+        }
+        if lines.is_empty() {
+            return Ok(0);
+        }
+        // Append the whole batch, fsync file, fsync directory ← LINEARIZATION POINT.
+        let path = self.log_path(fork);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(ioerr("opening log for append"))?;
+        file.write_all(&bytes).map_err(ioerr("appending log batch"))?;
+        file.sync_all().map_err(ioerr("fsyncing log"))?;
+        fsync_dir(self.fork_dir(fork).as_path())?;
+        // Refresh the working tree, best-effort, in order.
+        for line in &lines {
+            let _ = self.refresh_working_tree(line);
+        }
+        Ok(lines.len())
+    }
+
     /// Best-effort working-tree refresh for one applied line.
     fn refresh_working_tree(&self, line: &LogLine) -> Result<()> {
         let blobs = self.blobs();

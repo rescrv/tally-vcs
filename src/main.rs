@@ -25,6 +25,8 @@ repository:
   init [--from-git COMMIT [--import-linear-history]]
                                    create a repository here (anchored at a git commit's tree;
                                    optionally one line per commit of linear history)
+  import-from-git <commit>         fast-forward a fork to a later git commit (--ff-only):
+                                   pull commits merged upstream into this repository
   sum                              print the working tree's element records and sum
   status                           the pending patch: working tree vs the fork's ref
   check                            compare the working tree against the log's expectation
@@ -74,6 +76,7 @@ fn main() {
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
     let result = match command.as_str() {
         "init" => cmd_init(&rest),
+        "import-from-git" => cmd_import_from_git(&rest),
         "sum" => cmd_sum(&rest),
         "status" => cmd_status(&rest),
         "check" => cmd_check(&rest),
@@ -212,6 +215,40 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     }
     let repo = Repository::init(&dir)?;
     println!("initialized empty abelian repository at {}", repo.root().display());
+    Ok(())
+}
+
+fn cmd_import_from_git(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to fast-forward (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
+        git: Option<String>,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: abelian import-from-git [--fork FORK] [--git DIR] <commit>",
+        args,
+    );
+    reject_extra("import-from-git", &free, 1)?;
+    let committish = free.first().ok_or_else(|| {
+        Error::Invalid("import-from-git requires a commit".to_string())
+    })?;
+    let fork = options.fork.as_deref().unwrap_or("main");
+    let repo = repo()?;
+    let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
+    let summary =
+        abelian::git::import_from_git(&repo, git_dir.as_deref(), committish, fork)?;
+    if summary.imported.is_empty() {
+        println!("fork {fork} already up to date at {}", summary.commit);
+        return Ok(());
+    }
+    println!(
+        "fast-forwarded fork {fork} from {} to {}",
+        summary.base, summary.commit
+    );
+    println!("imported {} commit(s)", summary.imported.len());
+    println!("head {}", repo.current_state(fork)?.sum.hexdigest());
     Ok(())
 }
 

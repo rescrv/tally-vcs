@@ -94,6 +94,54 @@ pub fn linear_chain(git_dir: &Path, commit: &str) -> Result<Vec<String>> {
     Ok(chain)
 }
 
+/// The first-parent commits strictly after `base` up to and including
+/// `commit`, oldest first.  Empty when `commit == base` (already current).
+///
+/// This is the fast-forward range: it errors unless `base` lies on
+/// `commit`'s first-parent ancestry, so the import can only advance along
+/// the same line the earlier import walked — never across a fork or a
+/// history rewrite.
+pub fn first_parent_since(git_dir: &Path, base: &str, commit: &str) -> Result<Vec<String>> {
+    if base == commit {
+        return Ok(Vec::new());
+    }
+    // `base` must be on `commit`'s first-parent line, or this is not a
+    // fast-forward.  `commit`'s full first-parent ancestry is the ground
+    // truth: excluding by all-ancestry (as `base..commit` does) would count
+    // a `base` merged in through a side parent, which is not an advance of
+    // this line.
+    let full = git(git_dir, &["rev-list", "--first-parent", commit])?;
+    let full = String::from_utf8(full)
+        .map_err(|_| Error::Corrupt("git rev-list produced non-UTF-8".to_string()))?;
+    if !full.lines().any(|line| line == base) {
+        return Err(Error::Invalid(format!(
+            "not a fast-forward: {base} is not on the first-parent history of {commit}"
+        )));
+    }
+    // Everything on `commit`'s first-parent line that is newer than `base`,
+    // oldest first.
+    let out = git(
+        git_dir,
+        &["rev-list", "--first-parent", "--reverse", &format!("{base}..{commit}")],
+    )?;
+    let text = String::from_utf8(out)
+        .map_err(|_| Error::Corrupt("git rev-list produced non-UTF-8".to_string()))?;
+    let mut chain = Vec::new();
+    for line in text.lines() {
+        let hex = line.trim();
+        if hex.is_empty() {
+            continue;
+        }
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Corrupt(format!(
+                "git rev-list produced a non-hex name: {hex:?}"
+            )));
+        }
+        chain.push(hex.to_string());
+    }
+    Ok(chain)
+}
+
 /// A commit's committer time (milliseconds), author (`Name <email>`), and
 /// subject line — the deterministic annotation material an import stamps.
 /// Committer time (ms), author, and the *full* commit message (`%B`: subject
@@ -292,6 +340,121 @@ pub fn init_from_git_linear(
             Err(err)
         }
     }
+}
+
+/// The outcome of an incremental import: the base commit fast-forwarded
+/// from, the resolved target commit, and the commits imported (oldest
+/// first, empty when already current).
+#[derive(Clone, Debug)]
+pub struct ImportSummary {
+    /// The last git commit the fork already carried (the fast-forward base).
+    pub base: String,
+    /// The resolved target commit the fork now carries.
+    pub commit: String,
+    /// The commits imported this run, oldest first.
+    pub imported: Vec<String>,
+}
+
+/// Fast-forward an existing fork to a later git commit, mirroring
+/// `--import-linear-history` but as a `--ff-only` advance rather than a
+/// fresh init.  This is the "pull main from GitHub" step: people prepare
+/// patches in abelian and send them upstream; once merged to GitHub's main,
+/// this pulls the new commits back in, one log line per commit.
+///
+/// The fork's last git-import line names the commit the fork already sits
+/// at.  `committish` must be a descendant of that commit along its
+/// first-parent history, or the import errors and writes nothing (a
+/// fast-forward never rewrites history or crosses a fork).  The fork must
+/// also sit exactly at that commit's tree state — no local drift past the
+/// import — or it is not a clean fast-forward.  Each newer commit's line
+/// realizes the delta from its parent's tree and is stamped with the
+/// commit's committer time, author, and message, exactly as a linear init
+/// would produce.
+pub fn import_from_git(
+    repo: &Repository,
+    git_dir: Option<&Path>,
+    committish: &str,
+    fork: &str,
+) -> Result<ImportSummary> {
+    let root = repo.root().to_path_buf();
+    let git_dir = git_dir.unwrap_or(&root).to_path_buf();
+    let commit = resolve_commit(&git_dir, committish)?;
+
+    // The fork's fast-forward base: the commit named by its most recent
+    // git-import line.
+    let state = repo.current_state(fork)?;
+    let base = state
+        .lines
+        .iter()
+        .rev()
+        .find_map(|line| line.annotation.import.as_ref().map(|i| i.commit.clone()))
+        .ok_or_else(|| {
+            Error::Invalid(format!(
+                "fork {fork} carries no git import to fast-forward from; \
+                 initialize with `init --from-git COMMIT --import-linear-history`"
+            ))
+        })?;
+
+    // A clean fast-forward requires the fork to sit exactly at the base
+    // commit's tree state: no local edits past the import.
+    let base_entries = commit_entries(&git_dir, &base)?;
+    let base_manifest = commit_manifest(&repo.blobs(), &git_dir, &base_entries)?;
+    if base_manifest.sum() != state.sum {
+        return Err(Error::Invalid(format!(
+            "not a fast-forward: fork {fork} has drifted from its imported commit {base}; \
+             its state no longer matches that commit's tree"
+        )));
+    }
+
+    // The new first-parent commits, oldest first (errors unless `base` is on
+    // the target's first-parent line).
+    let new_commits = first_parent_since(&git_dir, &base, &commit)?;
+    if new_commits.is_empty() {
+        return Ok(ImportSummary { base, commit, imported: Vec::new() });
+    }
+
+    // Validate every new commit's tree before writing anything (error
+    // loudly, import nothing).
+    let mut trees = Vec::with_capacity(new_commits.len());
+    for c in &new_commits {
+        trees.push(commit_entries(&git_dir, c)?);
+    }
+
+    // Ingest blobs and build one realized delta per commit, from the base
+    // tree forward.
+    let blobs = repo.blobs();
+    let algorithm = object_format(&git_dir)?;
+    let mut prev_manifest = base_manifest;
+    let mut batch = Vec::with_capacity(new_commits.len());
+    for (i, c) in new_commits.iter().enumerate() {
+        let manifest = commit_manifest(&blobs, &git_dir, &trees[i])?;
+        let changes = crate::diff::diff_manifests(&prev_manifest, &manifest);
+        prev_manifest = manifest;
+        let realized: Vec<RealizedEntry> = changes
+            .iter()
+            .map(|change| RealizedEntry {
+                remove: change.before.as_ref().map(|r| r.to_line()),
+                add: change.after.as_ref().map(|r| r.to_line()),
+            })
+            .collect();
+        let (committed_ms, author, message) = commit_meta(&git_dir, c)?;
+        let tree = resolve_tree(&git_dir, c)?;
+        let annotation = Annotation {
+            author,
+            prose: Some(message),
+            import: Some(GitImport {
+                algorithm: algorithm.clone(),
+                commit: c.clone(),
+                tree,
+                reference: None,
+            }),
+            ..Annotation::default()
+        };
+        batch.push((realized, annotation, committed_ms));
+    }
+
+    repo.append_realized_batch(fork, batch)?;
+    Ok(ImportSummary { base, commit, imported: new_commits })
 }
 
 /// Ingest one commit's tree into the pool and derive its manifest.
@@ -597,6 +760,95 @@ mod tests {
         let merge = resolve_commit(&dir, "HEAD~1").unwrap();
         let chain = linear_chain(&dir, &head).unwrap();
         assert_eq!(chain, vec![merge, head]);
+    }
+
+    #[test]
+    fn import_from_git_fast_forwards_and_matches_a_fresh_import() {
+        let dir = temp_git_repo("ff");
+        std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
+        commit_all(&dir, "genesis");
+        std::fs::write(dir.join("b.txt"), b"beta\n").unwrap();
+        commit_all(&dir, "add b");
+        let early = resolve_commit(&dir, "HEAD").unwrap();
+
+        // Initialize abelian at the early commit, in a root outside the git
+        // tree so later `add -A` commits do not ingest it.
+        let root = temp_git_repo("ff-abelian");
+        std::fs::remove_dir_all(&root).unwrap();
+        let (repo, _) = init_from_git_linear(&root, Some(&dir), &early).unwrap();
+        assert_eq!(repo.current_state("main").unwrap().lines.len(), 2);
+
+        // Advance git's history, then fast-forward the abelian fork.
+        std::fs::write(dir.join("a.txt"), b"alpha 2\n").unwrap();
+        commit_all(&dir, "edit a");
+        std::fs::write(dir.join("c.txt"), b"gamma\n").unwrap();
+        commit_all(&dir, "add c");
+        let head = resolve_commit(&dir, "HEAD").unwrap();
+
+        let summary = import_from_git(&repo, Some(&dir), &head, "main").unwrap();
+        assert_eq!(summary.base, early);
+        assert_eq!(summary.commit, head);
+        assert_eq!(summary.imported.len(), 2);
+
+        // The head state re-derives from the target commit's tree.
+        let state = repo.current_state("main").unwrap();
+        assert_eq!(state.lines.len(), 4);
+        let derived = derive_records(&dir, &head).unwrap();
+        let mut anchored: Vec<ElementRecord> = state.manifest.records().cloned().collect();
+        anchored.sort();
+        assert_eq!(derived, anchored);
+        // Per-commit provenance rides on the appended lines.
+        assert_eq!(state.lines[3].annotation.prose.as_deref(), Some("add c"));
+        assert_eq!(
+            state.lines[3].annotation.import.as_ref().unwrap().commit,
+            head
+        );
+
+        // A second import is a no-op: already up to date.
+        let again = import_from_git(&repo, Some(&dir), &head, "main").unwrap();
+        assert!(again.imported.is_empty());
+        assert_eq!(repo.current_state("main").unwrap().lines.len(), 4);
+
+        // The incremental import replays to the same state a fresh linear
+        // import produces (the head sums agree; each line derives its tree).
+        let fresh_root = temp_git_repo("ff-fresh");
+        std::fs::remove_dir_all(&fresh_root).unwrap();
+        let (fresh, _) = init_from_git_linear(&fresh_root, Some(&dir), &head).unwrap();
+        assert_eq!(
+            repo.current_state("main").unwrap().sum.hexdigest(),
+            fresh.current_state("main").unwrap().sum.hexdigest(),
+        );
+    }
+
+    #[test]
+    fn import_from_git_refuses_a_non_fast_forward() {
+        let dir = temp_git_repo("nonff");
+        std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
+        commit_all(&dir, "genesis");
+        let genesis = resolve_commit(&dir, "HEAD").unwrap();
+        std::fs::write(dir.join("a.txt"), b"alpha 2\n").unwrap();
+        commit_all(&dir, "edit a");
+        let mainline = resolve_commit(&dir, "HEAD").unwrap();
+
+        // The fork is imported at the mainline tip.
+        let root = temp_git_repo("nonff-abelian");
+        std::fs::remove_dir_all(&root).unwrap();
+        let (repo, _) = init_from_git_linear(&root, Some(&dir), &mainline).unwrap();
+
+        // A divergent branch off genesis: the fork's base (mainline) is not
+        // on this commit's first-parent history, so importing it is not a
+        // fast-forward.
+        run_git(&dir, &["checkout", "-q", "-b", "side", &genesis]);
+        std::fs::write(dir.join("d.txt"), b"delta\n").unwrap();
+        commit_all(&dir, "side d");
+        let side = resolve_commit(&dir, "HEAD").unwrap();
+
+        let err = import_from_git(&repo, Some(&dir), &side, "main").unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("not a fast-forward"), "{err}");
+        // Nothing was appended: the fork still sits at the mainline tip.
+        let state = repo.current_state("main").unwrap();
+        assert_eq!(state.lines.len(), 2);
     }
 
     #[test]
