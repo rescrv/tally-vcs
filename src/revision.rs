@@ -134,6 +134,58 @@ fn split_suffixes(spec: &str) -> (&str, Vec<&str>) {
     (base, suffixes)
 }
 
+/// Resolve a bare line id (or unambiguous id prefix) anywhere in the repo.
+///
+/// A line id is `record_id` over the line's content *and* its `prev` — a
+/// hash chain that recursively commits to the entire lineage prefix — so it
+/// names exactly one line across the whole repository.  When the id is not on
+/// `default_fork`'s lineage, we search every fork.  `continuity_log` walks
+/// fork→parent to the root and labels each line with the fork that authored
+/// it (inherited segments are truncated at the branch boundary, so a shared
+/// line reports the same origin fork on every descendant); we dedupe by id so
+/// one line seen from many descendants counts once.  The authoring fork
+/// becomes `Resolved.fork` — any fork carrying the id would replay the same
+/// sum, since the shared prefix is byte-identical, so the choice only labels
+/// the result.
+fn resolve_line_id_global(
+    repo: &Repository,
+    base: &str,
+    default_fork: &str,
+) -> Result<(String, usize, Vec<StatePoint>)> {
+    use std::collections::BTreeMap;
+    let mut authoring: BTreeMap<String, String> = BTreeMap::new();
+    for fork in repo.fork_names()? {
+        for (name, line) in repo.continuity_log(&fork)? {
+            if line.id.starts_with(base) {
+                authoring.entry(line.id).or_insert(name);
+            }
+        }
+    }
+    match authoring.len() {
+        0 => Err(Error::Invalid(format!(
+            "revision {base:?} is neither HEAD, a fork, a sum on fork \
+             {default_fork}'s lineage, nor a line id in the repository"
+        ))),
+        1 => {
+            let (id, fork) = authoring.into_iter().next().expect("len == 1");
+            let points = lineage_states(repo, &fork)?;
+            let idx = points
+                .iter()
+                .rposition(|p| p.line.as_deref() == Some(id.as_str()))
+                .ok_or_else(|| {
+                    Error::Corrupt(format!(
+                        "line id {id} was authored on fork {fork} but is absent from \
+                         its replayed lineage"
+                    ))
+                })?;
+            Ok((fork, idx, points))
+        }
+        n => Err(Error::Invalid(format!(
+            "line id prefix {base:?} is ambiguous across the repository: {n} lines match"
+        ))),
+    }
+}
+
 /// Resolve `spec` on `default_fork`'s lineage to a state.
 ///
 /// Bases: `HEAD` or `@` (the fork's head), a fork name (that fork's head,
@@ -172,14 +224,15 @@ pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Reso
                 .filter(|(_, p)| p.line.as_deref().is_some_and(|id| id.starts_with(base)))
                 .map(|(i, _)| i)
                 .collect();
-            let idx = match matches.as_slice() {
-                [] => {
-                    return Err(Error::Invalid(format!(
-                        "revision {base:?} is neither HEAD, a fork, a sum, nor a line id \
-                         on fork {default_fork}'s lineage"
-                    )));
-                }
-                [one] => *one,
+            match matches.as_slice() {
+                // Not on the default fork's lineage.  A sum is lineage-relative
+                // (it can recur — land then revert lands you on a sum you've
+                // seen), so it stays fork-scoped; but a line id is a hash chain
+                // over its whole lineage prefix, hence globally unique.  Fall
+                // through to a repo-wide search: the id names one line in the
+                // whole repository, on whatever fork authored it.
+                [] => resolve_line_id_global(repo, base, default_fork)?,
+                [one] => (default_fork.to_string(), *one, points),
                 many => {
                     return Err(Error::Invalid(format!(
                         "line id prefix {base:?} is ambiguous on fork {default_fork}: \
@@ -187,8 +240,7 @@ pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Reso
                         many.len()
                     )));
                 }
-            };
-            (default_fork.to_string(), idx, points)
+            }
         }
     };
     // Apply the suffix operators left to right.
@@ -260,6 +312,15 @@ mod tests {
         }
     }
 
+    fn delete(path: &str, content: &[u8]) -> Intent {
+        Intent {
+            ops: vec![Op::Delete {
+                path: path.to_string(),
+                blob: crate::ident::sha3_hex(content),
+            }],
+        }
+    }
+
     fn note() -> Annotation {
         Annotation { author: "t".to_string(), ..Annotation::default() }
     }
@@ -319,5 +380,48 @@ mod tests {
         // the lineage boundary.
         let back = resolve(&repo, "session@{1}", "main").unwrap();
         assert_eq!(back.sum, repo.current_state("main").unwrap().sum.hexdigest());
+    }
+
+    #[test]
+    fn line_id_resolves_across_forks() {
+        // A line id is globally unique, so it should resolve without naming
+        // the fork that authored it — even from a different default fork.
+        let repo = temp_repo("global-id");
+        repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        repo.create_fork("session", "main").unwrap();
+        let c = repo.apply("session", create("/c", b"c\n"), note()).unwrap();
+        // Resolving `c`'s id with `main` as the default fork still finds it,
+        // and reports the authoring fork.
+        let r = resolve(&repo, &c.id, "main").unwrap();
+        assert_eq!(r.sum, c.sum_after);
+        assert_eq!(r.fork, "session");
+        assert_eq!(r.line.as_deref(), Some(c.id.as_str()));
+        // An unambiguous prefix resolves globally too.
+        let short = &c.id[..8];
+        assert_eq!(resolve(&repo, short, "main").unwrap().sum, c.sum_after);
+        // A genuinely unknown id still errors.
+        assert!(resolve(&repo, "ffffffffffff", "main").is_err());
+    }
+
+    #[test]
+    fn land_then_revert_ambiguous_sum_but_id_resolves() {
+        // Land a change and revert it: the state sum recurs, but each line's
+        // id is distinct because it chains its own predecessor.
+        let repo = temp_repo("revert");
+        let a = repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        repo.apply("main", create("/b", b"b\n"), note()).unwrap();
+        let d = repo.apply("main", delete("/b", b"b\n"), note()).unwrap();
+        // Reverting /b returns to the sum after /a was created — the same
+        // state — yet the two lines have distinct ids.
+        assert_eq!(d.sum_after, a.sum_after);
+        assert_ne!(a.id, d.id);
+        // A bare sum is ambiguous and resolves to the *last* occurrence — the
+        // revert, not the original land.
+        let by_sum = resolve(&repo, &a.sum_after, "main").unwrap();
+        assert_eq!(by_sum.line.as_deref(), Some(d.id.as_str()));
+        // But the two lines have distinct ids, so each id resolves cleanly to
+        // its own point, even though they name the same state.
+        assert_eq!(resolve(&repo, &a.id, "main").unwrap().line.as_deref(), Some(a.id.as_str()));
+        assert_eq!(resolve(&repo, &d.id, "main").unwrap().line.as_deref(), Some(d.id.as_str()));
     }
 }
