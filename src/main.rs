@@ -692,11 +692,11 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     struct Options {
         #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
         fork: Option<String>,
-        #[arrrg(flag, "Show the full prose body, not just the subject line.")]
-        full: bool,
+        #[arrrg(flag, "Show only the subject line, one line per commit.")]
+        compact: bool,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian log [--fork FORK] [--full]", args);
+        Options::from_arguments_relaxed("USAGE: abelian log [--fork FORK] [--compact]", args);
     reject_extra("log", &free, 0)?;
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
@@ -709,10 +709,10 @@ fn cmd_log(args: &[&str]) -> Result<()> {
             println!("--- {fork} ---");
             shown = fork.clone();
         }
-        if options.full {
-            print_line_full(line);
-        } else {
+        if options.compact {
             print_line_brief(line);
+        } else {
+            print_line_full(line);
         }
     }
     Ok(())
@@ -737,25 +737,50 @@ fn print_line_brief(line: &abelian::log::LogLine) {
     println!("{header}  {subject}");
 }
 
+/// Format a commit time (milliseconds since the Unix epoch) git-log style:
+/// `Sun Aug 9 09:48:51 2026 -0700`, in the local timezone.
+fn format_committed(committed_ms: u64) -> String {
+    use chrono::{Local, TimeZone};
+    match Local.timestamp_millis_opt(committed_ms as i64) {
+        chrono::LocalResult::Single(dt) => dt.format("%a %b %-d %H:%M:%S %Y %z").to_string(),
+        _ => String::new(),
+    }
+}
+
 fn print_line_full(line: &abelian::log::LogLine) {
-    let header = line_header(line);
+    let provenance = match line.annotation.provenance {
+        Provenance::Agent => "agent",
+        Provenance::Andon => "ANDON",
+        Provenance::Union => "union",
+        Provenance::View => "view",
+    };
+    // git-log style: the id line stands alone, then Author and Date each on
+    // their own line, mirroring `git log`'s commit/Author/Date block.
+    let header = format!(
+        "{}  {}\nAuthor: {}\nDate:   {}",
+        line.id,
+        provenance,
+        line.annotation.author,
+        format_committed(line.committed_ms),
+    );
     print_prose(&header, line.annotation.prose.as_deref().unwrap_or(""));
 }
 
-/// Render a header line followed by prose, git-log style: the subject shares
-/// the header line, and any body lines are indented four spaces.  Blank body
-/// lines stay blank (no trailing whitespace).
+/// Render a header line followed by prose, git-log style: the header stands
+/// alone, then a blank line, then every prose line—subject included—is
+/// indented four spaces.  Blank prose lines stay blank (no trailing
+/// whitespace).  A trailing blank line closes the entry.
 fn print_prose(header: &str, prose: &str) {
-    let mut lines = prose.trim_end_matches('\n').split('\n');
-    let subject = lines.next().unwrap_or("");
-    println!("{header}  {subject}");
-    for line in lines {
+    println!("{header}");
+    println!();
+    for line in prose.trim_end_matches('\n').split('\n') {
         if line.is_empty() {
             println!();
         } else {
             println!("    {line}");
         }
     }
+    println!();
 }
 
 fn cmd_show(args: &[&str]) -> Result<()> {
