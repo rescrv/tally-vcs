@@ -199,6 +199,31 @@ impl Repository {
         Ok(fork)
     }
 
+    /// Whether a fork exists: its directory is present under `forks/`.
+    pub fn fork_exists(&self, name: &str) -> Result<bool> {
+        validate_fork_name(name)?;
+        Ok(self.fork_dir(name).exists())
+    }
+
+    /// Ensure a fork exists, creating it from `from_fork` if it does not.
+    /// Returns whether a new fork was created.  A pi harness session is a
+    /// fork (§2.3); this lets the session's first write bring the fork into
+    /// being rather than failing on an absent log.  Creation is idempotent
+    /// under concurrency: a loser to the `create_fork` race observes the fork
+    /// now exists and reports no creation.
+    pub fn ensure_fork(&self, name: &str, from_fork: &str) -> Result<bool> {
+        if self.fork_exists(name)? {
+            return Ok(false);
+        }
+        match self.create_fork(name, from_fork) {
+            Ok(_) => Ok(true),
+            // Another writer won the create race between our check and here;
+            // the fork exists, which is all the caller needs.
+            Err(Error::Invalid(_)) if self.fork_exists(name)? => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Read a fork file.
     pub fn read_fork(&self, name: &str) -> Result<ForkFile> {
         validate_fork_name(name)?;
@@ -1261,6 +1286,26 @@ mod tests {
         // Work on the fork is invisible to main.
         repo.apply("session-1", create("/b", b"b\n"), note("t")).unwrap();
         assert_eq!(repo.current_state("main").unwrap().manifest.len(), 1);
+        assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
+    }
+
+    #[test]
+    fn ensure_fork_auto_initializes_then_is_a_noop() {
+        let repo = temp_repo("ensure-fork");
+        repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
+        let sum = repo.current_state("main").unwrap().sum;
+        // The session fork does not exist yet.
+        assert!(!repo.fork_exists("session-1").unwrap());
+        // Applying to it would fail; ensuring it brings it into being,
+        // anchored at main's current state.
+        assert!(repo.ensure_fork("session-1", "main").unwrap());
+        assert!(repo.fork_exists("session-1").unwrap());
+        assert_eq!(repo.current_state("session-1").unwrap().sum, sum);
+        // The first write now succeeds where it used to fail.
+        repo.apply("session-1", create("/b", b"b\n"), note("t")).unwrap();
+        assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
+        // Ensuring again is a no-op and does not disturb the fork's work.
+        assert!(!repo.ensure_fork("session-1", "main").unwrap());
         assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
     }
 
