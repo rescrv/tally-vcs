@@ -5,12 +5,22 @@ edition = "2024"
 description = "A version control substrate in which states are sums, patches commute, and history is arithmetic."
 license = "Apache-2.0"
 
+[features]
+# The pi coding-agent integration (the abelian-pi-editor binary).
+pi = []
+
 [lib]
 name = "abelian"
 
 [[bin]]
 name = "abelian"
 path = "src/bin/abelian.rs"
+
+# Purpose-built hook pi's text editor calls (see pi/abelian-editor.ts).
+[[bin]]
+name = "abelian-pi-editor"
+path = "src/bin/pi-editor.rs"
+required-features = ["pi"]
 
 [dependencies]
 arrrg = "0.10.0"
