@@ -18,7 +18,7 @@ use std::process::Command;
 use crate::blobs::BlobStore;
 use crate::fork::ForkFile;
 use crate::ident::{ElementRecord, sha3_hex, validate_path};
-use crate::log::{Annotation, LogLine};
+use crate::log::{Annotation, GitImport, LogLine};
 use crate::manifest::Manifest;
 use crate::patch::{Intent, RealizedEntry, apply_realized_to_sum};
 use crate::repo::Repository;
@@ -96,13 +96,16 @@ pub fn linear_chain(git_dir: &Path, commit: &str) -> Result<Vec<String>> {
 
 /// A commit's committer time (milliseconds), author (`Name <email>`), and
 /// subject line — the deterministic annotation material an import stamps.
+/// Committer time (ms), author, and the *full* commit message (`%B`: subject
+/// and body).  `%B` is the raw body, so a multi-line message round-trips
+/// verbatim; only git's trailing newline is trimmed.
 fn commit_meta(git_dir: &Path, commit: &str) -> Result<(u64, String, String)> {
-    let out = git(git_dir, &["show", "-s", "--format=%ct%x00%an <%ae>%x00%s", commit])?;
+    let out = git(git_dir, &["show", "-s", "--format=%ct%x00%an <%ae>%x00%B", commit])?;
     let text = String::from_utf8(out)
         .map_err(|_| Error::Corrupt("git show produced non-UTF-8".to_string()))?;
     let text = text.trim_end_matches('\n');
     let mut parts = text.splitn(3, '\0');
-    let (Some(seconds), Some(author), Some(subject)) =
+    let (Some(seconds), Some(author), Some(message)) =
         (parts.next(), parts.next(), parts.next())
     else {
         return Err(Error::Corrupt(format!("git show produced bad metadata: {text:?}")));
@@ -110,7 +113,7 @@ fn commit_meta(git_dir: &Path, commit: &str) -> Result<(u64, String, String)> {
     let seconds: u64 = seconds
         .parse()
         .map_err(|_| Error::Corrupt(format!("bad committer time: {seconds:?}")))?;
-    Ok((seconds * 1000, author.to_string(), subject.to_string()))
+    Ok((seconds * 1000, author.to_string(), message.to_string()))
 }
 
 /// The git repository's object hash algorithm (`sha1` or `sha256`).
@@ -340,13 +343,17 @@ fn import_linear(
                 .collect()
         };
         sum = apply_realized_to_sum(&sum, &realized)?;
-        let (committed_ms, author, subject) = commit_meta(git_dir, commit)?;
+        let (committed_ms, author, message) = commit_meta(git_dir, commit)?;
         let tree = resolve_tree(git_dir, commit)?;
         let annotation = Annotation {
             author,
-            prose: Some(format!(
-                "git import: commit {algorithm}:{commit} (tree {algorithm}:{tree}): {subject}"
-            )),
+            prose: Some(message),
+            import: Some(GitImport {
+                algorithm: algorithm.clone(),
+                commit: commit.clone(),
+                tree,
+                reference: None,
+            }),
             ..Annotation::default()
         };
         let mut line = LogLine {
@@ -391,11 +398,16 @@ fn annotate_import(
 ) -> Result<()> {
     let algorithm = object_format(git_dir)?;
     let tree = resolve_tree(git_dir, commit)?;
+    let (_committed_ms, _author, message) = commit_meta(git_dir, commit)?;
     let annotation = Annotation {
         author: "git-import".to_string(),
-        prose: Some(format!(
-            "git import: ref {committish} -> commit {algorithm}:{commit} (tree {algorithm}:{tree})"
-        )),
+        prose: Some(message),
+        import: Some(GitImport {
+            algorithm,
+            commit: commit.to_string(),
+            tree,
+            reference: Some(committish.to_string()),
+        }),
         ..Annotation::default()
     };
     repo.apply("main", Intent::default(), annotation)?;
@@ -477,13 +489,14 @@ mod tests {
         assert!(line.intent.ops.is_empty());
         assert!(line.realized.is_empty());
         assert_eq!(line.annotation.author, "git-import");
-        let prose = line.annotation.prose.as_deref().unwrap();
-        assert_eq!(
-            prose,
-            format!(
-                "git import: ref HEAD -> commit {algorithm}:{commit} (tree {algorithm}:{tree})"
-            )
-        );
+        // The commit message rides verbatim in prose; the derivation facts
+        // are structured, not fused into the prose string.
+        assert_eq!(line.annotation.prose.as_deref(), Some("genesis"));
+        let import = line.annotation.import.as_ref().expect("import provenance");
+        assert_eq!(import.algorithm, algorithm);
+        assert_eq!(import.commit, commit);
+        assert_eq!(import.tree, tree);
+        assert_eq!(import.reference.as_deref(), Some("HEAD"));
         assert_eq!(state.manifest.get("/a.txt").unwrap().mode, "100644");
         #[cfg(unix)]
         {
@@ -539,9 +552,12 @@ mod tests {
         let mut anchored: Vec<ElementRecord> = state.manifest.records().cloned().collect();
         anchored.sort();
         assert_eq!(derived, anchored);
-        // Annotations carry the commit's subject.
-        let prose = state.lines[2].annotation.prose.as_deref().unwrap();
-        assert!(prose.ends_with(": edit a"), "{prose}");
+        // Annotations carry the commit message verbatim, with structured
+        // derivation facts alongside.
+        assert_eq!(state.lines[2].annotation.prose.as_deref(), Some("edit a"));
+        let import = state.lines[2].annotation.import.as_ref().expect("import provenance");
+        assert_eq!(import.commit, commit);
+        assert_eq!(import.reference, None);
         assert_eq!(state.lines[0].annotation.author, "abelian <abelian@example.com>");
 
         // Determinism: a second import produces byte-identical log lines.

@@ -51,6 +51,25 @@ pub struct Origin {
     pub id: String,
 }
 
+/// For lines derived from a git commit (§2.4 import): the machine-readable
+/// derivation facts, so `prose` can carry the commit message verbatim
+/// instead of a provenance string fused to a subject.  Anyone reading the
+/// log can re-derive the imported state from these facts alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitImport {
+    /// The git object hash algorithm (`sha1` or `sha256`).
+    pub algorithm: String,
+    /// The source commit's object name.
+    pub commit: String,
+    /// The commit's tree object name: the import is a pure function of it.
+    pub tree: String,
+    /// The ref as the user passed it, when a line names one (the anchor
+    /// provenance line of a single-commit import).  Per-commit lines of a
+    /// linear import derive from commits directly and carry no ref.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
 /// The annotation: the exhaust the harness stops throwing away.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Annotation {
@@ -74,6 +93,10 @@ pub struct Annotation {
     pub reads: Option<serde_json::Value>,
     /// For union lines, the source line.
     pub origin: Option<Origin>,
+    /// For lines derived from a git commit, the derivation facts.  When
+    /// present, `prose` carries the commit message verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import: Option<GitImport>,
     /// For view lines, the fused span (§2.6).  A line carrying a view MUST
     /// have an empty realized delta: a view is a rendering, never a
     /// mutation.  Union re-keys `from`/`to` when the line lands elsewhere.

@@ -680,6 +680,7 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
         reads: None,
         origin: None,
         view: None,
+        import: None,
     };
     let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
     println!("{} {}", line.id, line.sum_after);
@@ -998,6 +999,7 @@ fn cmd_enact(args: &[&str]) -> Result<()> {
         reads: None,
         origin: None,
         view: None,
+        import: None,
     };
     let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
     println!("{} {} (enacts submission {submission})", line.id, line.sum_after);

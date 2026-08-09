@@ -107,6 +107,7 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             reads: line.annotation.reads.clone(),
             origin: Some(Origin { fork: source.to_string(), id: line.id.clone() }),
             view,
+            import: line.annotation.import.clone(),
         };
 
         // Stratum 2: realized replay.  Check the incoming applied patch's
