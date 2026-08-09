@@ -15,11 +15,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::blobs::BlobStore;
 use crate::fork::ForkFile;
 use crate::ident::{ElementRecord, sha3_hex, validate_path};
-use crate::log::Annotation;
+use crate::log::{Annotation, LogLine};
 use crate::manifest::Manifest;
-use crate::patch::Intent;
+use crate::patch::{Intent, RealizedEntry, apply_realized_to_sum};
 use crate::repo::Repository;
 use crate::{Error, Result, ioerr};
 
@@ -63,6 +64,53 @@ pub fn resolve_commit(git_dir: &Path, committish: &str) -> Result<String> {
 /// Resolve a commit to its tree's object name.
 pub fn resolve_tree(git_dir: &Path, commit: &str) -> Result<String> {
     rev_parse(git_dir, &format!("{commit}^{{tree}}"))
+}
+
+/// The linear chain of commits ending at `commit`: first-parent ancestry,
+/// oldest first, truncated at (and including) the first merge commit or the
+/// root commit.  The chain is a pure function of the commit, so everyone
+/// who holds it derives the same chain.
+pub fn linear_chain(git_dir: &Path, commit: &str) -> Result<Vec<String>> {
+    let out = git(git_dir, &["rev-list", "--first-parent", "--parents", commit])?;
+    let text = String::from_utf8(out)
+        .map_err(|_| Error::Corrupt("git rev-list produced non-UTF-8".to_string()))?;
+    let mut chain = Vec::new();
+    for line in text.lines() {
+        let mut names = line.split(' ');
+        let Some(hex) = names.next() else { continue };
+        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Corrupt(format!(
+                "git rev-list produced a non-hex name: {hex:?}"
+            )));
+        }
+        chain.push(hex.to_string());
+        // Zero parents is the root; two or more is a merge.  Either way,
+        // linear history stops here, this commit included.
+        if names.count() != 1 {
+            break;
+        }
+    }
+    chain.reverse();
+    Ok(chain)
+}
+
+/// A commit's committer time (milliseconds), author (`Name <email>`), and
+/// subject line — the deterministic annotation material an import stamps.
+fn commit_meta(git_dir: &Path, commit: &str) -> Result<(u64, String, String)> {
+    let out = git(git_dir, &["show", "-s", "--format=%ct%x00%an <%ae>%x00%s", commit])?;
+    let text = String::from_utf8(out)
+        .map_err(|_| Error::Corrupt("git show produced non-UTF-8".to_string()))?;
+    let text = text.trim_end_matches('\n');
+    let mut parts = text.splitn(3, '\0');
+    let (Some(seconds), Some(author), Some(subject)) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(Error::Corrupt(format!("git show produced bad metadata: {text:?}")));
+    };
+    let seconds: u64 = seconds
+        .parse()
+        .map_err(|_| Error::Corrupt(format!("bad committer time: {seconds:?}")))?;
+    Ok((seconds * 1000, author.to_string(), subject.to_string()))
 }
 
 /// The git repository's object hash algorithm (`sha1` or `sha256`).
@@ -208,6 +256,115 @@ pub fn init_from_git(
     }
 }
 
+/// Initialize a repository at `root` whose `main` fork carries one log line
+/// per git commit of `committish`'s linear history: first-parent ancestry
+/// back to (and including) the first merge commit or the root commit.  The
+/// oldest commit's tree anchors the fork; each later commit's line realizes
+/// the delta from its parent's tree.  Every line is stamped with the
+/// commit's committer time, author, and subject, so the whole log is a pure
+/// function of the git history: everyone imports the same bytes.  Returns
+/// the repository and the chain, oldest first.
+pub fn init_from_git_linear(
+    root: impl Into<PathBuf>,
+    git_dir: Option<&Path>,
+    committish: &str,
+) -> Result<(Repository, Vec<String>)> {
+    let root = root.into();
+    let git_dir = git_dir.unwrap_or(&root).to_path_buf();
+    let commit = resolve_commit(&git_dir, committish)?;
+    let chain = linear_chain(&git_dir, &commit)?;
+    // Validate every commit's tree before writing anything (error loudly,
+    // import nothing).
+    let mut trees = Vec::with_capacity(chain.len());
+    for c in &chain {
+        trees.push(commit_entries(&git_dir, c)?);
+    }
+    let repo = Repository::init_bare(&root)?;
+    match import_linear(&repo, &git_dir, &chain, &trees) {
+        Ok(()) => Ok((repo, chain)),
+        Err(err) => {
+            // The layout was ours alone (init_bare refuses an existing
+            // `.abelian`); a failed import leaves nothing behind.
+            let _ = std::fs::remove_dir_all(root.join(".abelian"));
+            Err(err)
+        }
+    }
+}
+
+/// Ingest one commit's tree into the pool and derive its manifest.
+fn commit_manifest(
+    blobs: &BlobStore,
+    git_dir: &Path,
+    entries: &[GitEntry],
+) -> Result<Manifest> {
+    let mut manifest = Manifest::new();
+    for entry in entries {
+        let content = read_git_blob(git_dir, &entry.oid)?;
+        let blob = blobs.put(&content)?;
+        manifest.insert(ElementRecord::new(&entry.mode, &entry.path, &blob)?)?;
+    }
+    Ok(manifest)
+}
+
+fn import_linear(
+    repo: &Repository,
+    git_dir: &Path,
+    chain: &[String],
+    trees: &[Vec<GitEntry>],
+) -> Result<()> {
+    let blobs = repo.blobs();
+    let algorithm = object_format(git_dir)?;
+    let anchor = commit_manifest(&blobs, git_dir, &trees[0])?;
+    let anchor_sum = anchor.sum();
+    repo.write_anchor_manifest(&anchor)?;
+    // One line per commit.  The oldest commit's line is zero-op (the anchor
+    // carries its state); each later line's realized delta takes the parent
+    // commit's tree to this commit's tree, sorted by path.
+    let mut log_bytes = Vec::new();
+    let mut prev_id = String::new();
+    let mut prev_manifest = anchor;
+    let mut sum = anchor_sum.clone();
+    for (i, commit) in chain.iter().enumerate() {
+        let realized: Vec<RealizedEntry> = if i == 0 {
+            Vec::new()
+        } else {
+            let manifest = commit_manifest(&blobs, git_dir, &trees[i])?;
+            let changes = crate::diff::diff_manifests(&prev_manifest, &manifest);
+            prev_manifest = manifest;
+            changes
+                .iter()
+                .map(|c| RealizedEntry {
+                    remove: c.before.as_ref().map(|r| r.to_line()),
+                    add: c.after.as_ref().map(|r| r.to_line()),
+                })
+                .collect()
+        };
+        sum = apply_realized_to_sum(&sum, &realized)?;
+        let (committed_ms, author, subject) = commit_meta(git_dir, commit)?;
+        let tree = resolve_tree(git_dir, commit)?;
+        let annotation = Annotation {
+            author,
+            prose: Some(format!(
+                "git import: commit {algorithm}:{commit} (tree {algorithm}:{tree}): {subject}"
+            )),
+            ..Annotation::default()
+        };
+        let mut line = LogLine {
+            id: String::new(),
+            prev: prev_id.clone(),
+            intent: Intent::default(),
+            realized,
+            sum_after: sum.hexdigest(),
+            committed_ms,
+            annotation,
+        };
+        log_bytes.extend_from_slice(&line.seal(&blobs)?);
+        prev_id = line.id.clone();
+    }
+    repo.restore_fork("main", &ForkFile::at(&anchor_sum), &log_bytes)?;
+    Ok(())
+}
+
 fn import(repo: &Repository, git_dir: &Path, entries: &[GitEntry]) -> Result<()> {
     let blobs = repo.blobs();
     let mut manifest = Manifest::new();
@@ -351,6 +508,79 @@ mod tests {
         let drifted = resolve_commit(&dir, "HEAD").unwrap();
         assert_ne!(drifted, commit);
         assert_ne!(derive_records(&dir, &drifted).unwrap(), anchored);
+    }
+
+    #[test]
+    fn linear_history_imports_one_line_per_commit_deterministically() {
+        let dir = temp_git_repo("linear");
+        std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
+        commit_all(&dir, "genesis");
+        std::fs::write(dir.join("b.txt"), b"beta\n").unwrap();
+        commit_all(&dir, "add b");
+        std::fs::write(dir.join("a.txt"), b"alpha 2\n").unwrap();
+        commit_all(&dir, "edit a");
+        let commit = resolve_commit(&dir, "HEAD").unwrap();
+
+        // The chain is first-parent ancestry, oldest first.
+        let chain = linear_chain(&dir, &commit).unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain.last().unwrap(), &commit);
+
+        let root_a = dir.join("import-a");
+        let (repo, chain_a) = init_from_git_linear(&root_a, Some(&dir), &commit).unwrap();
+        assert_eq!(chain_a, chain);
+
+        // One line per commit; the head state re-derives from the target
+        // commit's tree.
+        let state = repo.current_state("main").unwrap();
+        assert_eq!(state.lines.len(), 3);
+        assert!(state.lines[0].realized.is_empty(), "the anchor carries the first commit");
+        let derived = derive_records(&dir, &commit).unwrap();
+        let mut anchored: Vec<ElementRecord> = state.manifest.records().cloned().collect();
+        anchored.sort();
+        assert_eq!(derived, anchored);
+        // Annotations carry the commit's subject.
+        let prose = state.lines[2].annotation.prose.as_deref().unwrap();
+        assert!(prose.ends_with(": edit a"), "{prose}");
+        assert_eq!(state.lines[0].annotation.author, "abelian <abelian@example.com>");
+
+        // Determinism: a second import produces byte-identical log lines.
+        let root_b = dir.join("import-b");
+        let (repo_b, _) = init_from_git_linear(&root_b, Some(&dir), &commit).unwrap();
+        assert_eq!(
+            repo.log_bytes("main").unwrap(),
+            repo_b.log_bytes("main").unwrap(),
+            "everyone imports the same"
+        );
+
+        // A merge commit truncates the chain: it becomes the anchor.
+        run_git(&dir, &["checkout", "-q", "-b", "side", "HEAD~2"]);
+        std::fs::write(dir.join("c.txt"), b"gamma\n").unwrap();
+        commit_all(&dir, "side c");
+        run_git(&dir, &["checkout", "-q", "-"]);
+        run_git(
+            &dir,
+            &[
+                "-c",
+                "user.name=abelian",
+                "-c",
+                "user.email=abelian@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                "merge side",
+                "side",
+            ],
+        );
+        std::fs::write(dir.join("d.txt"), b"delta\n").unwrap();
+        commit_all(&dir, "after merge");
+        let head = resolve_commit(&dir, "HEAD").unwrap();
+        let merge = resolve_commit(&dir, "HEAD~1").unwrap();
+        let chain = linear_chain(&dir, &head).unwrap();
+        assert_eq!(chain, vec![merge, head]);
     }
 
     #[test]

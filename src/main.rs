@@ -22,7 +22,9 @@ use abelian::{Error, Result};
 const USAGE: &str = "USAGE: abelian <command> [options] [args]
 
 repository:
-  init [--from-git COMMIT]         create a repository here (anchored at a git commit's tree)
+  init [--from-git COMMIT [--import-linear-history]]
+                                   create a repository here (anchored at a git commit's tree;
+                                   optionally one line per commit of linear history)
   sum                              print the working tree's element records and sum
   status                           the pending patch: working tree vs the fork's ref
   check                            compare the working tree against the log's expectation
@@ -162,9 +164,16 @@ fn cmd_init(args: &[&str]) -> Result<()> {
         from_git: Option<String>,
         #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
         git: Option<String>,
+        #[arrrg(
+            flag,
+            "With --from-git: one line per commit, first parents back to the first merge or root."
+        )]
+        import_linear_history: bool,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian init [--from-git COMMIT] [dir]", args);
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: abelian init [--from-git COMMIT [--import-linear-history]] [dir]",
+        args,
+    );
     reject_extra("init", &free, 1)?;
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
@@ -172,6 +181,18 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     };
     if let Some(committish) = &options.from_git {
         let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
+        if options.import_linear_history {
+            let (repo, chain) =
+                abelian::git::init_from_git_linear(&dir, git_dir.as_deref(), committish)?;
+            let commit = chain.last().expect("a linear chain is never empty");
+            println!(
+                "initialized abelian repository at {} from git commit {commit}",
+                repo.root().display()
+            );
+            println!("imported {} commit(s) of linear history", chain.len());
+            println!("anchor {}", repo.current_state("main")?.sum.hexdigest());
+            return Ok(());
+        }
         let (repo, commit) =
             abelian::git::init_from_git(&dir, git_dir.as_deref(), committish)?;
         println!(
@@ -183,6 +204,11 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     }
     if options.git.is_some() {
         return Err(Error::Invalid("--git requires --from-git".to_string()));
+    }
+    if options.import_linear_history {
+        return Err(Error::Invalid(
+            "--import-linear-history requires --from-git".to_string(),
+        ));
     }
     let repo = Repository::init(&dir)?;
     println!("initialized empty abelian repository at {}", repo.root().display());
