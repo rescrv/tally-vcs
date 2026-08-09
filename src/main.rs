@@ -688,32 +688,57 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_log(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(flag, "Show the full prose body, not just the subject line.")]
+        full: bool,
+    }
     let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: abelian log [--fork FORK]", args);
+        Options::from_arguments_relaxed("USAGE: abelian log [--fork FORK] [--full]", args);
     reject_extra("log", &free, 0)?;
+    let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
     // Follow the fork across its lineage: its own log, then—when exhausted—
     // the log of the fork it was forked from, and so on to the root.
-    let history = repo.continuity_log(options.fork())?;
-    let mut shown = options.fork().to_string();
+    let history = repo.continuity_log(fork)?;
+    let mut shown = fork.to_string();
     for (fork, line) in history.iter().rev() {
         if fork != &shown {
             println!("--- {fork} ---");
             shown = fork.clone();
         }
-        print_line_brief(line);
+        if options.full {
+            print_line_full(line);
+        } else {
+            print_line_brief(line);
+        }
     }
     Ok(())
 }
 
-fn print_line_brief(line: &abelian::log::LogLine) {
+fn line_header(line: &abelian::log::LogLine) -> String {
     let provenance = match line.annotation.provenance {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
         Provenance::Union => "union",
         Provenance::View => "view",
     };
-    let header = format!("{}  {}  {}", line.id, provenance, line.annotation.author);
+    format!("{}  {}  {}", line.id, provenance, line.annotation.author)
+}
+
+fn print_line_brief(line: &abelian::log::LogLine) {
+    let header = line_header(line);
+    // git-log style: only the subject (first line of the message) shares the
+    // header line; the body is omitted for a one-line-per-commit summary.
+    let prose = line.annotation.prose.as_deref().unwrap_or("");
+    let subject = prose.split('\n').next().unwrap_or("");
+    println!("{header}  {subject}");
+}
+
+fn print_line_full(line: &abelian::log::LogLine) {
+    let header = line_header(line);
     print_prose(&header, line.annotation.prose.as_deref().unwrap_or(""));
 }
 
