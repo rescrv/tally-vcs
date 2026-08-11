@@ -351,6 +351,18 @@ fn cmd_status(args: &[&str]) -> Result<()> {
         return Ok(());
     }
     println!("fork {fork}");
+    // The mirror binding is load-bearing state (the bridge-ownership bit),
+    // and phase-1 users live here: name which fork mirrors git and the
+    // branch it is bound to, so the binding has a read path.
+    match repo.read_mirror()? {
+        Some(binding) if binding.fork == fork => {
+            println!("mirror  bound to git branch {}", binding.branch);
+        }
+        Some(binding) => {
+            println!("mirror  fork {} (bound to git branch {})", binding.fork, binding.branch);
+        }
+        None => {}
+    }
     println!("ref     {}", committed.sum.hexdigest());
     println!("working {}", working.sum().hexdigest());
     if changes.is_empty() {
