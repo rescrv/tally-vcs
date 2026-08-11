@@ -235,12 +235,13 @@ impl Repository {
     /// Remove a fork: delete `forks/<name>/` and everything under it.
     ///
     /// Like `git branch -d`, this refuses when the fork carries log lines no
-    /// other fork's log has taken up, so deleting it would drop the only copy
-    /// of that work; `force` is the `-D` escape hatch that deletes anyway.  A
-    /// line counts as taken up when another fork carries it outright or
+    /// other fork's log has subsumed, so deleting it would drop the only copy
+    /// of that work; `force` is the `-D` escape hatch that deletes anyway.
+    /// "Subsumed" is a property the tool decides, not a flag someone set: a
+    /// line counts as subsumed when another fork carries it outright or
     /// carries a union line whose `origin` names it (union re-seals ids, so
     /// the origin is the linkage, §2.5).  Views are log lines (§2.6), so an
-    /// uncarried view refuses too — a fused rendering is never silently
+    /// unsubsumed view refuses too — a fused rendering is never silently
     /// dropped.  The `main` fork is never removable — the empty repository
     /// always has it (§2.3).
     pub fn remove_fork(&self, name: &str, force: bool) -> Result<()> {
@@ -269,10 +270,11 @@ impl Repository {
                         carried.insert(line.id);
                     }
                 }
-                let unmerged = mine.lines.iter().filter(|l| !carried.contains(&l.id)).count();
-                if unmerged > 0 {
+                let unsubsumed =
+                    mine.lines.iter().filter(|l| !carried.contains(&l.id)).count();
+                if unsubsumed > 0 {
                     return Err(Error::Invalid(format!(
-                        "fork {name} has {unmerged} line(s) not merged into another fork; \
+                        "fork {name} has {unsubsumed} line(s) not subsumed by another fork; \
                          pass --force to delete it anyway"
                     )));
                 }
@@ -1040,7 +1042,7 @@ impl Repository {
     /// §2.6 Fuse: append a view line — provenance `view`, a span
     /// annotation, and an empty realized delta (an arithmetic identity), so
     /// it is a log line like any other: it travels through union, it counts
-    /// as unmerged work, and it is ordered, so a later view supersedes an
+    /// as unsubsumed work, and it is ordered, so a later view supersedes an
     /// earlier one it overlaps.  A rendering, never a mutation: the fused
     /// lines remain underneath.
     pub fn fuse(
@@ -1428,12 +1430,12 @@ mod tests {
     }
 
     #[test]
-    fn remove_fork_refuses_unmerged_but_force_deletes() {
+    fn remove_fork_refuses_unsubsumed_but_force_deletes() {
         let repo = temp_repo("rm-fork");
         repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
         repo.create_fork("scratch", "main").unwrap();
         repo.apply("scratch", create("/b", b"b\n"), note("t")).unwrap();
-        // Unmerged work: -d equivalent refuses.
+        // Unsubsumed work: -d equivalent refuses.
         assert!(repo.remove_fork("scratch", false).is_err());
         assert!(repo.fork_names().unwrap().contains(&"scratch".to_string()));
         // -D equivalent deletes it regardless.
@@ -1458,7 +1460,7 @@ mod tests {
 
     #[test]
     fn remove_fork_never_drops_the_only_view() {
-        // A view is a log line, so the unmerged-work check protects it: a
+        // A view is a log line, so the unsubsumed-work check protects it: a
         // fused rendering is never silently deleted with its fork.
         let repo = temp_repo("rm-view");
         repo.create_fork("s", "main").unwrap();
@@ -1466,7 +1468,7 @@ mod tests {
         crate::union::union(&repo, "s", "main", "maintainer").unwrap();
         // Fuse after the fact: the fork now holds the only copy of the view.
         repo.fuse("s", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
-        assert!(repo.remove_fork("s", false).is_err(), "the view is unmerged work");
+        assert!(repo.remove_fork("s", false).is_err(), "the view is unsubsumed work");
         // Union carries the view; then removal is safe.
         crate::union::union(&repo, "s", "main", "maintainer").unwrap();
         repo.remove_fork("s", false).unwrap();

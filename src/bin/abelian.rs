@@ -50,7 +50,7 @@ exhaust:
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
-  remove-fork <name>               delete a fork; refuses unmerged work unless --force
+  remove-fork <name>               delete a fork; refuses unsubsumed work unless --force
   union <fork>                     bring a fork's log into another (strata 1-3)
   repoint <rev>                    move this fork's state to a prior one, non-destructively
 
