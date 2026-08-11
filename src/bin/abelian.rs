@@ -41,9 +41,8 @@ revisions:
 
 patches:
   apply <patch.json>               validate and apply an intent; append to the log
-  log                              render the chain
+  log [--view NAME | --raw]        render history (default view: fused)
   show <id>                        render one log line
-  read                             render history (--fused, --raw)
   fuse <from-id> <to-id>           compose a span into one narrative beat (lossless)
 
 exhaust:
@@ -85,7 +84,6 @@ fn main() {
         "apply" => cmd_apply(&rest),
         "log" => cmd_log(&rest),
         "show" => cmd_show(&rest),
-        "read" => cmd_read(&rest),
         "fuse" => cmd_fuse(&rest),
         "gc-blobs" => cmd_gc_blobs(&rest),
         "fork" => cmd_fork(&rest),
@@ -723,27 +721,58 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     struct Options {
         #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
         fork: Option<String>,
-        #[arrrg(flag, "Show only the subject line, one line per commit.")]
-        compact: bool,
+        #[arrrg(optional, "The named view to render (default: fused).", "NAME")]
+        view: Option<String>,
+        #[arrrg(flag, "Render the un-fused chain: every line, full.")]
+        raw: bool,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian log [--fork FORK] [--compact]", args);
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: abelian log [--fork FORK] [--view NAME | --raw]",
+        args,
+    );
     reject_extra("log", &free, 0)?;
+    if options.raw && options.view.is_some() {
+        return Err(Error::Invalid("--raw and --view are mutually exclusive".to_string()));
+    }
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
     // Follow the fork across its lineage: its own log, then—when exhausted—
     // the log of the fork it was forked from, and so on to the root.
     let history = repo.continuity_log(fork)?;
-    let mut shown = fork.to_string();
-    for (fork, line) in history.iter().rev() {
-        if fork != &shown {
-            println!("--- {fork} ---");
-            shown = fork.clone();
-        }
-        if options.compact {
-            print_line_brief(line);
-        } else {
+    if options.raw {
+        // The un-fused chain: every line, full, git-log style.
+        let mut shown = fork.to_string();
+        for (fork, line) in history.iter().rev() {
+            if fork != &shown {
+                println!("--- {fork} ---");
+                shown = fork.clone();
+            }
             print_line_full(line);
+        }
+        return Ok(());
+    }
+    // A named view is a zoom level, not a different interface.  `fused` is
+    // the default view; agent-maintained views slot in here by name.
+    let view = options.view.as_deref().unwrap_or("fused");
+    if view != "fused" {
+        return Err(Error::Invalid(format!(
+            "unknown view {view:?}; the only view is `fused` (--raw shows the un-fused chain)"
+        )));
+    }
+    let lines: Vec<abelian::log::LogLine> =
+        history.into_iter().map(|(_, line)| line).collect();
+    for beat in fused_beats(&lines) {
+        match beat {
+            Beat::Fused { view, lines } => {
+                let header = format!(
+                    "{}  fuse({} lines)  {}",
+                    lines.last().map(|l| l.id.as_str()).unwrap_or(""),
+                    lines.len(),
+                    view.annotation.author,
+                );
+                print_prose(&header, view.annotation.prose.as_deref().unwrap_or(""));
+            }
+            Beat::Single(line) => print_line_brief(line),
         }
     }
     Ok(())
@@ -829,48 +858,6 @@ fn cmd_show(args: &[&str]) -> Result<()> {
         .find(|l| l.id == *id || l.id.starts_with(id.as_str()))
         .ok_or_else(|| Error::Invalid(format!("no line {id} on fork {}", options.fork())))?;
     println!("{}", serde_json::to_string_pretty(line)?);
-    Ok(())
-}
-
-fn cmd_read(args: &[&str]) -> Result<()> {
-    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {
-        #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
-        fork: Option<String>,
-        #[arrrg(flag, "Render the human narrative (fused spans collapse).")]
-        fused: bool,
-        #[arrrg(flag, "Render the raw tool-call stream (full lines).")]
-        raw: bool,
-    }
-    let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian read [--fork FORK] [--fused|--raw]",
-        args,
-    );
-    reject_extra("read", &free, 0)?;
-    let repo = repo()?;
-    let state = repo.current_state(options.fork.as_deref().unwrap_or("main"))?;
-    if options.raw {
-        for line in &state.lines {
-            println!("{}", serde_json::to_string(line)?);
-        }
-        return Ok(());
-    }
-    // Default zoom: fused — the human view of history is a zoom level, not
-    // a different interface.
-    for beat in fused_beats(&state.lines) {
-        match beat {
-            Beat::Fused { view, lines } => {
-                let header = format!(
-                    "{}  fuse({} lines)  {}",
-                    lines.last().map(|l| l.id.as_str()).unwrap_or(""),
-                    lines.len(),
-                    view.annotation.author,
-                );
-                print_prose(&header, view.annotation.prose.as_deref().unwrap_or(""));
-            }
-            Beat::Single(line) => print_line_brief(line),
-        }
-    }
     Ok(())
 }
 
