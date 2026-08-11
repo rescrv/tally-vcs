@@ -191,16 +191,30 @@ fn resolve_line_id_global(
 /// Bases: `HEAD` or `@` (the fork's head), a fork name (that fork's head,
 /// and the resolution is read on that fork), a 64-hex sum (a state on the
 /// lineage), or a log-line id or unambiguous id prefix (the state that line
-/// produced).  Suffixes walk the lineage: `^` and `~N` step back N states
-/// toward the base; `@{N}` selects the state N steps back from head.
+/// produced).  Two prefixes disambiguate the hash domains explicitly:
+/// `sum:S` forces a state-sum resolution and `line:ID` forces a line-id
+/// resolution — a bare 64-hex string is ambiguous because line ids and
+/// setsums are both 256-bit, so the prefixes name the domain at the UI.
+/// Suffixes walk the lineage: `^` and `~N` step back N states toward the
+/// base; `@{N}` selects the state N steps back from head.
 pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Resolved> {
     if spec.is_empty() {
         return Err(Error::Invalid("empty revision".to_string()));
     }
     let (base, suffixes) = split_suffixes(spec);
+    // Domain prefixes short-circuit the heuristic: they name which of the
+    // two 256-bit domains — state sum or line id — the base lives in.
+    if let Some(sum) = base.strip_prefix("sum:") {
+        let (fork, index, points) = resolve_sum(repo, sum, default_fork)?;
+        return apply_suffixes(spec, &fork, index, &points, suffixes);
+    }
+    if let Some(id) = base.strip_prefix("line:") {
+        let (fork, index, points) = resolve_line(repo, id, default_fork)?;
+        return apply_suffixes(spec, &fork, index, &points, suffixes);
+    }
     // Decide which fork's lineage we read on, and the starting index.
     let known_forks = repo.fork_names()?;
-    let (fork, mut index, points) = if base == "HEAD" || base == "@" || base.is_empty() {
+    let (fork, index, points) = if base == "HEAD" || base == "@" || base.is_empty() {
         let points = lineage_states(repo, default_fork)?;
         let idx = points.len() - 1;
         (default_fork.to_string(), idx, points)
@@ -243,7 +257,69 @@ pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Reso
             }
         }
     };
-    // Apply the suffix operators left to right.
+    apply_suffixes(spec, &fork, index, &points, suffixes)
+}
+
+/// `sum:S` — resolve `s` strictly as a state sum on `default_fork`'s
+/// lineage.  Unlike the bare-hex heuristic, this never falls back to a line
+/// id: a `sum:` prefix asserts the setsum domain, so a non-hex or absent sum
+/// is an error, not a reinterpretation.
+fn resolve_sum(
+    repo: &Repository,
+    s: &str,
+    default_fork: &str,
+) -> Result<(String, usize, Vec<StatePoint>)> {
+    if !is_hex64(s) {
+        return Err(Error::Invalid(format!(
+            "sum:{s:?} is not a 64-hex state sum"
+        )));
+    }
+    let points = lineage_states(repo, default_fork)?;
+    match points.iter().rposition(|p| p.sum == s) {
+        Some(idx) => Ok((default_fork.to_string(), idx, points)),
+        None => Err(Error::Invalid(format!(
+            "sum {s} is not a state on fork {default_fork}'s lineage"
+        ))),
+    }
+}
+
+/// `line:ID` — resolve `id` strictly as a log-line id (or unambiguous
+/// prefix).  This asserts the line-id domain: it takes the default fork's
+/// lineage first, then the whole repository, and never reinterprets the id
+/// as a sum.
+fn resolve_line(
+    repo: &Repository,
+    id: &str,
+    default_fork: &str,
+) -> Result<(String, usize, Vec<StatePoint>)> {
+    if id.is_empty() {
+        return Err(Error::Invalid("line: requires a line id".to_string()));
+    }
+    let points = lineage_states(repo, default_fork)?;
+    let matches: Vec<usize> = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.line.as_deref().is_some_and(|l| l.starts_with(id)))
+        .map(|(i, _)| i)
+        .collect();
+    match matches.as_slice() {
+        [] => resolve_line_id_global(repo, id, default_fork),
+        [one] => Ok((default_fork.to_string(), *one, points)),
+        many => Err(Error::Invalid(format!(
+            "line id prefix {id:?} is ambiguous on fork {default_fork}: {} lines match",
+            many.len()
+        ))),
+    }
+}
+
+/// Apply the suffix operators left to right, walking the lineage.
+fn apply_suffixes(
+    spec: &str,
+    fork: &str,
+    mut index: usize,
+    points: &[StatePoint],
+    suffixes: Vec<&str>,
+) -> Result<Resolved> {
     for suffix in suffixes {
         let step_back = |index: &mut usize, n: usize, sfx: &str| -> Result<()> {
             if *index < n {
@@ -284,7 +360,11 @@ pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Reso
         }
     }
     let point = &points[index];
-    Ok(Resolved { fork, sum: point.sum.clone(), line: point.line.clone() })
+    Ok(Resolved {
+        fork: fork.to_string(),
+        sum: point.sum.clone(),
+        line: point.line.clone(),
+    })
 }
 
 #[cfg(test)]

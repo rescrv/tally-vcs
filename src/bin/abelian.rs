@@ -35,7 +35,7 @@ repository:
   restore [rev] [-- path...]       rewrite working-tree paths to a state (discard edits)
 
 revisions:
-  rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum, line id)
+  rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum:S, line:ID)
   diff [rev] [rev] [-- path...]    the patch between two states (or working tree vs ref)
   blame <path>                     attribute each line to the patch that produced it
 
