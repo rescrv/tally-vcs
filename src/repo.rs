@@ -766,39 +766,65 @@ impl Repository {
 
     fn write_tree_file(&self, blobs: &BlobStore, record: &ElementRecord) -> Result<()> {
         let dst = self.tree_path(&record.path);
+        self.write_record_to(blobs, record, &dst)
+    }
+
+    /// Write one element's bytes to `dst`, honoring its mode (symlink, exec,
+    /// regular).  The path is caller-chosen so materialize can target a
+    /// destination outside the working tree.
+    fn write_record_to(
+        &self,
+        blobs: &BlobStore,
+        record: &ElementRecord,
+        dst: &Path,
+    ) -> Result<()> {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(ioerr("creating working tree directory"))?;
         }
         let content = blobs.get(&record.blob)?;
         if record.mode == "120000" {
-            let _ = fs::remove_file(&dst);
+            let _ = fs::remove_file(dst);
             #[cfg(unix)]
             {
                 let target = String::from_utf8(content).map_err(|_| {
                     Error::Corrupt(format!("symlink target not UTF-8: {}", record.path))
                 })?;
-                std::os::unix::fs::symlink(target, &dst)
+                std::os::unix::fs::symlink(target, dst)
                     .map_err(ioerr("writing symlink"))?;
             }
             return Ok(());
         }
-        fs::write(&dst, &content).map_err(ioerr("writing working tree file"))?;
+        fs::write(dst, &content).map_err(ioerr("writing working tree file"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = if record.mode == "100755" { 0o755 } else { 0o644 };
-            fs::set_permissions(&dst, fs::Permissions::from_mode(mode))
+            fs::set_permissions(dst, fs::Permissions::from_mode(mode))
                 .map_err(ioerr("setting working tree mode"))?;
         }
         Ok(())
     }
 
     /// Materialize a full working tree for `manifest` under the repository
-    /// root (`abelian materialize`).
+    /// root.
     pub fn materialize(&self, manifest: &Manifest) -> Result<()> {
         let blobs = self.blobs();
         for record in manifest.records() {
             self.write_tree_file(&blobs, record)?;
+        }
+        Ok(())
+    }
+
+    /// Materialize a full working tree for `manifest` under `dest`
+    /// (`abelian materialize <rev> [dest]`).  Whole-tree, elsewhere, and
+    /// non-destructive: the state is produced beside the repository, never
+    /// over the working tree.  `dest` is created if absent.
+    pub fn materialize_into(&self, manifest: &Manifest, dest: &Path) -> Result<()> {
+        fs::create_dir_all(dest).map_err(ioerr("creating materialize destination"))?;
+        let blobs = self.blobs();
+        for record in manifest.records() {
+            let dst = dest.join(record.path.trim_start_matches('/'));
+            self.write_record_to(&blobs, record, &dst)?;
         }
         Ok(())
     }

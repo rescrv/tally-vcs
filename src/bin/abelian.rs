@@ -31,7 +31,7 @@ repository:
   status                           the pending patch: working tree vs the fork's ref
   check                            compare the working tree against the log's expectation
   snapshot                         write a manifest at the current state and repoint the fork
-  materialize <sum>                produce a working tree at a prior state
+  materialize <rev> [dest]         produce a working tree at a state (default: new dir)
   restore [rev] [-- path...]       rewrite working-tree paths to a state (discard edits)
 
 revisions:
@@ -344,17 +344,41 @@ fn cmd_snapshot(args: &[&str]) -> Result<()> {
 
 fn cmd_materialize(args: &[&str]) -> Result<()> {
     let (options, free) = ForkOptions::from_arguments_relaxed(
-        "USAGE: abelian materialize [--fork FORK] <sum>",
+        "USAGE: abelian materialize [--fork FORK] <rev> [dest]",
         args,
     );
-    reject_extra("materialize", &free, 1)?;
-    let Some(sum_hex) = free.first() else {
-        return Err(Error::Invalid("materialize requires a sum".to_string()));
+    reject_extra("materialize", &free, 2)?;
+    let Some(spec) = free.first() else {
+        return Err(Error::Invalid("materialize requires a revision".to_string()));
     };
     let repo = repo()?;
-    let manifest = repo.manifest_at(options.fork(), sum_hex)?;
-    repo.materialize(&manifest)?;
-    println!("materialized {} elements at {sum_hex}", manifest.len());
+    // Any revision resolves: HEAD, a fork, sum:S, line:ID.  materialize no
+    // longer demands a raw sum — rev-parse exists, let it resolve.
+    let resolved = abelian::revision::resolve(&repo, spec, options.fork())?;
+    let manifest = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
+    // Whole-tree, elsewhere, non-destructive: default to a fresh directory
+    // beside the repository rather than over the working tree (that is
+    // restore's job).
+    let dest = match free.get(1) {
+        Some(dest) => std::path::PathBuf::from(dest),
+        None => {
+            let name = format!("abelian-{}", short(&resolved.sum));
+            std::path::PathBuf::from(name)
+        }
+    };
+    if dest.exists() {
+        return Err(Error::Invalid(format!(
+            "destination {} already exists; name an empty or new directory",
+            dest.display()
+        )));
+    }
+    repo.materialize_into(&manifest, &dest)?;
+    println!(
+        "materialized {} elements at {} into {}",
+        manifest.len(),
+        short(&resolved.sum),
+        dest.display()
+    );
     Ok(())
 }
 
