@@ -22,17 +22,31 @@ use abelian::{Error, Result};
 const USAGE: &str = "USAGE: abelian <command> [options] [args]
 
 repository:
-  init [--from-git COMMIT [--import-linear-history]]
-                                   create a repository here (anchored at a git commit's tree;
-                                   optionally one line per commit of linear history)
-  import-from-git <commit>         fast-forward a fork to a later git commit (--ff-only):
-                                   pull commits merged upstream into this repository
+  init                             create an empty repository here
+  gc-blobs                         collect blobs no fork reaches (--dry-run)
+
+git (sunsets with GitHub):
+  git pull                         fast-forward the mirror fork from its bound branch
+                                   (binds on first use from empty; one commit, one line;
+                                   refuses non-fast-forward)
+  git pr                           render a fork as a git branch and open a pull request
+                                   (one commit per fused beat)
+  git reanchor <commit>            recover the mirror fork after an upstream rewrite
+
+working tree:
   sum                              print the working tree's element records and sum
   status                           the pending patch: working tree vs the fork's ref
   check                            compare the working tree against the log's expectation
-  snapshot                         write a manifest at the current state and repoint the fork
   materialize <rev> [dest]         produce a working tree at a state (default: new dir)
-  restore [rev] [-- path...]       rewrite working-tree paths to a state (discard edits)
+  restore [rev] [-- path...]       rewrite working-tree paths to a state (discards edits)
+                                   (does not discard untracked files)
+
+forks:
+  fork <name>                      create a fork (anchor + empty log)
+  remove-fork <name>               delete a fork; refuses unsubsumed work unless --force
+  union <fork>                     bring that fork's log into this one (strata 1-3)
+  repoint <rev>                    move this fork's state to a prior one, non-destructively
+  snapshot                         write a manifest at the current state and repoint the fork
 
 revisions:
   rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum:S, line:ID)
@@ -40,19 +54,10 @@ revisions:
   blame <path>                     attribute each line to the patch that produced it
 
 patches:
-  apply <patch.json>               validate and apply an intent; append to the log
+  apply [file|-]                   validate and apply an intent; append to the log
   log [--view NAME | --raw]        render history (default view: fused)
   show <id>                        render one log line
-  fuse <from-id> <to-id>           compose a span into one narrative beat (lossless)
-
-exhaust:
-  gc-blobs                         collect blobs no fork reaches (--dry-run)
-
-forks:
-  fork <name>                      create a fork (anchor + empty log)
-  remove-fork <name>               delete a fork; refuses unsubsumed work unless --force
-  union <fork>                     bring a fork's log into another (strata 1-3)
-  repoint <rev>                    move this fork's state to a prior one, non-destructively
+  fuse <from> <to>                 compose a span into one narrative beat (lossless)
 
 wire:
   clone <store> <dest>             clone a packed repository from an object store
@@ -71,7 +76,8 @@ fn main() {
     let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
     let result = match command.as_str() {
         "init" => cmd_init(&rest),
-        "import-from-git" => cmd_import_from_git(&rest),
+        "gc-blobs" => cmd_gc_blobs(&rest),
+        "git" => cmd_git(&rest),
         "sum" => cmd_sum(&rest),
         "status" => cmd_status(&rest),
         "check" => cmd_check(&rest),
@@ -85,7 +91,6 @@ fn main() {
         "log" => cmd_log(&rest),
         "show" => cmd_show(&rest),
         "fuse" => cmd_fuse(&rest),
-        "gc-blobs" => cmd_gc_blobs(&rest),
         "fork" => cmd_fork(&rest),
         "remove-fork" => cmd_remove_fork(&rest),
         "union" => cmd_union(&rest),
@@ -154,94 +159,149 @@ struct ApplyOptions {
 
 fn cmd_init(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
-    struct Options {
-        #[arrrg(optional, "Anchor main at a git commit's tree.", "COMMIT")]
-        from_git: Option<String>,
-        #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
-        git: Option<String>,
-        #[arrrg(
-            flag,
-            "With --from-git: one line per commit, first parents back to the first merge or root."
-        )]
-        import_linear_history: bool,
-    }
-    let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian init [--from-git COMMIT [--import-linear-history]] [dir]",
-        args,
-    );
+    struct Options {}
+    let (_, free) =
+        Options::from_arguments_relaxed("USAGE: abelian init [dir]", args);
     reject_extra("init", &free, 1)?;
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
         None => std::env::current_dir().map_err(abelian::ioerr("getting cwd"))?,
     };
-    if let Some(committish) = &options.from_git {
-        let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
-        if options.import_linear_history {
-            let (repo, chain) =
-                abelian::git::init_from_git_linear(&dir, git_dir.as_deref(), committish)?;
-            let commit = chain.last().expect("a linear chain is never empty");
-            println!(
-                "initialized abelian repository at {} from git commit {commit}",
-                repo.root().display()
-            );
-            println!("imported {} commit(s) of linear history", chain.len());
-            println!("anchor {}", repo.current_state("main")?.sum.hexdigest());
-            return Ok(());
-        }
-        let (repo, commit) =
-            abelian::git::init_from_git(&dir, git_dir.as_deref(), committish)?;
-        println!(
-            "initialized abelian repository at {} from git commit {commit}",
-            repo.root().display()
-        );
-        println!("anchor {}", repo.current_state("main")?.sum.hexdigest());
-        return Ok(());
-    }
-    if options.git.is_some() {
-        return Err(Error::Invalid("--git requires --from-git".to_string()));
-    }
-    if options.import_linear_history {
-        return Err(Error::Invalid(
-            "--import-linear-history requires --from-git".to_string(),
-        ));
-    }
     let repo = Repository::init(&dir)?;
     println!("initialized empty abelian repository at {}", repo.root().display());
     Ok(())
 }
 
-fn cmd_import_from_git(args: &[&str]) -> Result<()> {
+/// The `git` namespace: the bridge that sunsets with GitHub.
+fn cmd_git(args: &[&str]) -> Result<()> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(Error::Invalid(
+            "git requires a subcommand: pull, pr, or reanchor".to_string(),
+        ));
+    };
+    match *sub {
+        "pull" => cmd_git_pull(rest),
+        "pr" => cmd_git_pr(rest),
+        "reanchor" => cmd_git_reanchor(rest),
+        other => Err(Error::Invalid(format!(
+            "unknown git subcommand {other:?}; expected pull, pr, or reanchor"
+        ))),
+    }
+}
+
+fn cmd_git_pull(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "The fork to fast-forward (default: main).", "FORK")]
+        #[arrrg(optional, "The mirror fork to bind (default: main).", "FORK")]
         fork: Option<String>,
         #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
         git: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian import-from-git [--fork FORK] [--git DIR] <commit>",
+        "USAGE: abelian git pull [--fork FORK] [--git DIR] [branch]",
         args,
     );
-    reject_extra("import-from-git", &free, 1)?;
-    let committish = free.first().ok_or_else(|| {
-        Error::Invalid("import-from-git requires a commit".to_string())
-    })?;
-    let fork = options.fork.as_deref().unwrap_or("main");
+    reject_extra("git pull", &free, 1)?;
     let repo = repo()?;
     let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
-    let summary =
-        abelian::git::import_from_git(&repo, git_dir.as_deref(), committish, fork)?;
+    // The binding is load-bearing: which fork mirrors git, and the branch it
+    // fast-forwards from.  Bind on first use; thereafter it is authoritative.
+    let existing = repo.read_mirror()?;
+    let (fork, branch, bind_now) = match existing {
+        Some(binding) => {
+            // A branch argument, if given, must match the binding.
+            if let Some(arg) = free.first()
+                && *arg != binding.branch
+            {
+                return Err(Error::Invalid(format!(
+                    "fork {} is bound to branch {}, not {arg}; use `git reanchor` to rebind",
+                    binding.fork, binding.branch
+                )));
+            }
+            if let Some(f) = &options.fork
+                && f != &binding.fork
+            {
+                return Err(Error::Invalid(format!(
+                    "the mirror is fork {}, not {f}",
+                    binding.fork
+                )));
+            }
+            (binding.fork, binding.branch, false)
+        }
+        None => {
+            let branch = free.first().map(|s| s.to_string()).ok_or_else(|| {
+                Error::Invalid(
+                    "no mirror binding yet; name the branch to bind: git pull <branch>"
+                        .to_string(),
+                )
+            })?;
+            let fork = options.fork.as_deref().unwrap_or("main").to_string();
+            (fork, branch, true)
+        }
+    };
+    let summary = abelian::git::pull(&repo, git_dir.as_deref(), &branch, &fork)?;
+    if bind_now {
+        repo.write_mirror(&abelian::repo::MirrorBinding {
+            fork: fork.clone(),
+            branch: branch.clone(),
+        })?;
+    }
+    // One commit, one line; report the binding — the read path status wants.
     if summary.imported.is_empty() {
-        println!("fork {fork} already up to date at {}", summary.commit);
+        println!("mirror {fork} bound to {branch}, up to date at {}", summary.commit);
         return Ok(());
     }
-    println!(
-        "fast-forwarded fork {fork} from {} to {}",
-        summary.base, summary.commit
-    );
+    match &summary.base {
+        Some(base) => println!("fast-forwarded mirror {fork} from {base} to {}", summary.commit),
+        None => println!(
+            "bound mirror {fork} to {branch}, imported fresh history to {}",
+            summary.commit
+        ),
+    }
     println!("imported {} commit(s)", summary.imported.len());
-    println!("head {}", repo.current_state(fork)?.sum.hexdigest());
+    println!("head {}", repo.current_state(&fork)?.sum.hexdigest());
     Ok(())
+}
+
+fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The mirror fork to recover (default: the bound fork).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
+        git: Option<String>,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: abelian git reanchor [--fork FORK] [--git DIR] <commit>",
+        args,
+    );
+    reject_extra("git reanchor", &free, 1)?;
+    let Some(committish) = free.first() else {
+        return Err(Error::Invalid("git reanchor requires a commit".to_string()));
+    };
+    let repo = repo()?;
+    let binding = repo.read_mirror()?;
+    let fork = options
+        .fork
+        .clone()
+        .or_else(|| binding.as_ref().map(|b| b.fork.clone()))
+        .unwrap_or_else(|| "main".to_string());
+    let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
+    let commit = abelian::git::reanchor(&repo, git_dir.as_deref(), committish, &fork)?;
+    println!("reanchored mirror {fork} onto {commit}");
+    println!("head {}", repo.current_state(&fork)?.sum.hexdigest());
+    Ok(())
+}
+
+fn cmd_git_pr(_args: &[&str]) -> Result<()> {
+    // Rendering a fork as a git branch (one commit per fused beat) and
+    // opening the pull request is a separate bridge component; the command
+    // exists so the namespace is complete, but the mechanism is not wired.
+    Err(Error::Invalid(
+        "git pr is not yet implemented: rendering a fork as a git branch and \
+         opening a pull request lands next"
+            .to_string(),
+    ))
 }
 
 fn cmd_sum(args: &[&str]) -> Result<()> {

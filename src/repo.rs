@@ -23,6 +23,16 @@ use crate::{Error, Result, ioerr};
 /// The contents of `.abelian/version`.
 pub const VERSION: &str = "abelian v0\n";
 
+/// The mirror binding: the fork that bridges to git and the upstream branch
+/// it fast-forwards from.  Stored in `.abelian/mirror`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MirrorBinding {
+    /// The fork that mirrors git (the bridge).
+    pub fork: String,
+    /// The upstream branch the fork is bound to.
+    pub branch: String,
+}
+
 /// A loose repository: a working tree with a `.abelian/` beside it.
 pub struct Repository {
     root: PathBuf,
@@ -222,6 +232,46 @@ impl Repository {
             Err(Error::Invalid(_)) if self.fork_exists(name)? => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    ///////////////////////////////////// mirror binding //////////////////////////////////////
+
+    /// The mirror binding: which fork bridges to git, and the upstream
+    /// branch it fast-forwards from.  Load-bearing state — it is the
+    /// bridge-ownership bit — so `git pull` records it on first use and
+    /// `status` reads it back.
+    pub fn read_mirror(&self) -> Result<Option<MirrorBinding>> {
+        let path = self.dot.join("mirror");
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(ioerr("reading mirror binding")(err)),
+        };
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| Error::Corrupt("mirror binding is not UTF-8".to_string()))?;
+        let mut fork = None;
+        let mut branch = None;
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix("fork ") {
+                fork = Some(v.to_string());
+            } else if let Some(v) = line.strip_prefix("branch ") {
+                branch = Some(v.to_string());
+            }
+        }
+        match (fork, branch) {
+            (Some(fork), Some(branch)) => Ok(Some(MirrorBinding { fork, branch })),
+            _ => Err(Error::Corrupt("mirror binding missing fork or branch".to_string())),
+        }
+    }
+
+    /// Record the mirror binding (see [`Repository::read_mirror`]).
+    pub fn write_mirror(&self, binding: &MirrorBinding) -> Result<()> {
+        validate_fork_name(&binding.fork)?;
+        let body = format!("fork {}\nbranch {}\n", binding.fork, binding.branch);
+        let path = self.dot.join("mirror");
+        fs::write(&path, body).map_err(ioerr("writing mirror binding"))?;
+        fsync_dir(&self.dot)?;
+        Ok(())
     }
 
     /// Read a fork file.

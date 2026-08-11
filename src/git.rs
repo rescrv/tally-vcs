@@ -413,21 +413,35 @@ pub fn import_from_git(
         return Ok(ImportSummary { base, commit, imported: Vec::new() });
     }
 
+    import_run(repo, &git_dir, base_manifest, &new_commits, fork)?;
+    Ok(ImportSummary { base, commit, imported: new_commits })
+}
+
+/// Ingest `new_commits` (oldest first) as one log line per commit onto
+/// `fork`, each line realizing the delta from the previous tree, starting
+/// from `base_manifest`.  Validates every tree before writing a single byte,
+/// then appends the whole run in one linearizing batch.
+fn import_run(
+    repo: &Repository,
+    git_dir: &Path,
+    base_manifest: Manifest,
+    new_commits: &[String],
+    fork: &str,
+) -> Result<()> {
     // Validate every new commit's tree before writing anything (error
     // loudly, import nothing).
     let mut trees = Vec::with_capacity(new_commits.len());
-    for c in &new_commits {
-        trees.push(commit_entries(&git_dir, c)?);
+    for c in new_commits {
+        trees.push(commit_entries(git_dir, c)?);
     }
-
     // Ingest blobs and build one realized delta per commit, from the base
     // tree forward.
     let blobs = repo.blobs();
-    let algorithm = object_format(&git_dir)?;
+    let algorithm = object_format(git_dir)?;
     let mut prev_manifest = base_manifest;
     let mut batch = Vec::with_capacity(new_commits.len());
     for (i, c) in new_commits.iter().enumerate() {
-        let manifest = commit_manifest(&blobs, &git_dir, &trees[i])?;
+        let manifest = commit_manifest(&blobs, git_dir, &trees[i])?;
         let changes = crate::diff::diff_manifests(&prev_manifest, &manifest);
         prev_manifest = manifest;
         let realized: Vec<RealizedEntry> = changes
@@ -437,8 +451,8 @@ pub fn import_from_git(
                 add: change.after.as_ref().map(|r| r.to_line()),
             })
             .collect();
-        let (committed_ms, author, message) = commit_meta(&git_dir, c)?;
-        let tree = resolve_tree(&git_dir, c)?;
+        let (committed_ms, author, message) = commit_meta(git_dir, c)?;
+        let tree = resolve_tree(git_dir, c)?;
         let annotation = Annotation {
             author,
             prose: Some(message),
@@ -452,9 +466,144 @@ pub fn import_from_git(
         };
         batch.push((realized, annotation, committed_ms));
     }
-
     repo.append_realized_batch(fork, batch)?;
-    Ok(ImportSummary { base, commit, imported: new_commits })
+    Ok(())
+}
+
+/// The outcome of a `git pull`.
+#[derive(Clone, Debug)]
+pub struct PullSummary {
+    /// The mirror fork the pull fast-forwarded.
+    pub fork: String,
+    /// The upstream branch it is bound to.
+    pub branch: String,
+    /// Whether this pull established the binding for the first time.
+    pub bound_now: bool,
+    /// The commit the fork already sat at, if it carried a prior import.
+    /// `None` on a fresh import (anchored against empty).
+    pub base: Option<String>,
+    /// The resolved target commit the fork now carries.
+    pub commit: String,
+    /// The commits imported this run, oldest first (empty when up to date).
+    pub imported: Vec<String>,
+}
+
+/// Fast-forward the mirror fork from its bound branch (`abelian git pull`).
+///
+/// Every pull is `--ff-only`.  When the fork carries no git import yet, this
+/// is a fresh import: the fork must be empty (anchored against empty), and
+/// the branch's whole first-parent history lands as one line per commit.
+/// Otherwise it is an incremental fast-forward from the commit the fork
+/// already sits at; the target must be a first-parent descendant of that
+/// commit or the pull refuses (a fast-forward never rewrites history).
+pub fn pull(
+    repo: &Repository,
+    git_dir: Option<&Path>,
+    branch: &str,
+    fork: &str,
+) -> Result<PullSummary> {
+    let root = repo.root().to_path_buf();
+    let git_dir = git_dir.unwrap_or(&root).to_path_buf();
+    let commit = resolve_commit(&git_dir, branch)?;
+    let state = repo.current_state(fork)?;
+
+    // The commit the fork already sits at: its most recent git-import line.
+    let base = state
+        .lines
+        .iter()
+        .rev()
+        .find_map(|line| line.annotation.import.as_ref().map(|i| i.commit.clone()));
+
+    let Some(base) = base else {
+        // Fresh import: anchor against empty.  The fork must be empty — no
+        // local work ahead of an import that never happened.
+        if !state.lines.is_empty() || state.sum != Manifest::new().sum() {
+            return Err(Error::Invalid(format!(
+                "fork {fork} carries local work but no git import; \
+                 cannot bind it to branch {branch} as a fresh mirror"
+            )));
+        }
+        let chain = linear_chain(&git_dir, &commit)?;
+        import_run(repo, &git_dir, Manifest::new(), &chain, fork)?;
+        return Ok(PullSummary {
+            fork: fork.to_string(),
+            branch: branch.to_string(),
+            bound_now: false,
+            base: None,
+            commit,
+            imported: chain,
+        });
+    };
+
+    // A clean fast-forward requires the fork to sit exactly at the base
+    // commit's tree state: no local edits past the import.
+    let base_entries = commit_entries(&git_dir, &base)?;
+    let base_manifest = commit_manifest(&repo.blobs(), &git_dir, &base_entries)?;
+    if base_manifest.sum() != state.sum {
+        return Err(Error::Invalid(format!(
+            "not a fast-forward: fork {fork} has drifted from its imported commit {base}; \
+             its state no longer matches that commit's tree"
+        )));
+    }
+
+    let new_commits = first_parent_since(&git_dir, &base, &commit)?;
+    if !new_commits.is_empty() {
+        import_run(repo, &git_dir, base_manifest, &new_commits, fork)?;
+    }
+    Ok(PullSummary {
+        fork: fork.to_string(),
+        branch: branch.to_string(),
+        bound_now: false,
+        base: Some(base),
+        commit,
+        imported: new_commits,
+    })
+}
+
+/// Recover the mirror fork after an upstream rewrite (`abelian git
+/// reanchor`).  A force-push replaces the commit the fork imported from with
+/// one that shares no ancestry, so a fast-forward can no longer bridge the
+/// two.  reanchor repoints the fork's state onto `committish`'s tree,
+/// non-destructively (one appended line whose realized delta carries the
+/// current state to the new tree), and records the new commit as the import
+/// base so subsequent pulls fast-forward from it.  The prior state stays
+/// reachable, exactly as `repoint` promises.
+pub fn reanchor(
+    repo: &Repository,
+    git_dir: Option<&Path>,
+    committish: &str,
+    fork: &str,
+) -> Result<String> {
+    let root = repo.root().to_path_buf();
+    let git_dir = git_dir.unwrap_or(&root).to_path_buf();
+    let commit = resolve_commit(&git_dir, committish)?;
+    let entries = commit_entries(&git_dir, &commit)?;
+    let manifest = commit_manifest(&repo.blobs(), &git_dir, &entries)?;
+    let current = repo.current_state(fork)?;
+    let changes = crate::diff::diff_manifests(&current.manifest, &manifest);
+    let realized: Vec<RealizedEntry> = changes
+        .iter()
+        .map(|change| RealizedEntry {
+            remove: change.before.as_ref().map(|r| r.to_line()),
+            add: change.after.as_ref().map(|r| r.to_line()),
+        })
+        .collect();
+    let algorithm = object_format(&git_dir)?;
+    let (committed_ms, author, message) = commit_meta(&git_dir, &commit)?;
+    let tree = resolve_tree(&git_dir, &commit)?;
+    let annotation = Annotation {
+        author,
+        prose: Some(message),
+        import: Some(GitImport {
+            algorithm,
+            commit: commit.clone(),
+            tree,
+            reference: Some(committish.to_string()),
+        }),
+        ..Annotation::default()
+    };
+    repo.append_realized_batch(fork, vec![(realized, annotation, committed_ms)])?;
+    Ok(commit)
 }
 
 /// Ingest one commit's tree into the pool and derive its manifest.
