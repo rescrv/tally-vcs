@@ -857,21 +857,12 @@ impl Repository {
         Ok(())
     }
 
-    /// Materialize a full working tree for `manifest` under the repository
-    /// root.
-    pub fn materialize(&self, manifest: &Manifest) -> Result<()> {
-        let blobs = self.blobs();
-        for record in manifest.records() {
-            self.write_tree_file(&blobs, record)?;
-        }
-        Ok(())
-    }
-
     /// Materialize a full working tree for `manifest` under `dest`
-    /// (`abelian materialize <rev> [dest]`).  Whole-tree, elsewhere, and
-    /// non-destructive: the state is produced beside the repository, never
-    /// over the working tree.  `dest` is created if absent.
-    pub fn materialize_into(&self, manifest: &Manifest, dest: &Path) -> Result<()> {
+    /// (`abelian materialize <rev> [dest]`).  Whole-tree and
+    /// non-destructive: `dest` is created if absent, so a state can be
+    /// produced beside the repository (a fresh directory) or over the
+    /// working tree (pass the repository root).
+    pub fn materialize(&self, manifest: &Manifest, dest: &Path) -> Result<()> {
         fs::create_dir_all(dest).map_err(ioerr("creating materialize destination"))?;
         let blobs = self.blobs();
         for record in manifest.records() {

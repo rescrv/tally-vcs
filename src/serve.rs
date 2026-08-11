@@ -500,7 +500,8 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
         unpacked.manifest.forks.keys().next().cloned()
     };
     if let Some(fork) = tree_fork {
-        repo.materialize(&repo.current_state(&fork)?.manifest)?;
+        let manifest = repo.current_state(&fork)?.manifest;
+        repo.materialize(&manifest, repo.root())?;
     }
     Ok(repo)
 }

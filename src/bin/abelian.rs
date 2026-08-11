@@ -444,7 +444,7 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
             dest.display()
         )));
     }
-    repo.materialize_into(&manifest, &dest)?;
+    repo.materialize(&manifest, &dest)?;
     println!(
         "materialized {} elements at {} into {}",
         manifest.len(),
