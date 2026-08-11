@@ -34,7 +34,7 @@ git (sunsets with GitHub):
   git reanchor <commit>            recover the mirror fork after an upstream rewrite
 
 working tree:
-  sum                              print the working tree's element records and sum
+  sum                              print the working tree's sum (--records for elements)
   status                           the pending patch: working tree vs the fork's ref
   check                            compare the working tree against the log's expectation
   materialize <rev> [dest]         produce a working tree at a state (default: new dir)
@@ -307,16 +307,16 @@ fn cmd_git_pr(_args: &[&str]) -> Result<()> {
 fn cmd_sum(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(flag, "Print only the sum, not the records.")]
-        quiet: bool,
+        #[arrrg(flag, "Print the element records too, not only the sum.")]
+        records: bool,
     }
-    let (options, free) = Options::from_arguments_relaxed("USAGE: abelian sum [--quiet]", args);
+    let (options, free) = Options::from_arguments_relaxed("USAGE: abelian sum [--records]", args);
     reject_extra("sum", &free, 0)?;
     let repo = repo()?;
     let records = repo.records_of_working_tree()?;
     let mut sum = Sum::zero();
     for record in &records {
-        if !options.quiet {
+        if options.records {
             print!("{}", String::from_utf8_lossy(&record.to_bytes()));
         }
         sum.insert(&record.to_bytes());
