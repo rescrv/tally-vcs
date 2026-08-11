@@ -260,10 +260,13 @@ pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Reso
     apply_suffixes(spec, &fork, index, &points, suffixes)
 }
 
-/// `sum:S` — resolve `s` strictly as a state sum on `default_fork`'s
-/// lineage.  Unlike the bare-hex heuristic, this never falls back to a line
-/// id: a `sum:` prefix asserts the setsum domain, so a non-hex or absent sum
-/// is an error, not a reinterpretation.
+/// `sum:S` — resolve `s` strictly as a state sum, `default_fork` first then
+/// the whole repository.  Unlike the bare-hex heuristic, this never falls
+/// back to a line id: a `sum:` prefix asserts the setsum domain, so a non-hex
+/// or absent sum is an error, not a reinterpretation.  Like `line:`, it does
+/// not require the sum to live on the named fork — a sum names a state, and a
+/// state's content is fixed by its sum, so any fork carrying it names the
+/// same state.
 fn resolve_sum(
     repo: &Repository,
     s: &str,
@@ -277,10 +280,33 @@ fn resolve_sum(
     let points = lineage_states(repo, default_fork)?;
     match points.iter().rposition(|p| p.sum == s) {
         Some(idx) => Ok((default_fork.to_string(), idx, points)),
-        None => Err(Error::Invalid(format!(
-            "sum {s} is not a state on fork {default_fork}'s lineage"
-        ))),
+        None => resolve_sum_global(repo, s),
     }
+}
+
+/// Resolve a state sum anywhere in the repo, when it is absent from the
+/// default fork's lineage.
+///
+/// A sum is lineage-relative — it can recur (land then revert lands you on a
+/// sum you've already seen) — so unlike a line id it is not globally unique.
+/// But its *content* is: a state's sum is the setsum of that state, so every
+/// occurrence of a sum, on any fork, names byte-identical state.  We scan
+/// forks in name order (from `fork_names`, which sorts) and take the last
+/// occurrence on the first fork that carries the sum; the fork label only
+/// records where we read it, since the state is the same wherever it lives.
+fn resolve_sum_global(
+    repo: &Repository,
+    s: &str,
+) -> Result<(String, usize, Vec<StatePoint>)> {
+    for fork in repo.fork_names()? {
+        let points = lineage_states(repo, &fork)?;
+        if let Some(idx) = points.iter().rposition(|p| p.sum == s) {
+            return Ok((fork, idx, points));
+        }
+    }
+    Err(Error::Invalid(format!(
+        "sum {s} is not a state on any fork's lineage"
+    )))
 }
 
 /// `line:ID` — resolve `id` strictly as a log-line id (or unambiguous
@@ -481,6 +507,31 @@ mod tests {
         assert_eq!(resolve(&repo, short, "main").unwrap().sum, c.sum_after);
         // A genuinely unknown id still errors.
         assert!(resolve(&repo, "ffffffffffff", "main").is_err());
+    }
+
+    #[test]
+    fn sum_resolves_across_forks() {
+        // Like a line id, `sum:` should not require the state to live on the
+        // default fork: a sum names a state, and a state's content is fixed
+        // by its sum, so any fork carrying it names the same state.
+        let repo = temp_repo("global-sum");
+        repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        repo.create_fork("session", "main").unwrap();
+        let c = repo.apply("session", create("/c", b"c\n"), note()).unwrap();
+        // `session`'s head sum is not on `main`'s lineage, yet `sum:` finds
+        // it with `main` as the default fork, and reports the fork it read on.
+        let spec = format!("sum:{}", c.sum_after);
+        let r = resolve(&repo, &spec, "main").unwrap();
+        assert_eq!(r.sum, c.sum_after);
+        assert_eq!(r.fork, "session");
+        assert_eq!(r.line.as_deref(), Some(c.id.as_str()));
+        // A sum on the shared prefix still prefers the default fork.
+        let a_sum = repo.current_state("main").unwrap().sum.hexdigest();
+        let shared = resolve(&repo, &format!("sum:{a_sum}"), "main").unwrap();
+        assert_eq!(shared.fork, "main");
+        assert_eq!(shared.sum, a_sum);
+        // A genuinely unknown sum still errors.
+        assert!(resolve(&repo, &format!("sum:{}", "f".repeat(64)), "main").is_err());
     }
 
     #[test]
