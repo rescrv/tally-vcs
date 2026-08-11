@@ -33,7 +33,6 @@ repository:
   snapshot                         write a manifest at the current state and repoint the fork
   materialize <sum>                produce a working tree at a prior state
   restore [rev] [-- path...]       rewrite working-tree paths to a state (discard edits)
-  reset <rev>                      move a fork's state to a prior one, non-destructively
 
 revisions:
   rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum, line id)
@@ -54,6 +53,7 @@ forks:
   fork <name>                      create a fork (anchor + empty log)
   remove-fork <name>               delete a fork; refuses unmerged work unless --force
   union <fork>                     bring a fork's log into another (strata 1-3)
+  repoint <rev>                    move this fork's state to a prior one, non-destructively
 
 wire:
   clone <store> <dest>             clone a packed repository from an object store
@@ -79,7 +79,6 @@ fn main() {
         "snapshot" => cmd_snapshot(&rest),
         "materialize" => cmd_materialize(&rest),
         "restore" => cmd_restore(&rest),
-        "reset" => cmd_reset(&rest),
         "rev-parse" => cmd_rev_parse(&rest),
         "diff" => cmd_diff(&rest),
         "blame" => cmd_blame(&rest),
@@ -92,6 +91,7 @@ fn main() {
         "fork" => cmd_fork(&rest),
         "remove-fork" => cmd_remove_fork(&rest),
         "union" => cmd_union(&rest),
+        "repoint" => cmd_repoint(&rest),
         "clone" => cmd_clone(&rest),
         "fetch" => cmd_fetch(&rest),
         "push" => cmd_push(&rest),
@@ -394,31 +394,31 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reset(args: &[&str]) -> Result<()> {
+fn cmd_repoint(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "The fork to reset (default: main).", "FORK")]
+        #[arrrg(optional, "The fork to repoint (default: main).", "FORK")]
         fork: Option<String>,
-        #[arrrg(optional, "Author of the reset line.", "AUTHOR")]
+        #[arrrg(optional, "Author of the repoint line.", "AUTHOR")]
         author: Option<String>,
-        #[arrrg(optional, "Narrative prose for the reset.", "PROSE")]
+        #[arrrg(optional, "Narrative prose for the repoint.", "PROSE")]
         prose: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian reset [--fork FORK] <rev>", args);
-    reject_extra("reset", &free, 1)?;
+        Options::from_arguments_relaxed("USAGE: abelian repoint [--fork FORK] <rev>", args);
+    reject_extra("repoint", &free, 1)?;
     let Some(spec) = free.first() else {
-        return Err(Error::Invalid("reset requires a revision".to_string()));
+        return Err(Error::Invalid("repoint requires a revision".to_string()));
     };
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
     let resolved = abelian::revision::resolve(&repo, spec, fork)?;
     let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
     let author = options.author.unwrap_or_else(whoami);
-    let line = repo.reset(fork, &target, &author, options.prose)?;
+    let line = repo.repoint(fork, &target, &author, options.prose)?;
     println!("{} {}", line.id, line.sum_after);
     println!(
-        "reset {fork} to {} (non-destructive: the prior state remains reachable)",
+        "repointed {fork} to {} (non-destructive: the prior state remains reachable)",
         short(&resolved.sum)
     );
     Ok(())

@@ -902,7 +902,7 @@ impl Repository {
         Ok(sum_hex)
     }
 
-    ///////////////////////////////////// restore/reset ///////////////////////////////////////
+    /////////////////////////////////// restore/repoint ///////////////////////////////////////
 
     /// Restore working-tree paths to a target state (`abelian restore`).  A
     /// working-tree operation, never a log operation: it rematerializes
@@ -954,13 +954,13 @@ impl Repository {
         Ok(actions)
     }
 
-    /// Move a fork's state to a target, non-destructively (`abelian reset`).
+    /// Move a fork's state to a target, non-destructively (`abelian repoint`).
     /// Lossless retention means there is no reflog archaeology: rather than
-    /// rewrite the append-only log (I3), reset appends one new line whose
+    /// rewrite the append-only log (I3), repoint appends one new line whose
     /// realized delta carries the current state back to the target.  The
-    /// prior state stays reachable and the reset is itself invertible — undo
+    /// prior state stays reachable and the repoint is itself invertible — undo
     /// is the inverse.  Returns the appended line.
-    pub fn reset(
+    pub fn repoint(
         &self,
         fork: &str,
         target: &Manifest,
@@ -988,7 +988,7 @@ impl Repository {
             author: author.to_string(),
             provenance: Provenance::Agent,
             prose: Some(prose.unwrap_or_else(|| {
-                format!("reset to {}", target.sum().hexdigest())
+                format!("repoint to {}", target.sum().hexdigest())
             })),
             ..Annotation::default()
         };
@@ -1353,24 +1353,24 @@ mod tests {
     }
 
     #[test]
-    fn reset_is_non_destructive_and_invertible() {
-        let repo = temp_repo("reset");
+    fn repoint_is_non_destructive_and_invertible() {
+        let repo = temp_repo("repoint");
         let l1 = repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
         repo.apply("main", create("/b", b"b\n"), note("t")).unwrap();
         let head_before = repo.current_state("main").unwrap().sum.hexdigest();
-        // Reset to the state after l1: /b should disappear from the state.
+        // Repoint to the state after l1: /b should disappear from the state.
         let target = repo.manifest_at_lineage("main", &l1.sum_after).unwrap();
-        let reset_line = repo.reset("main", &target, "t", None).unwrap();
+        let repoint_line = repo.repoint("main", &target, "t", None).unwrap();
         let after = repo.current_state("main").unwrap();
         assert_eq!(after.sum.hexdigest(), l1.sum_after, "state moved to the target");
         assert!(after.manifest.get("/b").is_none());
         // Non-destructive: the log grew, nothing was rewritten, and the
-        // pre-reset state is still reachable by its sum.
-        assert_eq!(after.lines.len(), 3, "reset appended a line");
+        // pre-repoint state is still reachable by its sum.
+        assert_eq!(after.lines.len(), 3, "repoint appended a line");
         let recovered = repo.manifest_at_lineage("main", &head_before).unwrap();
         assert!(recovered.get("/b").is_some(), "the prior state remains reachable");
-        // The reset line is a real, chained line.
-        assert_eq!(after.head_id, reset_line.id);
+        // The repoint line is a real, chained line.
+        assert_eq!(after.head_id, repoint_line.id);
     }
 
     #[test]
