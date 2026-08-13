@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::blobs::BlobStore;
 use crate::log::{Annotation, LogLine, Origin, Provenance, ViewSpan, last_state_position};
 use crate::manifest::Manifest;
-use crate::patch::apply_realized_to_manifest;
+use crate::patch::{apply_intent, apply_realized_to_manifest, apply_realized_to_sum};
 use crate::repo::Repository;
 use crate::{Error, Result};
 
@@ -81,7 +81,19 @@ impl UnionOutcome {
 
 /// Run union of `source` into `target`.  Strata 1–3 only: stratum 4 is
 /// reported, never performed.
+///
+/// Union is atomic (I8).  The whole merge is replayed against an in-memory
+/// manifest under a single fork lock; the sealed lines are committed in one
+/// fsync at the end, or — if any line's span precondition is dead (a stratum-4
+/// gate) or any landed line's read set was invalidated by a concurrent write
+/// (a semantic conflict, §6) — nothing is written and the target is left
+/// exactly as it was.  A union either lands in full or not at all: there is no
+/// partial prefix to reconcile, and a crash mid-replay commits nothing because
+/// the only durable write is the final batch append.
 pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Result<UnionOutcome> {
+    // Hold the target lock across the entire replay-and-commit so the manifest
+    // we validate against cannot drift between decision and durability.
+    let _lock = repo.lock_fork(target)?;
     let source_state = repo.current_state(source)?;
     let mut outcome = UnionOutcome::default();
 
@@ -131,6 +143,16 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         }
     }
 
+    // In-memory replay state.  `scratch`/`sum`/`prev` evolve as lines land;
+    // `bytes` accumulates their sealed encodings; `staged` holds the landings
+    // we will publish iff the whole union is clean.  Nothing here touches the
+    // durable log.
+    let mut scratch = target_state.manifest.clone();
+    let mut sum = target_state.sum.clone();
+    let mut prev = target_state.head_id.clone();
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut staged: Vec<Landed> = Vec::new();
+
     for line in &source_state.lines {
         if carried.contains(&line.id) {
             continue;
@@ -157,53 +179,72 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             import: line.annotation.import.clone(),
         };
 
-        // Stratum 2: realized replay.  Check the incoming applied patch's
-        // removed records against the target manifest; all present, apply
-        // the realized delta directly.
-        let target_now = repo.current_state(target)?;
-        let mut scratch = target_now.manifest.clone();
-        let replayable = apply_realized_to_manifest(&mut scratch, &line.realized).is_ok();
-        if replayable {
-            let landed = repo.apply_realized(
-                target,
-                line.intent.clone(),
-                line.realized.clone(),
-                annotation,
-            )?;
-            rekey.insert(line.id.clone(), landed.id.clone());
-            outcome.landed.push(Landed {
-                line: landed,
-                origin_id: line.id.clone(),
-                stratum: Stratum::RealizedReplay,
-            });
-            note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
-            continue;
-        }
+        // Stratum 2: realized replay.  If the incoming realized delta applies
+        // to the scratch manifest — all removed records present — adopt it
+        // directly.  We try on a clone so a miss leaves the scratch pristine
+        // for the stratum-3 attempt.
+        let mut trial = scratch.clone();
+        let (realized, st) = if apply_realized_to_manifest(&mut trial, &line.realized).is_ok() {
+            scratch = trial;
+            (line.realized.clone(), Stratum::RealizedReplay)
+        } else {
+            // Stratum 3: intent replay.  A consumed record is missing because
+            // the target drifted; re-validate the span precondition against
+            // the scratch blob and realize fresh deltas.
+            match apply_intent(&line.intent, &mut scratch, &blobs) {
+                Ok(realization) => {
+                    // Write the re-realized blobs now: content-addressed and
+                    // idempotent, they are safe to leave even if the union
+                    // aborts (gc-blobs reclaims the unreferenced ones).
+                    for (_, content) in &realization.new_blobs {
+                        blobs.put(content)?;
+                    }
+                    (realization.realized, Stratum::IntentReplay)
+                }
+                Err(Error::Precondition(evidence)) => {
+                    // Stratum 4 gate: the patch's assumptions are genuinely
+                    // dead.  Abort the whole union; nothing is written.
+                    outcome.needs_reenactment = Some((line.id.clone(), evidence));
+                    return Ok(outcome);
+                }
+                Err(other) => return Err(other),
+            }
+        };
 
-        // Stratum 3: intent replay.  A consumed record is missing because
-        // the target drifted; re-validate the span precondition against the
-        // target's current blob and realize fresh deltas.
-        match repo.apply(target, line.intent.clone(), annotation) {
-            Ok(landed) => {
-                rekey.insert(line.id.clone(), landed.id.clone());
-                outcome.landed.push(Landed {
-                    line: landed,
-                    origin_id: line.id.clone(),
-                    stratum: Stratum::IntentReplay,
-                });
-                note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
-            }
-            Err(Error::Precondition(evidence)) => {
-                // Stratum 4 gate: the patch's assumptions are genuinely
-                // dead.  Stop; hand the intent, its prose, and the evidence
-                // to a model only when invited.
-                outcome.needs_reenactment = Some((line.id.clone(), evidence));
-                break;
-            }
-            Err(other) => return Err(other),
-        }
+        // Fold the sum and seal the line in memory, chaining from the running
+        // head.  `seal` stamps the id and commit time.
+        sum = apply_realized_to_sum(&sum, &realized)?;
+        let mut landed = LogLine {
+            id: String::new(),
+            prev: prev.clone(),
+            intent: line.intent.clone(),
+            realized,
+            sum_after: sum.hexdigest(),
+            committed_ms: 0,
+            annotation,
+        };
+        bytes.extend_from_slice(&landed.seal(&blobs)?);
+        prev = landed.id.clone();
+        rekey.insert(line.id.clone(), landed.id.clone());
+        note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
+        staged.push(Landed { line: landed, origin_id: line.id.clone(), stratum: st });
     }
+
+    // The commit point.  A semantic conflict aborts exactly like a stratum-4
+    // gate: a merge whose reasoning is known-stale does not land on its own.
+    // Either way the target is untouched and `landed` stays empty.
+    if !outcome.semantic_conflicts.is_empty() {
+        return Ok(outcome);
+    }
+    repo.append_sealed_locked(target, &staged_lines(&staged), &bytes)?;
+    outcome.landed = staged;
     Ok(outcome)
+}
+
+/// Borrow the sealed [`LogLine`]s out of the staged landings, in order, for
+/// the single batch append.
+fn staged_lines(staged: &[Landed]) -> Vec<LogLine> {
+    staged.iter().map(|l| l.line.clone()).collect()
 }
 
 //////////////////////////////////////////// commutation ///////////////////////////////////////////
@@ -561,14 +602,39 @@ mod tests {
         // Main concurrently rewrites the very file the fork read.
         repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
 
+        let before = repo.current_state("main").unwrap().sum;
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        // The bytes merged: the /handler edit landed mechanically.
-        assert_eq!(outcome.landed.len(), 1);
-        // But the read set was invalidated, so the merge is not complete.
+        // Atomic: the /handler edit would apply mechanically, but the read
+        // set was invalidated, so the whole union aborts and nothing lands.
         assert!(!outcome.complete());
+        assert!(outcome.landed.is_empty());
+        assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         let conflict = &outcome.semantic_conflicts[0];
         assert!(conflict.paths.contains("/config"));
+    }
+
+    #[test]
+    fn union_is_atomic_a_clean_line_does_not_land_before_a_dead_one() {
+        // The fork writes a clean, unrelated file /ok, then edits /a's
+        // "needle" span; main concurrently consumes that span.  The second
+        // line is a stratum-4 gate.  Atomicity demands the first line does
+        // *not* land: the target must be byte-for-byte unchanged.
+        let repo = temp_repo("atomic-union");
+        repo.apply("main", create("/a", b"needle\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        repo.apply("s", create("/ok", b"clean\n"), note("t")).unwrap();
+        repo.apply("s", edit("/a", "needle", "thread"), note("t")).unwrap();
+        repo.apply("main", edit("/a", "needle", "nail"), note("t")).unwrap();
+
+        let before = repo.current_state("main").unwrap();
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(!outcome.complete());
+        assert!(outcome.landed.is_empty(), "no prefix lands");
+        assert!(outcome.needs_reenactment.is_some());
+        let after = repo.current_state("main").unwrap();
+        assert_eq!(after.sum, before.sum, "target untouched");
+        assert_eq!(after.lines.len(), before.lines.len(), "no /ok line leaked onto main");
     }
 
     #[test]
@@ -609,9 +675,11 @@ mod tests {
         repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
         repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
 
+        let before = repo.current_state("main").unwrap().sum;
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        assert_eq!(outcome.landed.len(), 1);
         assert!(!outcome.complete(), "reading the edited line is a conflict");
+        assert!(outcome.landed.is_empty(), "atomic: nothing lands on conflict");
+        assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         assert!(outcome.semantic_conflicts[0].paths.contains("/config"));
     }

@@ -1127,6 +1127,25 @@ fn cmd_union(args: &[&str]) -> Result<()> {
              (stratum 4 costs tokens and is never automatic)"
         )));
     }
+    if !outcome.semantic_conflicts.is_empty() {
+        // The spans all applied, but a concurrent write invalidated a read
+        // some line depended on.  Union is atomic, so nothing landed; a human
+        // or a model must reconcile the reasoning before the merge can stand.
+        let mut detail = String::new();
+        for c in &outcome.semantic_conflicts {
+            let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
+            detail.push_str(&format!(
+                "\n  line {} read {} which target line {} concurrently wrote",
+                c.source_id,
+                paths.join(", "),
+                c.target_id
+            ));
+        }
+        return Err(Error::NeedsReenactment(format!(
+            "fork {source} into {target}: {} read/write conflict(s); nothing landed{detail}",
+            outcome.semantic_conflicts.len()
+        )));
+    }
     Ok(())
 }
 

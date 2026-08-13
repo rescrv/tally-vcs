@@ -797,6 +797,35 @@ impl Repository {
         Ok(lines.len())
     }
 
+    /// Append already-sealed, already-chained lines to a fork's log in one
+    /// fsync — the single linearization point of an atomic union (I8).
+    ///
+    /// Unlike [`Repository::apply`] this does **not** take the fork lock: the
+    /// caller must already hold it, because union replays the whole merge
+    /// against an in-memory manifest under one lock and commits the result
+    /// here or not at all.  Every blob the lines reference must already be
+    /// durable (union writes them, idempotent and uncommitted, during the
+    /// replay).  `bytes` is the concatenation of the lines' sealed encodings
+    /// in order; because log parsing is line-atomic, an empty batch is a
+    /// no-op and a partial write is never partially interpreted.
+    pub fn append_sealed_locked(&self, fork: &str, lines: &[LogLine], bytes: &[u8]) -> Result<()> {
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let path = self.log_path(fork);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(ioerr("opening log for append"))?;
+        file.write_all(bytes).map_err(ioerr("appending union batch"))?;
+        file.sync_all().map_err(ioerr("fsyncing log"))?;
+        fsync_dir(self.fork_dir(fork).as_path())?;
+        for line in lines {
+            let _ = self.refresh_working_tree(line);
+        }
+        Ok(())
+    }
+
     /// Best-effort working-tree refresh for one applied line.
     fn refresh_working_tree(&self, line: &LogLine) -> Result<()> {
         let blobs = self.blobs();

@@ -326,22 +326,25 @@ fn conflicts_gate_reenactment_and_leave_the_target_sound() {
     repo.apply("main", create("/x.txt", b"needle\n"), note("t")).unwrap();
     repo.create_fork("s", "main").unwrap();
 
-    // Line 1 commutes; line 2's span dies on main; line 3 never gets a turn.
-    let ok = repo.apply("s", create("/ok.txt", b"fine\n"), note("s")).unwrap();
+    // Line 1 commutes; line 2's span dies on main; line 3 sits behind it.
+    // Union is atomic: because line 2 gates, *none* of the three lands.
+    repo.apply("s", create("/ok.txt", b"fine\n"), note("s")).unwrap();
     let dead = repo.apply("s", edit("/x.txt", "needle", "thread"), note("s")).unwrap();
     repo.apply("s", create("/after.txt", b"later\n"), note("s")).unwrap();
     repo.apply("main", edit("/x.txt", "needle", "nail"), note("t")).unwrap();
 
+    let before = repo.current_state("main").unwrap();
     let outcome = union(&repo, "s", "main", "maintainer").unwrap();
     assert!(!outcome.complete());
-    assert_eq!(outcome.landed.len(), 1, "the commuting line landed before the gate");
-    assert_eq!(outcome.landed[0].origin_id, ok.id);
+    assert!(outcome.landed.is_empty(), "atomic: no prefix lands before the gate");
     let (gated_id, evidence) = outcome.needs_reenactment.as_ref().unwrap();
     assert_eq!(gated_id, &dead.id, "the gate names the line whose assumptions died");
     assert!(evidence.contains("0 times"), "evidence is the failed precondition: {evidence}");
 
     let state = repo.current_state("main").unwrap();
-    assert!(state.manifest.get("/after.txt").is_none(), "union stopped at the gate");
+    assert!(state.manifest.get("/ok.txt").is_none(), "the commuting line did not leak");
+    assert!(state.manifest.get("/after.txt").is_none(), "nor the line behind the gate");
+    assert_eq!(state.sum.hexdigest(), before.sum.hexdigest(), "target byte-for-byte untouched");
     let blob = repo.blobs().get(&state.manifest.get("/x.txt").unwrap().blob).unwrap();
     assert_eq!(blob, b"nail\n", "the target's own history is untouched");
 
@@ -355,7 +358,9 @@ fn conflicts_gate_reenactment_and_leave_the_target_sound() {
     assert!(outcome.landed.is_empty());
 
     // Delete-vs-edit gates: the fork consumed the whole element, main
-    // rewrote it.
+    // rewrote it.  Seat /ok.txt on main first — the atomic union above left
+    // main untouched, so the element the fork deletes must exist here.
+    repo.apply("main", create("/ok.txt", b"fine\n"), note("t")).unwrap();
     repo.create_fork("del", "main").unwrap();
     repo.apply(
         "del",
