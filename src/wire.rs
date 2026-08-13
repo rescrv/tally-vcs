@@ -211,9 +211,9 @@ pub fn push(repo: &Repository, store: &dyn ObjectStore, level: i32) -> Result<Se
         None => (1, String::new()),
     };
     // 1. pack new content into segments locally.
-    let mut manifest = pack(repo, &staging, seq, &prev_id, level)?;
+    let packed = pack(repo, &staging, seq, &prev_id, level)?;
     // 2. PUT segments (idempotent; existing names are no-ops).
-    for segid in manifest.segments.keys() {
+    for segid in packed.segments.keys() {
         for ext in ["pk", "idx"] {
             let name = format!("seg/{segid}.{ext}");
             let bytes =
@@ -222,17 +222,34 @@ pub fn push(repo: &Repository, store: &dyn ObjectStore, level: i32) -> Result<Se
         }
     }
     let _ = fs::remove_dir_all(&staging);
-    // Carry forward the winner's segments and any forks we do not carry:
-    // manifest rebuild is a union of segment sets plus per-fork heads.
+    // Rebuild against the winner: adopt heads of forks we do not carry
+    // (retaining the segments their logs name), and retire every other
+    // winner segment — our pack is a full image of every fork we carry, so
+    // those segments are superseded re-encodings (§3.3).  Replacing rather
+    // than unioning keeps the manifest bounded by live content, not by
+    // push history.
     let mut base = base;
     loop {
+        let mut manifest = packed.clone();
         if let Some(winner) = &base {
-            for (segid, meta) in &winner.segments {
-                manifest.segments.entry(segid.clone()).or_insert_with(|| meta.clone());
-            }
             for (fork, head) in &winner.forks {
                 match manifest.forks.get(fork) {
                     None => {
+                        // A fork we do not carry: keep the segments its log
+                        // names.  Each was packed over a repository carrying
+                        // the fork, so it holds the fork's full log and
+                        // every blob the fork needs.
+                        for segid in &head.log_segments {
+                            let meta = winner.segments.get(segid).ok_or_else(|| {
+                                Error::Corrupt(format!(
+                                    "fork {fork} names segment {segid} the winner does not list"
+                                ))
+                            })?;
+                            manifest.segments.insert(segid.clone(), meta.clone());
+                        }
+                        if !manifest.anchors.contains(&head.anchor) {
+                            manifest.anchors.push(head.anchor.clone());
+                        }
                         manifest.forks.insert(fork.clone(), head.clone());
                     }
                     Some(ours) if ours.head_id == head.head_id => {}
@@ -253,9 +270,14 @@ pub fn push(repo: &Repository, store: &dyn ObjectStore, level: i32) -> Result<Se
                     }
                 }
             }
-            for anchor in &winner.anchors {
-                if !manifest.anchors.contains(anchor) {
-                    manifest.anchors.push(anchor.clone());
+            // Winner segments we did not retain are retired by this swap.
+            // Retired segments stay in the store until the retention window
+            // ages them out (§3.3); the swap's correctness is the arithmetic
+            // check that the image delta equals the setsum of items
+            // genuinely added — see `swap_delta`.
+            for segid in winner.segments.keys() {
+                if !manifest.segments.contains_key(segid) {
+                    manifest.retire.push(segid.clone());
                 }
             }
         }
@@ -383,6 +405,117 @@ mod tests {
         assert_eq!(
             offline.current_state("main").unwrap().sum,
             repo.current_state("main").unwrap().sum,
+        );
+    }
+
+    #[test]
+    fn superseded_segments_are_retired_and_pure_repack_is_zero_delta() {
+        let store = FsStore::open(temp_dir("retire-store")).unwrap();
+        let repo = Repository::init(temp_dir("retire-src")).unwrap();
+        repo.apply("main", create("/a.rs", b"a\n"), note()).unwrap();
+        let m1 = push(&repo, &store, 3).unwrap();
+        assert_eq!(m1.segments.len(), 1);
+        assert!(m1.retire.is_empty(), "nothing to retire on the first push");
+        // A second push supersedes the first segment: it is retired, not
+        // carried, and the image delta is exactly the genuinely new items.
+        repo.apply("main", create("/b.rs", b"b\n"), note()).unwrap();
+        let m2 = push(&repo, &store, 3).unwrap();
+        assert_eq!(m2.segments.len(), 1, "a full pack replaces, never unions");
+        let old: Vec<&String> = m1.segments.keys().collect();
+        assert_eq!(m2.retire, vec![old[0].clone()], "the superseded segment is retired");
+        assert_ne!(
+            crate::serve::swap_delta(&m1, &m2).unwrap(),
+            crate::ident::Sum::zero(),
+            "new content shows up in the image delta"
+        );
+        // A push with no changes is a pure re-encoding: same segment, no
+        // retire, and the swap delta is zero — §3.3's arithmetic proof.
+        let m3 = push(&repo, &store, 3).unwrap();
+        assert_eq!(m3.segments.keys().collect::<Vec<_>>(), m2.segments.keys().collect::<Vec<_>>());
+        assert!(m3.retire.is_empty());
+        assert_eq!(crate::serve::swap_delta(&m2, &m3).unwrap(), crate::ident::Sum::zero());
+        // Retired segments are retained, not deleted.
+        assert!(store.get(&format!("seg/{}.pk", old[0])).unwrap().is_some());
+    }
+
+    #[test]
+    fn manifest_stays_bounded_at_an_absurd_limit() {
+        let store = FsStore::open(temp_dir("absurd-store")).unwrap();
+        let alice = Repository::init(temp_dir("absurd-alice")).unwrap();
+        alice.apply("main", create("/a.rs", b"a\n"), note()).unwrap();
+        let first = push(&alice, &store, 3).unwrap();
+        // Bob's fork exists only remotely: every one of alice's pushes must
+        // retain the segment bob's log names while retiring her own.
+        let bob = clone(&store, temp_dir("absurd-bob")).unwrap();
+        bob.create_fork("bob", "main").unwrap();
+        bob.apply("bob", create("/b.rs", b"b\n"), note()).unwrap();
+        let bob_manifest = push(&bob, &store, 3).unwrap();
+        let bob_segid = bob_manifest.forks["bob"].log_segments[0].clone();
+
+        const ABSURD: usize = 200;
+        let mut prev = bob_manifest;
+        let mut all_segids: std::collections::BTreeSet<String> =
+            first.segments.keys().cloned().collect();
+        all_segids.extend(prev.segments.keys().cloned());
+        let mut baseline_size = 0usize;
+        for i in 0..ABSURD {
+            alice
+                .apply("main", create(&format!("/f{i:04}.rs"), format!("{i}\n").as_bytes()), note())
+                .unwrap();
+            let m = push(&alice, &store, 3).unwrap();
+            // Bounded, every single time: one live segment per writer, one
+            // anchor per distinct fork lineage, retire only this swap's churn.
+            assert_eq!(m.segments.len(), 2, "push {i}: alice's full pack plus bob's segment");
+            assert!(m.segments.contains_key(&bob_segid), "push {i}: bob's segment retained");
+            assert!(m.retire.len() <= 1, "push {i}: retire is per-swap, not cumulative");
+            // Two live anchors: main's and bob's — one per live fork
+            // lineage, never one per push.
+            assert_eq!(m.anchors.len(), 2, "push {i}: anchors track live forks");
+            // The image delta of every swap is nonzero (content was added)
+            // and checkable without touching a segment.
+            assert_ne!(
+                crate::serve::swap_delta(&prev, &m).unwrap(),
+                crate::ident::Sum::zero(),
+                "push {i}: delta reflects the new line"
+            );
+            // Push 0 retires nothing (bob's push already retired alice's
+            // prior segment); push 1 onward is the steady state: one live
+            // segment per writer plus exactly one retired segid.
+            let size = m.to_bytes().unwrap().len();
+            if i <= 1 {
+                baseline_size = size;
+            }
+            assert!(
+                size <= baseline_size + 64,
+                "push {i}: manifest grew from {baseline_size} to {size} bytes"
+            );
+            all_segids.extend(m.segments.keys().cloned());
+            prev = m;
+        }
+        assert_eq!(prev.seq, 2 + ABSURD as u64);
+        // Every segment ever named — live or retired — is still in the
+        // store: retirement is bookkeeping, deletion is the retention
+        // window's job (§3.3), and nothing here deletes.
+        for segid in &all_segids {
+            assert!(store.get(&format!("seg/{segid}.pk")).unwrap().is_some());
+            assert!(store.get(&format!("seg/{segid}.idx")).unwrap().is_some());
+        }
+        // Everything retired plus everything live is everything ever named.
+        let mut accounted: std::collections::BTreeSet<String> =
+            prev.segments.keys().cloned().collect();
+        for seq in 1..=prev.seq {
+            let bytes = store.get(&format!("manifest/{seq}.json")).unwrap().unwrap();
+            let m = ServeManifest::parse(&bytes).unwrap();
+            accounted.extend(m.retire.iter().cloned());
+        }
+        assert_eq!(accounted, all_segids, "no segment leaks from the ledger");
+        // After the marathon, a clone still restores every fork exactly.
+        let carol = clone(&store, temp_dir("absurd-carol")).unwrap();
+        assert_eq!(carol.current_state("main").unwrap().manifest.len(), 1 + ABSURD);
+        assert_eq!(carol.current_state("bob").unwrap().manifest.len(), 2);
+        assert_eq!(
+            carol.current_state("main").unwrap().sum,
+            alice.current_state("main").unwrap().sum,
         );
     }
 
