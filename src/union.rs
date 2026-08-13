@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::log::{Annotation, LogLine, Origin, Provenance, ViewSpan};
+use crate::log::{Annotation, LogLine, Origin, Provenance, ViewSpan, last_state_position};
 use crate::patch::apply_realized_to_manifest;
 use crate::repo::Repository;
 use crate::{Error, Result};
@@ -35,6 +35,22 @@ pub struct Landed {
     pub stratum: Stratum,
 }
 
+/// A semantic conflict the span strata cannot see: an incoming patch that
+/// landed mechanically — its own write preconditions still held — but whose
+/// observed read set (§5) names state a concurrent target write has since
+/// changed.  Its bytes applied; its reasoning may be stale.  This is exactly
+/// the conflict class that distinguishes abelian from a purely textual
+/// merge, and it is reported, never silently swallowed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticConflict {
+    /// The incoming source line whose read set was invalidated.
+    pub source_id: String,
+    /// The concurrent target line whose write invalidated it.
+    pub target_id: String,
+    /// The paths read here and written concurrently there.
+    pub paths: BTreeSet<String>,
+}
+
 /// What a union did, and what it declined to do.
 #[derive(Debug, Default)]
 pub struct UnionOutcome {
@@ -46,12 +62,18 @@ pub struct UnionOutcome {
     /// dead, with the conflict evidence.  Union stops here unless a model
     /// is invited; it never proceeds on its own.
     pub needs_reenactment: Option<(String, String)>,
+    /// Read/write conflicts (§6): lines that landed but read state a
+    /// concurrent write has since changed.  The bytes merged; a human or a
+    /// model must reconcile the reasoning.
+    pub semantic_conflicts: Vec<SemanticConflict>,
 }
 
 impl UnionOutcome {
-    /// True iff every source line landed mechanically.
+    /// True iff every source line landed mechanically and none of them read
+    /// state a concurrent write invalidated.  A `W₁∩R₂` hit leaves the merge
+    /// incomplete even when every span precondition still held.
     pub fn complete(&self) -> bool {
-        self.needs_reenactment.is_none()
+        self.needs_reenactment.is_none() && self.semantic_conflicts.is_empty()
     }
 }
 
@@ -67,6 +89,25 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
     let target_state = repo.current_state(target)?;
     if source_state.sum == target_state.sum {
         outcome.already_identical = true;
+    }
+
+    // The other operand of the read/write tripwire (§6): everything the
+    // target wrote after the source diverged from it.  The source's anchor
+    // names the divergence point in the target's log; lines past it are
+    // writes the source never witnessed.  If the anchor is not found (the
+    // fork sits below the target's current log, or predates it), we fall
+    // back to treating the whole target log as concurrent — conservative,
+    // never unsound.
+    let source_anchor = repo.read_fork(source)?.anchor;
+    let concurrent_start = last_state_position(&target_state.lines, &source_anchor)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let mut concurrent: Vec<(String, BTreeSet<String>)> = Vec::new();
+    for line in &target_state.lines[concurrent_start..] {
+        let writes = write_paths(line)?;
+        if !writes.is_empty() {
+            concurrent.push((line.id.clone(), writes));
+        }
     }
 
     // What the target already carries, and the re-key map for view spans:
@@ -129,6 +170,7 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
                 origin_id: line.id.clone(),
                 stratum: Stratum::RealizedReplay,
             });
+            note_stale_reads(&mut outcome, line, &concurrent)?;
             continue;
         }
 
@@ -143,6 +185,7 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
                     origin_id: line.id.clone(),
                     stratum: Stratum::IntentReplay,
                 });
+                note_stale_reads(&mut outcome, line, &concurrent)?;
             }
             Err(Error::Precondition(evidence)) => {
                 // Stratum 4 gate: the patch's assumptions are genuinely
@@ -191,6 +234,60 @@ pub fn read_paths(line: &LogLine) -> Option<BTreeSet<String>> {
         }
     }
     Some(paths)
+}
+
+/// The paths a landed source line read that a set of concurrent writes has
+/// since changed (§6).  Absent reads (unobserved/andon) invalidate nothing —
+/// absence of evidence is not evidence of a conflict; the conservatism there
+/// lives in [`commutes`], which certifies reordering rather than reports
+/// staleness.  A universally-quantified read (a grep negative, or reads
+/// spilled to a blob we did not inline) conflicts with *any* concurrent
+/// write, because the author may have acted on the observed absence.
+fn stale_reads(line: &LogLine, concurrent_writes: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut stale = BTreeSet::new();
+    if concurrent_writes.is_empty() {
+        return stale;
+    }
+    let Some(reads) = line.annotation.reads.as_ref() else {
+        return stale;
+    };
+    let Some(array) = reads.as_array() else {
+        // Spilled to a blob: substantial reads we did not inline.  Assume any
+        // concurrent write may have invalidated one.
+        return concurrent_writes.clone();
+    };
+    for read in array {
+        if let Some(path) = read.get("path").and_then(|p| p.as_str()) {
+            if concurrent_writes.contains(path) {
+                stale.insert(path.to_string());
+            }
+        } else {
+            // A universally-quantified read: the observed absence spans the
+            // whole state, so any concurrent write may have voided it.
+            return concurrent_writes.clone();
+        }
+    }
+    stale
+}
+
+/// Record a semantic conflict for each concurrent target line whose writes
+/// invalidated a read of the just-landed source line.
+fn note_stale_reads(
+    outcome: &mut UnionOutcome,
+    source: &LogLine,
+    concurrent: &[(String, BTreeSet<String>)],
+) -> Result<()> {
+    for (target_id, writes) in concurrent {
+        let paths = stale_reads(source, writes);
+        if !paths.is_empty() {
+            outcome.semantic_conflicts.push(SemanticConflict {
+                source_id: source.id.clone(),
+                target_id: target_id.clone(),
+                paths,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Two patches commute iff neither's write spans intersect the other's read
@@ -369,6 +466,53 @@ mod tests {
         let again = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(again.already_identical);
         assert!(again.landed.is_empty());
+    }
+
+    #[test]
+    fn stale_read_is_a_semantic_conflict_even_when_spans_apply() {
+        // The conflict class the span strata cannot see: the fork reads
+        // /config, then edits /handler on the strength of it; main
+        // concurrently rewrites /config.  The /handler edit still applies
+        // cleanly — its own precondition never depended on /config — so it
+        // lands mechanically, but its reasoning is now stale.  Union must
+        // report that, not swallow it.
+        let repo = temp_repo("stale-read");
+        repo.apply("main", create("/config", b"MAX=10\n"), note("t")).unwrap();
+        repo.apply("main", create("/handler", b"limit = default\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        // The fork's edit witnesses /config as a read.
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/config", "blob": "x"}]));
+        repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
+        // Main concurrently rewrites the very file the fork read.
+        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        // The bytes merged: the /handler edit landed mechanically.
+        assert_eq!(outcome.landed.len(), 1);
+        // But the read set was invalidated, so the merge is not complete.
+        assert!(!outcome.complete());
+        assert_eq!(outcome.semantic_conflicts.len(), 1);
+        let conflict = &outcome.semantic_conflicts[0];
+        assert!(conflict.paths.contains("/config"));
+    }
+
+    #[test]
+    fn disjoint_writes_do_not_manufacture_a_semantic_conflict() {
+        // A read of a path nobody concurrently wrote is not a conflict.
+        let repo = temp_repo("no-stale");
+        repo.apply("main", create("/config", b"MAX=10\n"), note("t")).unwrap();
+        repo.apply("main", create("/handler", b"limit = default\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/config", "blob": "x"}]));
+        repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
+        // Main drifts a file the fork never read.
+        repo.apply("main", create("/unrelated", b"z\n"), note("t")).unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(outcome.complete(), "reading /config while main writes /unrelated is no conflict");
+        assert!(outcome.semantic_conflicts.is_empty());
     }
 
     #[test]
