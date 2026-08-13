@@ -37,20 +37,35 @@ pub struct Landed {
     pub stratum: Stratum,
 }
 
-/// A semantic conflict the span strata cannot see: an incoming patch that
-/// landed mechanically — its own write preconditions still held — but whose
-/// observed read set (§5) names state a concurrent target write has since
-/// changed.  Its bytes applied; its reasoning may be stale.  This is exactly
-/// the conflict class that distinguishes abelian from a purely textual
-/// merge, and it is reported, never silently swallowed.
+/// Which side of a read/write conflict read and which wrote (§6).  Both are
+/// `W₁∩R₂ ≠ ∅`; the direction says whose reasoning the merge would strand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictDirection {
+    /// The incoming source line read state a concurrent target write changed:
+    /// the incoming patch's own reasoning is stale.  `W_target ∩ R_source`.
+    IncomingReadStale,
+    /// The incoming source line's write changed state a concurrent target line
+    /// read: landing the merge would strand the target patch's reasoning.
+    /// `W_source ∩ R_target`.
+    IncomingWriteHitsTargetRead,
+}
+
+/// A semantic conflict the span strata cannot see: a patch that landed
+/// mechanically — every span precondition still held — but where one side's
+/// observed read set (§5) names state the other side wrote.  The bytes
+/// applied; the reasoning may be stale.  This is exactly the conflict class
+/// that distinguishes abelian from a purely textual merge, and it is
+/// reported, never silently swallowed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticConflict {
-    /// The incoming source line whose read set was invalidated.
+    /// The incoming source line involved.
     pub source_id: String,
-    /// The concurrent target line whose write invalidated it.
+    /// The concurrent target line involved.
     pub target_id: String,
-    /// The paths read here and written concurrently there.
+    /// The paths one side read and the other wrote.
     pub paths: BTreeSet<String>,
+    /// Which side read and which wrote.
+    pub direction: ConflictDirection,
 }
 
 /// What a union did, and what it declined to do.
@@ -399,6 +414,7 @@ fn note_stale_reads(
                 source_id: source.id.clone(),
                 target_id: target_id.clone(),
                 paths,
+                direction: ConflictDirection::IncomingReadStale,
             });
         }
     }

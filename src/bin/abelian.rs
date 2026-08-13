@@ -14,7 +14,7 @@ use abelian::ident::Sum;
 use abelian::log::{Annotation, Provenance};
 use abelian::patch::Intent;
 use abelian::repo::Repository;
-use abelian::union::{Stratum, union};
+use abelian::union::{ConflictDirection, Stratum, union};
 use abelian::views::{Beat, fused_beats};
 use abelian::wire::FsStore;
 use abelian::{Error, Result};
@@ -1134,12 +1134,18 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         let mut detail = String::new();
         for c in &outcome.semantic_conflicts {
             let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
-            detail.push_str(&format!(
-                "\n  line {} read {} which target line {} concurrently wrote",
-                c.source_id,
-                paths.join(", "),
-                c.target_id
-            ));
+            let paths = paths.join(", ");
+            let line = match c.direction {
+                ConflictDirection::IncomingReadStale => format!(
+                    "\n  line {} read {paths} which target line {} concurrently wrote",
+                    c.source_id, c.target_id
+                ),
+                ConflictDirection::IncomingWriteHitsTargetRead => format!(
+                    "\n  line {} wrote {paths} which target line {} had read",
+                    c.source_id, c.target_id
+                ),
+            };
+            detail.push_str(&line);
         }
         return Err(Error::NeedsReenactment(format!(
             "fork {source} into {target}: {} read/write conflict(s); nothing landed{detail}",
