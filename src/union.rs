@@ -167,6 +167,8 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
     let mut prev = target_state.head_id.clone();
     let mut bytes: Vec<u8> = Vec::new();
     let mut staged: Vec<Landed> = Vec::new();
+    // Which source line wrote each path, for the symmetric tripwire below.
+    let mut union_writers: BTreeMap<String, String> = BTreeMap::new();
 
     for line in &source_state.lines {
         if carried.contains(&line.id) {
@@ -242,7 +244,20 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         prev = landed.id.clone();
         rekey.insert(line.id.clone(), landed.id.clone());
         note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
+        for path in write_paths(&landed)? {
+            union_writers.insert(path, line.id.clone());
+        }
         staged.push(Landed { line: landed, origin_id: line.id.clone(), stratum: st });
+    }
+
+    // The symmetric tripwire (§6): W_source ∩ R_target.  The reads above ask
+    // whether the incoming patches read stale state; these ask whether landing
+    // them would strand a concurrent target line's reasoning — a target patch
+    // that read state this merge overwrites.  Only paths the union wrote are
+    // considered, and staleness is span-precise against the post-union
+    // manifest, so a target read the merge did not disturb is left alone.
+    for target_line in &target_state.lines[concurrent_start..] {
+        note_stranded_reads(&mut outcome, target_line, &union_writers, &scratch, &blobs);
     }
 
     // The commit point.  A semantic conflict aborts exactly like a stratum-4
@@ -396,6 +411,64 @@ fn span_line_range(blob: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
     let last = start + needle.len() - 1;
     let line_of = |offset: usize| blob[..offset].iter().filter(|&&b| b == b'\n').count();
     Some((line_of(start), line_of(last)))
+}
+
+/// The symmetric direction: record a conflict for each read of a concurrent
+/// target line that the union's write would strand.  Only paths the union
+/// actually wrote (`union_writers`, path → the source line that wrote it) are
+/// considered, and each read is checked span-precisely against the post-union
+/// manifest.  A universally-quantified target read (a grep negative) or one
+/// spilled to a blob is stranded conservatively by any union write.  Conflicts
+/// are grouped one per (writing source line, this target line).
+fn note_stranded_reads(
+    outcome: &mut UnionOutcome,
+    target_line: &LogLine,
+    union_writers: &BTreeMap<String, String>,
+    after: &Manifest,
+    blobs: &BlobStore,
+) {
+    let Some(reads) = target_line.annotation.reads.as_ref() else {
+        return;
+    };
+    // Accumulate stranded paths per source writer, so each conflict names one
+    // (source line, target line) pair, matching the forward direction.
+    let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let strand_all = |by_source: &mut BTreeMap<String, BTreeSet<String>>| {
+        for (path, source_id) in union_writers {
+            by_source.entry(source_id.clone()).or_default().insert(path.clone());
+        }
+    };
+    match reads.as_array() {
+        // Spilled to a blob: substantial reads we did not inline; any union
+        // write may have stranded one.
+        None => strand_all(&mut by_source),
+        Some(array) => {
+            for read in array {
+                match read.get("path").and_then(|p| p.as_str()) {
+                    // A universally-quantified read spans the whole state.
+                    None => strand_all(&mut by_source),
+                    Some(path) => {
+                        if let Some(source_id) = union_writers.get(path)
+                            && read_is_stale(read, path, after, blobs)
+                        {
+                            by_source
+                                .entry(source_id.clone())
+                                .or_default()
+                                .insert(path.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (source_id, paths) in by_source {
+        outcome.semantic_conflicts.push(SemanticConflict {
+            source_id,
+            target_id: target_line.id.clone(),
+            paths,
+            direction: ConflictDirection::IncomingWriteHitsTargetRead,
+        });
+    }
 }
 
 /// Record a semantic conflict for each concurrent target line whose writes
@@ -698,6 +771,53 @@ mod tests {
         assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         assert!(outcome.semantic_conflicts[0].paths.contains("/config"));
+    }
+
+    #[test]
+    fn incoming_write_strands_a_concurrent_target_read() {
+        // The symmetric direction: main's own patch read /config's MAX line
+        // (a pure dependency), then wrote /report on the strength of it.  The
+        // fork concurrently rewrites that MAX line.  Landing the fork would
+        // strand main's reasoning: W_source ∩ R_target.
+        let repo = temp_repo("strand");
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        // Main reads the MAX line, writes an unrelated file on the strength of it.
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MAX=10"]}]));
+        repo.apply("main", create("/report", b"limit is 10\n"), n).unwrap();
+        // The fork rewrites the very line main read.
+        repo.apply("s", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+
+        let before = repo.current_state("main").unwrap().sum;
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(!outcome.complete(), "landing the fork strands main's read of MAX");
+        assert!(outcome.landed.is_empty(), "atomic: nothing lands");
+        assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
+        assert_eq!(outcome.semantic_conflicts.len(), 1);
+        let c = &outcome.semantic_conflicts[0];
+        assert_eq!(c.direction, ConflictDirection::IncomingWriteHitsTargetRead);
+        assert!(c.paths.contains("/config"));
+    }
+
+    #[test]
+    fn incoming_write_to_a_disjoint_line_leaves_a_target_read_alone() {
+        // The fork rewrites the MAX line; main had read the disjoint MIN line.
+        // Span granularity must not manufacture a stranded-read conflict.
+        let repo = temp_repo("strand-disjoint");
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MIN=1"]}]));
+        repo.apply("main", create("/report", b"min is 1\n"), n).unwrap();
+        repo.apply("s", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(outcome.complete(), "the fork edited MAX; main only read MIN");
+        assert!(outcome.semantic_conflicts.is_empty());
+        assert_eq!(outcome.landed.len(), 1, "the fork's edit lands");
     }
 
     #[test]
