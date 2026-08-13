@@ -54,6 +54,8 @@ revisions:
   blame <path>                     attribute each line to the patch that produced it
 
 patches:
+  commit --prose P [-- path...]    append the pending working-tree patch to the log
+                                   (status previews it; a pathspec commits part of it)
   apply [file|-]                   validate and apply an intent; append to the log
   log [--view NAME | --raw]        render history (default view: fused)
   show <id>                        render one log line
@@ -87,6 +89,7 @@ fn main() {
         "rev-parse" => cmd_rev_parse(&rest),
         "diff" => cmd_diff(&rest),
         "blame" => cmd_blame(&rest),
+        "commit" => cmd_commit(&rest),
         "apply" => cmd_apply(&rest),
         "log" => cmd_log(&rest),
         "show" => cmd_show(&rest),
@@ -775,6 +778,15 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
     };
     let intent: Intent = serde_json::from_slice(&bytes)?;
     let repo = repo()?;
+    let annotation = annotation_from(&options, &repo)?;
+    let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
+    println!("{} {}", line.id, line.sum_after);
+    Ok(())
+}
+
+/// Build the annotation an [`ApplyOptions`] describes.  Shared by `apply`
+/// and `commit`: same provenance vocabulary, same v0 signature placeholder.
+fn annotation_from(options: &ApplyOptions, repo: &Repository) -> Result<Annotation> {
     let provenance = match options.provenance.as_deref() {
         None | Some("agent") => Provenance::Agent,
         Some("andon") => Provenance::Andon,
@@ -795,7 +807,7 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
         }
         (None, false) => None,
     };
-    let annotation = Annotation {
+    Ok(Annotation {
         author: options.author.clone().unwrap_or_else(whoami),
         provenance,
         reason: options.reason.clone(),
@@ -806,9 +818,40 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
         origin: None,
         view: None,
         import: None,
+    })
+}
+
+fn cmd_commit(args: &[&str]) -> Result<()> {
+    // A trailing `--` restricts to a pathspec, as diff and restore do; the
+    // pathspec is the staging story — partial commits without an index.
+    let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
+        Some(i) => (
+            args[..i].to_vec(),
+            args[i + 1..].iter().map(|p| normalize_path_filter(p)).collect(),
+        ),
+        None => (args.to_vec(), Vec::new()),
     };
-    let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
+    let (options, free) = ApplyOptions::from_arguments_relaxed(
+        "USAGE: abelian commit [options] [-- path...]",
+        &left,
+    );
+    reject_extra("commit", &free, 0)?;
+    let repo = repo()?;
+    let annotation = annotation_from(&options, &repo)?;
+    // A commit is a narrative beat; require the prose.  Agent exhaust may
+    // omit it only when a session carries the narrative elsewhere.
+    let agent_session = annotation.provenance == Provenance::Agent && annotation.session.is_some();
+    if annotation.prose.as_deref().unwrap_or("").is_empty() && !agent_session {
+        return Err(Error::Invalid(
+            "commit requires --prose (the narrative beat); \
+             only --provenance agent with --session may omit it"
+                .to_string(),
+        ));
+    }
+    let filters = if paths.is_empty() { None } else { Some(paths.as_slice()) };
+    let line = repo.commit(options.fork.as_deref().unwrap_or("main"), filters, annotation)?;
     println!("{} {}", line.id, line.sum_after);
+    println!("committed {} path(s)", line.realized.len());
     Ok(())
 }
 

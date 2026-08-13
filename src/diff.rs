@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 
 use crate::ident::{ElementRecord, Sum};
 use crate::manifest::Manifest;
+use crate::patch::{Intent, Op};
 
 /// One path's change between two states.  `before` absent is an addition;
 /// `after` absent is a removal; both present is a modification (blob or mode).
@@ -331,6 +332,143 @@ pub fn pending_sum(before: &Sum, after: &Sum) -> Sum {
     after.clone() - before.clone()
 }
 
+//////////////////////////////////////// intent synthesis /////////////////////////////////////////
+
+/// Synthesize the intent form of a path-level change set (`abelian commit`).
+///
+/// The realized delta of a commit is mechanical; the intent is what lets the
+/// line travel — union stratum 3 replays intent, and re-enactment reads it.
+/// So a commit synthesizes real span preconditions rather than recording an
+/// empty intent that could only ever land arithmetically:
+///
+/// - addition → `create` by blob reference (the scan already pooled it)
+/// - removal → `delete` consuming the whole element
+/// - mode-only change → `chmod`
+/// - content change → `edit` whose `old_str` is the changed span widened
+///   with context until it occurs exactly once (the same content-addressing
+///   discipline agents use), falling back to `delete` + `create` when the
+///   content is not UTF-8 or the element is a symlink
+///
+/// `read` resolves a blob hash to its bytes.  Op order follows change order;
+/// within a path, `delete` precedes `create`, so the intent replays cleanly
+/// against the pre-state.
+pub fn synthesize_intent(
+    changes: &[PathChange],
+    mut read: impl FnMut(&str) -> crate::Result<Vec<u8>>,
+) -> crate::Result<Intent> {
+    let create = |r: &ElementRecord| Op::Create {
+        path: r.path.clone(),
+        mode: r.mode.clone(),
+        blob: Some(r.blob.clone()),
+        content_b64: None,
+    };
+    let delete = |r: &ElementRecord| Op::Delete { path: r.path.clone(), blob: r.blob.clone() };
+    let mut ops = Vec::new();
+    for change in changes {
+        match (&change.before, &change.after) {
+            (None, Some(after)) => ops.push(create(after)),
+            (Some(before), None) => ops.push(delete(before)),
+            (Some(before), Some(after)) => {
+                if before.blob == after.blob {
+                    // Mode-only: the content did not move.
+                    ops.push(Op::Chmod {
+                        path: change.path.clone(),
+                        old_mode: before.mode.clone(),
+                        new_mode: after.mode.clone(),
+                    });
+                    continue;
+                }
+                // Content changed.  A span edit only when the mode held and
+                // the content is text; otherwise consume and recreate.
+                let edit = if before.mode == after.mode && before.mode != "120000" {
+                    let old = read(&before.blob)?;
+                    let new = read(&after.blob)?;
+                    synthesize_edit(&old, &new)
+                } else {
+                    None
+                };
+                match edit {
+                    Some((old_str, new_str)) => ops.push(Op::Edit {
+                        path: change.path.clone(),
+                        old_str,
+                        new_str,
+                    }),
+                    None => {
+                        ops.push(delete(before));
+                        ops.push(create(after));
+                    }
+                }
+            }
+            (None, None) => {
+                return Err(crate::Error::Invalid(format!(
+                    "change at {} has neither side",
+                    change.path
+                )));
+            }
+        }
+    }
+    Ok(Intent { ops })
+}
+
+/// The span edit taking `old` to `new`: the changed region, widened with
+/// context until `old_str` occurs in `old` exactly once — content-addressed
+/// within the file, position-independent (ANDON §4).  `None` when either
+/// side is not UTF-8 or `old` is empty (an empty `old_str` never matches;
+/// the caller falls back to `delete` + `create`).
+pub fn synthesize_edit(old: &[u8], new: &[u8]) -> Option<(String, String)> {
+    let old_s = std::str::from_utf8(old).ok()?;
+    let new_s = std::str::from_utf8(new).ok()?;
+    if old_s.is_empty() {
+        return None;
+    }
+    // The changed region: strip the common prefix and suffix, on char
+    // boundaries, never letting the two overlap.
+    let mut p = old
+        .iter()
+        .zip(new.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !old_s.is_char_boundary(p) {
+        p -= 1;
+    }
+    let max_s = old.len().min(new.len()) - p;
+    let mut s = old[p..]
+        .iter()
+        .rev()
+        .zip(new[p..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(max_s);
+    // The suffix bytes are identical in both strings, so one boundary check
+    // covers both sides.
+    while s > 0 && !old_s.is_char_boundary(old.len() - s) {
+        s -= 1;
+    }
+    // Widen until unique.  The whole file occurs exactly once, so this
+    // terminates.
+    loop {
+        let old_span = &old_s[p..old.len() - s];
+        if !old_span.is_empty()
+            && crate::patch::count_occurrences(old, old_span.as_bytes()) == 1
+        {
+            return Some((old_span.to_string(), new_s[p..new.len() - s].to_string()));
+        }
+        debug_assert!(p > 0 || s > 0, "the whole file occurs exactly once");
+        if p > 0 {
+            p -= 1;
+            while !old_s.is_char_boundary(p) {
+                p -= 1;
+            }
+        }
+        if s > 0 {
+            s -= 1;
+            while s > 0 && !old_s.is_char_boundary(old.len() - s) {
+                s -= 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +580,116 @@ mod tests {
         assert_eq!(pending_sum(&a.sum(), &b.sum()), Sum::zero());
         let c = Manifest::from_records([rec("100644", "/a", b"different")]).unwrap();
         assert_ne!(pending_sum(&a.sum(), &c.sum()), Sum::zero());
+    }
+
+    #[test]
+    fn synthesize_edit_takes_the_minimal_unique_span() {
+        let old = b"fn main() {\n    println!(\"hello\");\n}\n";
+        let new = b"fn main() {\n    println!(\"hello, abelian\");\n}\n";
+        let (old_str, new_str) = synthesize_edit(old, new).unwrap();
+        assert_eq!(
+            crate::patch::count_occurrences(old, old_str.as_bytes()),
+            1,
+            "the precondition must hold"
+        );
+        assert_eq!(
+            crate::patch::replace_unique(old, old_str.as_bytes(), new_str.as_bytes()).unwrap(),
+            new.to_vec(),
+            "applying the edit must reproduce the new content"
+        );
+        assert!(old_str.len() < old.len(), "a small change must not widen to the whole file");
+    }
+
+    #[test]
+    fn synthesize_edit_widens_an_ambiguous_span_until_unique() {
+        // Insert a line at the second of two identical sites: the naive
+        // changed region occurs twice; widening with context disambiguates.
+        let old = b"a\nx\nb\na\nx\nb\n";
+        let new = b"a\nx\nb\na\nx\ny\nb\n";
+        let (old_str, new_str) = synthesize_edit(old, new).unwrap();
+        assert_eq!(crate::patch::count_occurrences(old, old_str.as_bytes()), 1);
+        assert_eq!(
+            crate::patch::replace_unique(old, old_str.as_bytes(), new_str.as_bytes()).unwrap(),
+            new.to_vec()
+        );
+    }
+
+    #[test]
+    fn synthesize_edit_declines_binary_and_empty() {
+        assert_eq!(synthesize_edit(&[0xff, 0xfe], b"text"), None, "not UTF-8");
+        assert_eq!(synthesize_edit(b"", b"text"), None, "empty old never matches");
+    }
+
+    #[test]
+    fn synthesize_edit_respects_multibyte_boundaries() {
+        let old = "héllo héllo\n".as_bytes();
+        let new = "héllo hállo\n".as_bytes();
+        let (old_str, new_str) = synthesize_edit(old, new).unwrap();
+        assert_eq!(
+            crate::patch::replace_unique(old, old_str.as_bytes(), new_str.as_bytes()).unwrap(),
+            new.to_vec()
+        );
+    }
+
+    #[test]
+    fn synthesized_intent_replays_against_the_pre_state() {
+        // The point of synthesis: apply_intent against the before-state must
+        // land exactly on the after-state (union stratum 3 viability).
+        use std::collections::HashMap;
+        let contents: Vec<(&str, &[u8])> = vec![
+            ("/edit", b"line one\nline two\n"),
+            ("/edit2", b"line one\nline three\n"),
+            ("/gone", b"doomed\n"),
+            ("/mode", b"tool\n"),
+        ];
+        let mut pool: HashMap<String, Vec<u8>> = HashMap::new();
+        for (_, c) in &contents {
+            pool.insert(sha3_hex(c), c.to_vec());
+        }
+        let new_edit: &[u8] = b"line one\nline 2\n";
+        let new_file: &[u8] = b"fresh\n";
+        pool.insert(sha3_hex(new_edit), new_edit.to_vec());
+        pool.insert(sha3_hex(new_file), new_file.to_vec());
+        let before = Manifest::from_records([
+            rec("100644", "/edit", contents[0].1),
+            rec("100644", "/edit2", contents[1].1),
+            rec("100644", "/gone", contents[2].1),
+            rec("100644", "/mode", contents[3].1),
+        ])
+        .unwrap();
+        let after = Manifest::from_records([
+            rec("100644", "/edit", new_edit),
+            rec("100644", "/edit2", contents[1].1),
+            rec("100755", "/mode", contents[3].1),
+            rec("100644", "/new", new_file),
+        ])
+        .unwrap();
+        let changes = diff_manifests(&before, &after);
+        let intent =
+            synthesize_intent(&changes, |hash| Ok(pool.get(hash).cloned().unwrap())).unwrap();
+        // One op per change: edit, delete, chmod, create.
+        let kinds: Vec<&str> = intent
+            .ops
+            .iter()
+            .map(|op| match op {
+                Op::Edit { .. } => "edit",
+                Op::Create { .. } => "create",
+                Op::Delete { .. } => "delete",
+                Op::Chmod { .. } => "chmod",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["edit", "delete", "chmod", "create"]);
+        // Replay: the intent against the before-manifest reproduces after.
+        let dir = std::env::temp_dir()
+            .join(format!("abelian-synth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let blobs = crate::blobs::BlobStore::init(&dir).unwrap();
+        for content in pool.values() {
+            blobs.put(content).unwrap();
+        }
+        let mut manifest = before.clone();
+        crate::patch::apply_intent(&intent, &mut manifest, &blobs).unwrap();
+        assert_eq!(manifest.sum(), after.sum());
     }
 }

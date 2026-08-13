@@ -16,8 +16,8 @@ use crate::ignore::Ignore;
 use crate::log::{Annotation, LogLine, Provenance, ViewSpan, last_state_position,
                  parse_log_lenient};
 use crate::manifest::Manifest;
-use crate::patch::{Intent, Realization, apply_intent, apply_realized_to_manifest,
-                   apply_realized_to_sum};
+use crate::patch::{Intent, Realization, RealizedEntry, apply_intent,
+                   apply_realized_to_manifest, apply_realized_to_sum};
 use crate::{Error, Result, ioerr};
 
 /// The contents of `.abelian/version`.
@@ -959,6 +959,59 @@ impl Repository {
         Ok((expected, actual))
     }
 
+    /// `abelian commit`: append the pending working-tree patch to the log.
+    ///
+    /// The pending patch is what `status` shows — the working tree diffed
+    /// against the fork's current state.  There is no index: the blob pool
+    /// already plays that part, because the working-tree scan ingests every
+    /// blob it hashes, so by the time the line is appended every referenced
+    /// blob is durable (I8 write-ahead ordering, for free).  `filters`
+    /// restricts the commit to matching paths — partial commits without a
+    /// third state to reconcile; the leftover stays pending.
+    ///
+    /// Both patch forms are recorded.  The realized delta is mechanical;
+    /// the intent is synthesized ([`crate::diff::synthesize_intent`]) so
+    /// the line can travel by union stratum 3 and be re-enacted, not merely
+    /// land arithmetically.
+    ///
+    /// The append goes through [`Repository::apply_realized`], which takes
+    /// the fork lock and re-adjudicates every remove against the state it
+    /// reads there (I9); a racing writer fails this commit cleanly, and the
+    /// already-pooled blobs are retained exhaust.
+    pub fn commit(
+        &self,
+        fork: &str,
+        filters: Option<&[String]>,
+        annotation: Annotation,
+    ) -> Result<LogLine> {
+        let state = self.current_state(fork)?;
+        let working = self.working_tree_manifest()?;
+        let mut changes = crate::diff::diff_manifests(&state.manifest, &working);
+        if let Some(filters) = filters {
+            changes.retain(|c| {
+                filters.iter().any(|f| {
+                    let f = f.trim_end_matches('/');
+                    c.path == f || c.path.starts_with(&format!("{f}/"))
+                })
+            });
+        }
+        if changes.is_empty() {
+            return Err(Error::Precondition(
+                "nothing to commit: the working tree matches the fork".to_string(),
+            ));
+        }
+        let blobs = self.blobs();
+        let intent = crate::diff::synthesize_intent(&changes, |hash| blobs.get(hash))?;
+        let realized: Vec<RealizedEntry> = changes
+            .iter()
+            .map(|c| RealizedEntry {
+                remove: c.before.as_ref().map(ElementRecord::to_line),
+                add: c.after.as_ref().map(ElementRecord::to_line),
+            })
+            .collect();
+        self.apply_realized(fork, intent, realized, annotation)
+    }
+
     /// `abelian snapshot`: write a manifest at the current state and repoint
     /// the fork file at it; earlier log lines remain (§2.4).
     pub fn snapshot(&self, fork: &str) -> Result<String> {
@@ -1265,6 +1318,71 @@ mod tests {
         // And abelian check agrees.
         let (expected, actual) = repo.check("main").unwrap();
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn commit_appends_the_pending_patch() {
+        let repo = temp_repo("commit");
+        fs::create_dir_all(repo.root().join("src")).unwrap();
+        fs::write(repo.root().join("src/main.rs"), b"fn main() {}\n").unwrap();
+        fs::write(repo.root().join("doomed.txt"), b"gone soon\n").unwrap();
+        let l1 = repo.commit("main", None, note("t")).unwrap();
+        assert_eq!(l1.prev, "");
+        assert_eq!(l1.realized.len(), 2);
+        // The log's expectation and the working tree agree.
+        let (expected, actual) = repo.check("main").unwrap();
+        assert_eq!(expected, actual);
+        // Edit one file, delete the other; commit again.
+        fs::write(repo.root().join("src/main.rs"), b"fn main() { run() }\n").unwrap();
+        fs::remove_file(repo.root().join("doomed.txt")).unwrap();
+        let l2 = repo.commit("main", None, note("t")).unwrap();
+        assert_eq!(l2.prev, l1.id);
+        let (expected, actual) = repo.check("main").unwrap();
+        assert_eq!(expected, actual);
+        // The synthesized intent carries a real span edit and a real delete,
+        // so the line can travel by intent replay, not only arithmetic.
+        let kinds: Vec<&str> = l2
+            .intent
+            .ops
+            .iter()
+            .map(|op| match op {
+                Op::Edit { .. } => "edit",
+                Op::Create { .. } => "create",
+                Op::Delete { .. } => "delete",
+                Op::Chmod { .. } => "chmod",
+            })
+            .collect();
+        assert_eq!(kinds, vec!["delete", "edit"], "bytewise path order: /doomed, /src");
+        // Replaying the intent against the pre-state lands on the post-state.
+        let mut manifest = repo.manifest_at("main", &l1.sum_after).unwrap();
+        apply_intent(&l2.intent, &mut manifest, &repo.blobs()).unwrap();
+        assert_eq!(manifest.sum().hexdigest(), l2.sum_after);
+    }
+
+    #[test]
+    fn commit_pathspec_commits_part_and_leaves_the_rest_pending() {
+        let repo = temp_repo("commit-part");
+        fs::write(repo.root().join("a.txt"), b"a\n").unwrap();
+        fs::write(repo.root().join("b.txt"), b"b\n").unwrap();
+        let filters = vec!["/a.txt".to_string()];
+        let line = repo.commit("main", Some(&filters), note("t")).unwrap();
+        assert_eq!(line.realized.len(), 1);
+        // /b.txt stays pending: the working tree and the log disagree by it.
+        let (expected, actual) = repo.check("main").unwrap();
+        assert_ne!(expected, actual);
+        let rest = repo.commit("main", None, note("t")).unwrap();
+        assert_eq!(rest.realized.len(), 1);
+        let (expected, actual) = repo.check("main").unwrap();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn commit_refuses_an_empty_pending_patch() {
+        let repo = temp_repo("commit-empty");
+        assert!(matches!(
+            repo.commit("main", None, note("t")),
+            Err(Error::Precondition(_))
+        ));
     }
 
     #[test]
