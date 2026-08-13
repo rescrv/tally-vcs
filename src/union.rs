@@ -10,7 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::blobs::BlobStore;
 use crate::log::{Annotation, LogLine, Origin, Provenance, ViewSpan, last_state_position};
+use crate::manifest::Manifest;
 use crate::patch::apply_realized_to_manifest;
 use crate::repo::Repository;
 use crate::{Error, Result};
@@ -109,6 +111,10 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             concurrent.push((line.id.clone(), writes));
         }
     }
+    // The pristine target — before this union lands anything — is the
+    // reference the span-precise staleness check diffs each read against.
+    let blobs = repo.blobs();
+    let target_before = &target_state.manifest;
 
     // What the target already carries, and the re-key map for view spans:
     // union re-seals ids, so a landed view's `from`/`to` follow the
@@ -170,7 +176,7 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
                 origin_id: line.id.clone(),
                 stratum: Stratum::RealizedReplay,
             });
-            note_stale_reads(&mut outcome, line, &concurrent)?;
+            note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
             continue;
         }
 
@@ -185,7 +191,7 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
                     origin_id: line.id.clone(),
                     stratum: Stratum::IntentReplay,
                 });
-                note_stale_reads(&mut outcome, line, &concurrent)?;
+                note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
             }
             Err(Error::Precondition(evidence)) => {
                 // Stratum 4 gate: the patch's assumptions are genuinely
@@ -237,13 +243,21 @@ pub fn read_paths(line: &LogLine) -> Option<BTreeSet<String>> {
 }
 
 /// The paths a landed source line read that a set of concurrent writes has
-/// since changed (§6).  Absent reads (unobserved/andon) invalidate nothing —
-/// absence of evidence is not evidence of a conflict; the conservatism there
-/// lives in [`commutes`], which certifies reordering rather than reports
-/// staleness.  A universally-quantified read (a grep negative, or reads
-/// spilled to a blob we did not inline) conflicts with *any* concurrent
-/// write, because the author may have acted on the observed absence.
-fn stale_reads(line: &LogLine, concurrent_writes: &BTreeSet<String>) -> BTreeSet<String> {
+/// since changed (§6), at span granularity.  Absent reads (unobserved/andon)
+/// invalidate nothing — absence of evidence is not evidence of a conflict;
+/// the conservatism there lives in [`commutes`], which certifies reordering
+/// rather than reports staleness.  A universally-quantified read (a grep
+/// negative, or reads spilled to a blob we did not inline) conflicts with
+/// *any* concurrent write, because the author may have acted on the observed
+/// absence.  A path-scoped read conflicts only when one of its observed spans
+/// covers a line the concurrent write actually touched: a read of one region
+/// survives a disjoint edit to the same file, exactly as §6 promises.
+fn stale_reads(
+    line: &LogLine,
+    concurrent_writes: &BTreeSet<String>,
+    target: &Manifest,
+    blobs: &BlobStore,
+) -> BTreeSet<String> {
     let mut stale = BTreeSet::new();
     if concurrent_writes.is_empty() {
         return stale;
@@ -257,17 +271,75 @@ fn stale_reads(line: &LogLine, concurrent_writes: &BTreeSet<String>) -> BTreeSet
         return concurrent_writes.clone();
     };
     for read in array {
-        if let Some(path) = read.get("path").and_then(|p| p.as_str()) {
-            if concurrent_writes.contains(path) {
-                stale.insert(path.to_string());
-            }
-        } else {
+        let Some(path) = read.get("path").and_then(|p| p.as_str()) else {
             // A universally-quantified read: the observed absence spans the
             // whole state, so any concurrent write may have voided it.
             return concurrent_writes.clone();
+        };
+        if concurrent_writes.contains(path) && read_is_stale(read, path, target, blobs) {
+            stale.insert(path.to_string());
         }
     }
     stale
+}
+
+/// Whether one path-scoped read is stale against the target's current blob.
+/// Compares the exact bytes the author read — named by the read's recorded
+/// `blob` hash — with the target's blob for the path, and asks whether any
+/// observed span covers a line the concurrent write changed.  Anything we
+/// cannot resolve precisely — a missing/opaque blob hash, a non-UTF-8 blob, a
+/// span not uniquely locatable, a vanished path, or a read that named no
+/// spans (a whole-file read) — is treated as stale: conservative, never a
+/// missed conflict.
+fn read_is_stale(read: &serde_json::Value, path: &str, target: &Manifest, blobs: &BlobStore) -> bool {
+    let Some(read_hash) = read.get("blob").and_then(|b| b.as_str()) else {
+        return true;
+    };
+    // The path the author read is gone from the target: certainly stale.
+    let Some(record) = target.get(path) else {
+        return true;
+    };
+    // Net-identical to what was read (e.g. a concurrent write-then-revert):
+    // the read is still valid regardless of the churn in between.
+    if record.blob == read_hash {
+        return false;
+    }
+    let (Ok(read_bytes), Ok(now_bytes)) = (blobs.get(read_hash), blobs.get(&record.blob)) else {
+        return true;
+    };
+    let Some(changed) = crate::diff::changed_old_lines(&read_bytes, &now_bytes) else {
+        return true; // non-UTF-8: cannot localize.
+    };
+    let Some(spans) = read.get("spans").and_then(|s| s.as_array()).filter(|s| !s.is_empty()) else {
+        return true; // no named span: a whole-file read.
+    };
+    for span in spans {
+        let Some(text) = span.as_str() else {
+            return true;
+        };
+        match span_line_range(&read_bytes, text.as_bytes()) {
+            Some((lo, hi)) => {
+                if (lo..=hi).any(|l| changed.contains(&l)) {
+                    return true;
+                }
+            }
+            None => return true, // not uniquely locatable: conservative.
+        }
+    }
+    false
+}
+
+/// The inclusive range of 0-based line indices a `needle` covers in `blob`,
+/// iff it occurs exactly once.  A line index is the count of `\n` bytes
+/// preceding an offset, matching the diff's line splitting.
+fn span_line_range(blob: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
+    if needle.is_empty() || crate::patch::count_occurrences(blob, needle) != 1 {
+        return None;
+    }
+    let start = blob.windows(needle.len()).position(|w| w == needle)?;
+    let last = start + needle.len() - 1;
+    let line_of = |offset: usize| blob[..offset].iter().filter(|&&b| b == b'\n').count();
+    Some((line_of(start), line_of(last)))
 }
 
 /// Record a semantic conflict for each concurrent target line whose writes
@@ -276,9 +348,11 @@ fn note_stale_reads(
     outcome: &mut UnionOutcome,
     source: &LogLine,
     concurrent: &[(String, BTreeSet<String>)],
+    target: &Manifest,
+    blobs: &BlobStore,
 ) -> Result<()> {
     for (target_id, writes) in concurrent {
-        let paths = stale_reads(source, writes);
+        let paths = stale_reads(source, writes, target, blobs);
         if !paths.is_empty() {
             outcome.semantic_conflicts.push(SemanticConflict {
                 source_id: source.id.clone(),
@@ -495,6 +569,51 @@ mod tests {
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         let conflict = &outcome.semantic_conflicts[0];
         assert!(conflict.paths.contains("/config"));
+    }
+
+    #[test]
+    fn disjoint_spans_in_same_file_do_not_conflict() {
+        // The span-granularity payoff: the fork reads the MIN line of
+        // /config, then edits /handler; main concurrently changes the MAX
+        // line of the *same* /config file.  Path granularity would cry
+        // conflict; span granularity sees the read line is untouched.
+        let repo = temp_repo("span-disjoint");
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
+        repo.apply("main", create("/handler", b"x = default\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MIN=1"]}]));
+        repo.apply("s", edit("/handler", "default", "1"), n).unwrap();
+        // Main edits a disjoint line of the same file.
+        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert_eq!(outcome.landed.len(), 1);
+        assert!(outcome.complete(), "reading MIN survives a concurrent edit to MAX");
+        assert!(outcome.semantic_conflicts.is_empty());
+    }
+
+    #[test]
+    fn a_read_of_the_edited_span_still_conflicts() {
+        // Same setup, but now the fork read the very line main changed:
+        // span granularity must still catch it, and must not be fooled by
+        // "MAX=10" being a substring of the new "MAX=1000".
+        let repo = temp_repo("span-conflict");
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
+        repo.apply("main", create("/handler", b"x = default\n"), note("t")).unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MAX=10"]}]));
+        repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
+        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert_eq!(outcome.landed.len(), 1);
+        assert!(!outcome.complete(), "reading the edited line is a conflict");
+        assert_eq!(outcome.semantic_conflicts.len(), 1);
+        assert!(outcome.semantic_conflicts[0].paths.contains("/config"));
     }
 
     #[test]

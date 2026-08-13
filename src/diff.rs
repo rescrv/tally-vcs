@@ -156,6 +156,27 @@ pub fn line_stat(old: &[u8], new: &[u8]) -> (usize, usize) {
     (ins, del)
 }
 
+/// The 0-based indices of `old`'s lines that a change to `new` touched: every
+/// line the edit script *deletes*, which includes lines that were modified
+/// (a modification is a delete of the old line plus an insert of the new).
+/// Pure insertions of brand-new lines touch no existing old line and are
+/// excluded — a read of an untouched line is not disturbed by an insertion
+/// elsewhere in the file.  Returns `None` when either side is not UTF-8, so
+/// the caller can fall back to a conservative whole-file conflict rather than
+/// silently under-reporting on binary blobs.
+pub fn changed_old_lines(old: &[u8], new: &[u8]) -> Option<BTreeSet<usize>> {
+    let (old_s, new_s) = (std::str::from_utf8(old).ok()?, std::str::from_utf8(new).ok()?);
+    let old_lines = split_keep_lines(old_s);
+    let new_lines = split_keep_lines(new_s);
+    let mut changed = BTreeSet::new();
+    for edit in lcs_edits(&old_lines, &new_lines) {
+        if let Edit::Delete(i) = edit {
+            changed.insert(i);
+        }
+    }
+    Some(changed)
+}
+
 /// Split into lines, keeping enough to distinguish a missing final newline.
 fn split_keep_lines(s: &str) -> Vec<&str> {
     if s.is_empty() {
@@ -571,6 +592,23 @@ mod tests {
         let new = b"a\nc\nd\n";
         let (ins, del) = line_stat(old, new);
         assert_eq!((ins, del), (1, 1), "b deleted, d inserted; c unchanged");
+    }
+
+    #[test]
+    fn changed_old_lines_marks_modifications_not_pure_insertions() {
+        // Modify line 0, insert a new line after: only the modified old line
+        // is reported.  The unchanged old line 1 is not, so a read of it
+        // survives the insertion.
+        let old = b"MAX=10\nMIN=1\n";
+        let new = b"MAX=1000\nEXTRA=9\nMIN=1\n";
+        let changed = changed_old_lines(old, new).unwrap();
+        assert!(changed.contains(&0), "the MAX line was modified");
+        assert!(!changed.contains(&1), "the MIN line is untouched by the edit and the insert");
+    }
+
+    #[test]
+    fn changed_old_lines_is_none_on_non_utf8() {
+        assert!(changed_old_lines(&[0xff, 0xfe], b"ok\n").is_none());
     }
 
     #[test]
