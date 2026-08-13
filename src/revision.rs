@@ -68,27 +68,19 @@ fn lineage_states(repo: &Repository, fork: &str) -> Result<Vec<StatePoint>> {
 
 /// Split a spec into its base and its suffix operators.  A suffix is `^`,
 /// `~N`, or `@{N}`; everything before the first suffix operator is the base.
-/// `@{...}` is recognized only as a whole `@{N}` group so a bare `@` (an
-/// alias for HEAD) survives.
+/// A bare leading `@` (an alias for HEAD) is a base; a leading `@{N}` is the
+/// `@{N}` suffix on an implicit HEAD, so `@{0}` means `HEAD@{0}` as in git.
 fn split_suffixes(spec: &str) -> (&str, Vec<&str>) {
     let bytes = spec.as_bytes();
-    // A bare "@" or "@{...}" leading the spec is a base, not a suffix.
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'~' | b'^' => break,
             b'@' if i > 0 => break,
-            b'@' => {
-                // Leading @: consume a following {..} group if present.
-                if bytes.get(i + 1) == Some(&b'{') {
-                    match spec[i..].find('}') {
-                        Some(off) => i += off + 1,
-                        None => i += 1,
-                    }
-                } else {
-                    i += 1;
-                }
-            }
+            // Leading `@{` opens the `@{N}` suffix on an empty (HEAD) base;
+            // a leading bare `@` is HEAD itself, so consume it as the base.
+            b'@' if bytes.get(i + 1) == Some(&b'{') => break,
+            b'@' => i += 1,
             _ => i += 1,
         }
     }
@@ -126,8 +118,12 @@ fn split_suffixes(spec: &str) -> (&str, Vec<&str>) {
             _ => {
                 // Not a recognized suffix operator; fold it back into nothing
                 // (the base already ended here), treat as a stray character.
-                suffixes.push(&rest[j..j + 1]);
-                j += 1;
+                // Slice the whole character: a one-byte slice of a multibyte
+                // char would panic at the char boundary.
+                let ch_len =
+                    rest[j..].chars().next().map(char::len_utf8).unwrap_or(1);
+                suffixes.push(&rest[j..j + ch_len]);
+                j += ch_len;
             }
         }
     }
@@ -442,6 +438,12 @@ mod tests {
         assert_eq!(head.line.as_deref(), Some(b.id.as_str()));
         // @ is an alias for HEAD.
         assert_eq!(resolve(&repo, "@", "main").unwrap(), head);
+        // A leading @{N} is HEAD@{N}, as in git: @{0} is HEAD, @{1} is HEAD~1.
+        assert_eq!(resolve(&repo, "@{0}", "main").unwrap(), head);
+        assert_eq!(
+            resolve(&repo, "@{1}", "main").unwrap(),
+            resolve(&repo, "HEAD@{1}", "main").unwrap()
+        );
         // HEAD~1 and HEAD^ are the state after a.
         let back = resolve(&repo, "HEAD~1", "main").unwrap();
         assert_eq!(back.sum, a.sum_after);
