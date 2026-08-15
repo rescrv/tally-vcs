@@ -16,7 +16,7 @@ name = "abelian"
 name = "abelian"
 path = "src/bin/abelian.rs"
 
-# Purpose-built hook pi's text editor calls (see pi/abelian-editor.ts).
+# Purpose-built hook pi's text editor calls (see .pi/extensions/abelian-editor.ts).
 [[bin]]
 name = "abelian-pi-editor"
 path = "src/bin/pi-editor.rs"
