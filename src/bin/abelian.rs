@@ -864,29 +864,33 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         view: Option<String>,
         #[arrrg(flag, "Render the un-fused chain: every line, full.")]
         raw: bool,
+        #[arrrg(flag, "Plain output: no terminal color (the default on a terminal).")]
+        nocolor: bool,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian log [--fork FORK] [--view NAME | --raw]",
+        "USAGE: abelian log [--fork FORK] [--view NAME | --raw] [--nocolor]",
         args,
     );
     reject_extra("log", &free, 0)?;
     if options.raw && options.view.is_some() {
         return Err(Error::Invalid("--raw and --view are mutually exclusive".to_string()));
     }
+    let palette = Palette::new(options.nocolor);
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
     // Follow the fork across its lineage: its own log, then—when exhausted—
     // the log of the fork it was forked from, and so on to the root.
     let history = repo.continuity_log(fork)?;
     if options.raw {
-        // The un-fused chain: every line, full, git-log style.
+        // The un-fused chain: every line, full.  Like the fused view, lines
+        // print oldest first — the log reads in ascending time.
         let mut shown = fork.to_string();
-        for (fork, line) in history.iter().rev() {
+        for (fork, line) in &history {
             if fork != &shown {
-                println!("--- {fork} ---");
+                println!("{}", palette.bold(&format!("--- {fork} ---")));
                 shown = fork.clone();
             }
-            print_line_full(line);
+            print_line_full(line, &palette);
         }
         return Ok(());
     }
@@ -904,31 +908,78 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         match beat {
             Beat::Fused { view, lines } => {
                 let header = format!(
-                    "{}  fuse({} lines)  {}",
-                    lines.last().map(|l| l.id.as_str()).unwrap_or(""),
-                    lines.len(),
+                    "{}  {}  {}",
+                    palette.id(lines.last().map(|l| l.id.as_str()).unwrap_or("")),
+                    palette.provenance(Provenance::View, &format!("fuse({} lines)", lines.len())),
                     view.annotation.author,
                 );
                 print_prose(&header, view.annotation.prose.as_deref().unwrap_or(""));
             }
-            Beat::Single(line) => print_line_brief(line),
+            Beat::Single(line) => print_line_brief(line, &palette),
         }
     }
     Ok(())
 }
 
-fn line_header(line: &abelian::log::LogLine) -> String {
+/// Terminal color for `log`: on when stdout is a terminal and NO_COLOR is
+/// unset; `--nocolor` forces it off.  The scheme takes after git log: the
+/// line id is the commit-hash analog (yellow) and provenance is the signal.
+#[derive(Clone, Copy, Debug, Default)]
+struct Palette {
+    enabled: bool,
+}
+
+impl Palette {
+    fn new(nocolor: bool) -> Self {
+        use std::io::IsTerminal;
+        let enabled =
+            !nocolor && std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal();
+        Self { enabled }
+    }
+
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.enabled && !text.is_empty() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
+    }
+
+    /// The line id: yellow, like git's `commit <sha>`.
+    fn id(&self, text: &str) -> String {
+        self.paint("33", text)
+    }
+
+    /// Provenance is the signal: agent green, ANDON the bold-red cord,
+    /// union cyan, view magenta.
+    fn provenance(&self, provenance: Provenance, text: &str) -> String {
+        let code = match provenance {
+            Provenance::Agent => "32",
+            Provenance::Andon => "1;31",
+            Provenance::Union => "36",
+            Provenance::View => "35",
+        };
+        self.paint(code, text)
+    }
+
+    fn bold(&self, text: &str) -> String {
+        self.paint("1", text)
+    }
+}
+
+fn line_header(line: &abelian::log::LogLine, palette: &Palette) -> String {
     let provenance = match line.annotation.provenance {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
         Provenance::Union => "union",
         Provenance::View => "view",
     };
-    format!("{}  {}  {}", line.id, provenance, line.annotation.author)
+    format!(
+        "{}  {}  {}",
+        palette.id(&line.id),
+        palette.provenance(line.annotation.provenance, provenance),
+        line.annotation.author
+    )
 }
 
-fn print_line_brief(line: &abelian::log::LogLine) {
-    let header = line_header(line);
+fn print_line_brief(line: &abelian::log::LogLine, palette: &Palette) {
+    let header = line_header(line, palette);
     // git-log style: only the subject (first line of the message) shares the
     // header line; the body is omitted for a one-line-per-commit summary.
     let prose = line.annotation.prose.as_deref().unwrap_or("");
@@ -946,7 +997,7 @@ fn format_committed(committed_ms: u64) -> String {
     }
 }
 
-fn print_line_full(line: &abelian::log::LogLine) {
+fn print_line_full(line: &abelian::log::LogLine, palette: &Palette) {
     let provenance = match line.annotation.provenance {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
@@ -957,8 +1008,8 @@ fn print_line_full(line: &abelian::log::LogLine) {
     // their own line, mirroring `git log`'s commit/Author/Date block.
     let header = format!(
         "{}  {}\nAuthor: {}\nDate:   {}",
-        line.id,
-        provenance,
+        palette.id(&line.id),
+        palette.provenance(line.annotation.provenance, provenance),
         line.annotation.author,
         format_committed(line.committed_ms),
     );
