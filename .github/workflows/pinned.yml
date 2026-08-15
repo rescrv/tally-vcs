@@ -1,0 +1,36 @@
+name: pinned
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # Known-answer test: the pinned branch is a fixed input, and a correct
+  # abelian must import it to this state sum.
+  PINNED_SUM: bf74838cf46abb032885903ed6cd24e6a89dd23e53d711829922ca5c1ebd9e88
+
+jobs:
+  confirm-pinned:
+    name: Build abelian and confirm the pinned branch
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the commit under test (the push or the PR merge), not
+      # pinned; pinned is only data the import below consumes.
+      - uses: actions/checkout@v4
+        with:
+          # 0 = all history for all branches; the git bridge walks
+          # first-parent history of origin/pinned.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build abelian
+        run: cargo build --locked
+      - name: Import pinned and confirm its sum
+        run: |
+          ./target/debug/abelian init
+          ./target/debug/abelian git pull origin/pinned
+          actual="$(./target/debug/abelian rev-parse main)"
+          echo "pinned sum: $actual"
+          test "$actual" = "$PINNED_SUM"
