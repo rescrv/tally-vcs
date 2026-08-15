@@ -20,11 +20,11 @@ use crate::patch::{Intent, Realization, RealizedEntry, apply_intent,
                    apply_realized_to_manifest, apply_realized_to_sum};
 use crate::{Error, Result, ioerr};
 
-/// The contents of `.abelian/version`.
-pub const VERSION: &str = "abelian v0\n";
+/// The contents of `.tally/version`.
+pub const VERSION: &str = "tally v0\n";
 
 /// The mirror binding: the fork that bridges to git and the upstream branch
-/// it fast-forwards from.  Stored in `.abelian/mirror`.
+/// it fast-forwards from.  Stored in `.tally/mirror`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MirrorBinding {
     /// The fork that mirrors git (the bridge).
@@ -33,7 +33,7 @@ pub struct MirrorBinding {
     pub branch: String,
 }
 
-/// A loose repository: a working tree with a `.abelian/` beside it.
+/// A loose repository: a working tree with a `.tally/` beside it.
 pub struct Repository {
     root: PathBuf,
     dot: PathBuf,
@@ -68,14 +68,14 @@ impl Repository {
     /// Initialize the layout with no forks (unpack restores its own).
     pub fn init_bare(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        let dot = root.join(".abelian");
+        let dot = root.join(".tally");
         if dot.exists() {
             return Err(Error::Invalid(format!(
                 "already a repository: {}",
                 dot.display()
             )));
         }
-        fs::create_dir_all(&dot).map_err(ioerr("creating .abelian"))?;
+        fs::create_dir_all(&dot).map_err(ioerr("creating .tally"))?;
         fs::write(dot.join("version"), VERSION).map_err(ioerr("writing version"))?;
         for sub in ["forks", "anchors", "index"] {
             fs::create_dir_all(dot.join(sub)).map_err(ioerr("creating layout"))?;
@@ -109,7 +109,7 @@ impl Repository {
     /// Open a repository whose working tree is `root`.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        let dot = root.join(".abelian");
+        let dot = root.join(".tally");
         let version = fs::read_to_string(dot.join("version"))
             .map_err(ioerr(format!("reading {}/version", dot.display())))?;
         if version != VERSION {
@@ -122,12 +122,12 @@ impl Repository {
     pub fn discover(start: impl Into<PathBuf>) -> Result<Self> {
         let mut dir = start.into();
         loop {
-            if dir.join(".abelian").join("version").exists() {
+            if dir.join(".tally").join("version").exists() {
                 return Repository::open(dir);
             }
             if !dir.pop() {
                 return Err(Error::Invalid(
-                    "not inside an abelian repository (no .abelian found)".to_string(),
+                    "not inside an tally repository (no .tally found)".to_string(),
                 ));
             }
         }
@@ -907,7 +907,7 @@ impl Repository {
     }
 
     /// Materialize a full working tree for `manifest` under `dest`
-    /// (`abelian materialize <rev> [dest]`).  Whole-tree and
+    /// (`tally materialize <rev> [dest]`).  Whole-tree and
     /// non-destructive: `dest` is created if absent, so a state can be
     /// produced beside the repository (a fresh directory) or over the
     /// working tree (pass the repository root).
@@ -922,13 +922,13 @@ impl Repository {
     }
 
     /// §1 by hand, automated: walk the working tree and produce every
-    /// element record (`abelian sum`).  Blob contents are ingested into the
+    /// element record (`tally sum`).  Blob contents are ingested into the
     /// pool so the records are always materializable.
     pub fn records_of_working_tree(&self) -> Result<Vec<ElementRecord>> {
-        let ignore = match fs::read_to_string(self.root.join(".abelianignore")) {
+        let ignore = match fs::read_to_string(self.root.join(".tallyignore")) {
             Ok(text) => Ignore::parse(&text),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ignore::empty(),
-            Err(err) => return Err(ioerr("reading .abelianignore")(err)),
+            Err(err) => return Err(ioerr("reading .tallyignore")(err)),
         };
         let mut records = Vec::new();
         self.walk_tree(&self.root.clone(), &ignore, &mut records)?;
@@ -947,7 +947,7 @@ impl Repository {
             let entry = entry.map_err(ioerr("walking working tree"))?;
             let path = entry.path();
             let name = entry.file_name();
-            if dir == self.root && (name == ".abelian" || name == ".git") {
+            if dir == self.root && (name == ".tally" || name == ".git") {
                 continue;
             }
             let meta = fs::symlink_metadata(&path).map_err(ioerr("stat in working tree"))?;
@@ -997,7 +997,7 @@ impl Repository {
         Manifest::from_records(self.records_of_working_tree()?)
     }
 
-    /// `abelian check`: recompute the working tree's sum and compare against
+    /// `tally check`: recompute the working tree's sum and compare against
     /// the log's expectation.
     pub fn check(&self, fork: &str) -> Result<(Sum, Sum)> {
         let expected = self.current_state(fork)?.sum;
@@ -1008,7 +1008,7 @@ impl Repository {
         Ok((expected, actual))
     }
 
-    /// `abelian commit`: append the pending working-tree patch to the log.
+    /// `tally commit`: append the pending working-tree patch to the log.
     ///
     /// The pending patch is what `status` shows — the working tree diffed
     /// against the fork's current state.  There is no index: the blob pool
@@ -1062,7 +1062,7 @@ impl Repository {
         self.apply_realized(fork, intent, realized, annotation)
     }
 
-    /// `abelian snapshot`: write a manifest at the current state and repoint
+    /// `tally snapshot`: write a manifest at the current state and repoint
     /// the fork file at it; earlier log lines remain (§2.4).
     pub fn snapshot(&self, fork: &str) -> Result<String> {
         let _lock = self.lock_fork(fork)?;
@@ -1076,7 +1076,7 @@ impl Repository {
 
     /////////////////////////////////// restore/repoint ///////////////////////////////////////
 
-    /// Restore working-tree paths to a target state (`abelian restore`).  A
+    /// Restore working-tree paths to a target state (`tally restore`).  A
     /// working-tree operation, never a log operation: it rematerializes
     /// bytes, and because the pool is lossless, discarding an uncommitted
     /// edit costs nothing and loses nothing.  With `filters`, each named path
@@ -1126,7 +1126,7 @@ impl Repository {
         Ok(actions)
     }
 
-    /// Move a fork's state to a target, non-destructively (`abelian repoint`).
+    /// Move a fork's state to a target, non-destructively (`tally repoint`).
     /// Lossless retention means there is no reflog archaeology: rather than
     /// rewrite the append-only log (I3), repoint appends one new line whose
     /// realized delta carries the current state back to the target.  The
@@ -1259,7 +1259,7 @@ impl Repository {
 
     /// Collect blobs no fork reaches (§2.2).  The pool is otherwise
     /// append-only (I3); this is the one sanctioned reclamation.  It removes
-    /// only unreachable content — e.g. file bytes `abelian sum` ingested for a
+    /// only unreachable content — e.g. file bytes `tally sum` ingested for a
     /// working-tree state no fork ever committed.  Returns the hashes
     /// collected, or, when `dry_run`, those that would be.
     pub fn gc_blobs(&self, dry_run: bool) -> Result<Vec<String>> {
@@ -1299,7 +1299,7 @@ mod tests {
     use crate::patch::Op;
 
     fn temp_repo(name: &str) -> Repository {
-        let dir = std::env::temp_dir().join(format!("abelian-repo-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-repo-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         Repository::init(&dir).unwrap()
@@ -1331,9 +1331,9 @@ mod tests {
     }
 
     #[test]
-    fn abelianignore_prunes_the_walk() {
+    fn tallyignore_prunes_the_walk() {
         let repo = temp_repo("ignore");
-        fs::write(repo.root().join(".abelianignore"), "*.log\n/target\n").unwrap();
+        fs::write(repo.root().join(".tallyignore"), "*.log\n/target\n").unwrap();
         fs::create_dir_all(repo.root().join("target/debug")).unwrap();
         fs::create_dir_all(repo.root().join("src")).unwrap();
         fs::write(repo.root().join("target/debug/junk"), b"x").unwrap();
@@ -1345,7 +1345,7 @@ mod tests {
             .into_iter()
             .map(|r| r.path)
             .collect();
-        assert_eq!(paths, vec!["/.abelianignore", "/src/main.rs"]);
+        assert_eq!(paths, vec!["/.tallyignore", "/src/main.rs"]);
     }
 
     #[test]
@@ -1372,7 +1372,7 @@ mod tests {
         // The working tree reflects the applied state.
         let on_disk = fs::read(repo.root().join("src/main.rs")).unwrap();
         assert!(on_disk.windows(8).any(|w| w == b"/* ed */"));
-        // And abelian check agrees.
+        // And tally check agrees.
         let (expected, actual) = repo.check("main").unwrap();
         assert_eq!(expected, actual);
     }
@@ -1710,7 +1710,7 @@ mod tests {
         annotation.reads = Some(serde_json::json!({"reads_blob": spilled}));
         repo.apply("main", create("/read.rs", b"r\n"), annotation).unwrap();
         // Exhaust: bytes ingested into the pool but reachable from nowhere,
-        // as `abelian sum` leaves for a working-tree file no fork committed.
+        // as `tally sum` leaves for a working-tree file no fork committed.
         let orphan = repo.blobs().put(b"never committed\n").unwrap();
 
         let reachable = repo.referenced_blobs().unwrap();

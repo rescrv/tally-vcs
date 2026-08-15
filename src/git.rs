@@ -1,4 +1,4 @@
-//! Git import: initializing an abelian repository from a git commit.
+//! Git import: initializing an tally repository from a git commit.
 //!
 //! An import walks the commit's tree, ingests every blob into the pool, and
 //! anchors `main` at the resulting state.  The derivation is a pure function
@@ -180,7 +180,7 @@ pub fn object_format(git_dir: &Path) -> Result<String> {
 /// One entry of a commit's tree, validated as importable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitEntry {
-    /// The abelian mode: `100644`, `100755`, or `120000`.
+    /// The tally mode: `100644`, `100755`, or `120000`.
     pub mode: String,
     /// The git object name of the blob.
     pub oid: String,
@@ -199,7 +199,7 @@ fn element_path(git_path: &str) -> Result<String> {
     let path = format!("/{git_path}");
     validate_path(&path)?;
     let first = path[1..].split('/').next().unwrap_or("");
-    if first == ".abelian" || first == ".git" {
+    if first == ".tally" || first == ".git" {
         return Err(Error::Invalid(format!(
             "incompatible git path (reserved component): {path:?}"
         )));
@@ -278,10 +278,10 @@ pub fn derive_records(git_dir: &Path, commit: &str) -> Result<Vec<ElementRecord>
 /// tree of a git commit.  Returns the repository and the resolved commit.
 ///
 /// `git_dir` names the git repository to read; it defaults to `root` (the
-/// common case: `abelian init --from-git HEAD` inside a checkout).  Every
+/// common case: `tally init --from-git HEAD` inside a checkout).  Every
 /// entry is validated before anything is written; an incompatible entry
-/// errors loudly and leaves no `.abelian` behind.  The working tree is not
-/// touched — `abelian materialize` produces one if wanted.
+/// errors loudly and leaves no `.tally` behind.  The working tree is not
+/// touched — `tally materialize` produces one if wanted.
 pub fn init_from_git(
     root: impl Into<PathBuf>,
     git_dir: Option<&Path>,
@@ -300,8 +300,8 @@ pub fn init_from_git(
         Ok(()) => Ok((repo, commit)),
         Err(err) => {
             // The layout was ours alone (init_bare refuses an existing
-            // `.abelian`); a failed import leaves nothing behind.
-            let _ = std::fs::remove_dir_all(root.join(".abelian"));
+            // `.tally`); a failed import leaves nothing behind.
+            let _ = std::fs::remove_dir_all(root.join(".tally"));
             Err(err)
         }
     }
@@ -335,8 +335,8 @@ pub fn init_from_git_linear(
         Ok(()) => Ok((repo, chain)),
         Err(err) => {
             // The layout was ours alone (init_bare refuses an existing
-            // `.abelian`); a failed import leaves nothing behind.
-            let _ = std::fs::remove_dir_all(root.join(".abelian"));
+            // `.tally`); a failed import leaves nothing behind.
+            let _ = std::fs::remove_dir_all(root.join(".tally"));
             Err(err)
         }
     }
@@ -358,7 +358,7 @@ pub struct ImportSummary {
 /// Fast-forward an existing fork to a later git commit, mirroring
 /// `--import-linear-history` but as a `--ff-only` advance rather than a
 /// fresh init.  This is the "pull main from GitHub" step: people prepare
-/// patches in abelian and send them upstream; once merged to GitHub's main,
+/// patches in tally and send them upstream; once merged to GitHub's main,
 /// this pulls the new commits back in, one log line per commit.
 ///
 /// The fork's last git-import line names the commit the fork already sits
@@ -488,7 +488,7 @@ pub struct PullSummary {
     pub imported: Vec<String>,
 }
 
-/// Fast-forward the mirror fork from its bound branch (`abelian git pull`).
+/// Fast-forward the mirror fork from its bound branch (`tally git pull`).
 ///
 /// Every pull is `--ff-only`.  When the fork carries no git import yet, this
 /// is a fresh import: the fork must be empty (anchored against empty), and
@@ -560,7 +560,7 @@ pub fn pull(
     })
 }
 
-/// Recover the mirror fork after an upstream rewrite (`abelian git
+/// Recover the mirror fork after an upstream rewrite (`tally git
 /// reanchor`).  A force-push replaces the commit the fork imported from with
 /// one that shares no ancestry, so a fast-forward can no longer bridge the
 /// two.  reanchor repoints the fork's state onto `committish`'s tree,
@@ -753,9 +753,9 @@ mod tests {
             dir,
             &[
                 "-c",
-                "user.name=abelian",
+                "user.name=tally",
                 "-c",
-                "user.email=abelian@example.com",
+                "user.email=tally@example.com",
                 "-c",
                 "commit.gpgsign=false",
                 "commit",
@@ -768,7 +768,7 @@ mod tests {
 
     fn temp_git_repo(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("abelian-git-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tally-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         run_git(&dir, &["init", "-q"]);
@@ -877,7 +877,7 @@ mod tests {
         let import = state.lines[2].annotation.import.as_ref().expect("import provenance");
         assert_eq!(import.commit, commit);
         assert_eq!(import.reference, None);
-        assert_eq!(state.lines[0].annotation.author, "abelian <abelian@example.com>");
+        assert_eq!(state.lines[0].annotation.author, "tally <tally@example.com>");
 
         // Determinism: a second import produces byte-identical log lines.
         let root_b = dir.join("import-b");
@@ -897,9 +897,9 @@ mod tests {
             &dir,
             &[
                 "-c",
-                "user.name=abelian",
+                "user.name=tally",
                 "-c",
-                "user.email=abelian@example.com",
+                "user.email=tally@example.com",
                 "-c",
                 "commit.gpgsign=false",
                 "merge",
@@ -927,14 +927,14 @@ mod tests {
         commit_all(&dir, "add b");
         let early = resolve_commit(&dir, "HEAD").unwrap();
 
-        // Initialize abelian at the early commit, in a root outside the git
+        // Initialize tally at the early commit, in a root outside the git
         // tree so later `add -A` commits do not ingest it.
-        let root = temp_git_repo("ff-abelian");
+        let root = temp_git_repo("ff-tally");
         std::fs::remove_dir_all(&root).unwrap();
         let (repo, _) = init_from_git_linear(&root, Some(&dir), &early).unwrap();
         assert_eq!(repo.current_state("main").unwrap().lines.len(), 2);
 
-        // Advance git's history, then fast-forward the abelian fork.
+        // Advance git's history, then fast-forward the tally fork.
         std::fs::write(dir.join("a.txt"), b"alpha 2\n").unwrap();
         commit_all(&dir, "edit a");
         std::fs::write(dir.join("c.txt"), b"gamma\n").unwrap();
@@ -987,7 +987,7 @@ mod tests {
         let mainline = resolve_commit(&dir, "HEAD").unwrap();
 
         // The fork is imported at the mainline tip.
-        let root = temp_git_repo("nonff-abelian");
+        let root = temp_git_repo("nonff-tally");
         std::fs::remove_dir_all(&root).unwrap();
         let (repo, _) = init_from_git_linear(&root, Some(&dir), &mainline).unwrap();
 
@@ -1027,7 +1027,7 @@ mod tests {
         };
         assert!(matches!(err, Error::Invalid(_)), "{err}");
         assert!(err.to_string().contains("gitlink"), "{err}");
-        assert!(!dir.join(".abelian").exists(), "a failed import must write nothing");
+        assert!(!dir.join(".tally").exists(), "a failed import must write nothing");
     }
 
     #[test]
@@ -1040,16 +1040,16 @@ mod tests {
             .to_string();
         run_git(
             &dir,
-            &["update-index", "--add", "--cacheinfo", &format!("100644,{oid},.abelian/config")],
+            &["update-index", "--add", "--cacheinfo", &format!("100644,{oid},.tally/config")],
         );
         commit_index(&dir, "reserved");
         let Err(err) = init_from_git(&dir, None, "HEAD") else {
             panic!("expected a loud error")
         };
         assert!(err.to_string().contains("reserved"), "{err}");
-        assert!(!dir.join(".abelian").exists());
+        assert!(!dir.join(".tally").exists());
 
-        run_git(&dir, &["rm", "-q", "--cached", ".abelian/config"]);
+        run_git(&dir, &["rm", "-q", "--cached", ".tally/config"]);
         run_git(
             &dir,
             &["update-index", "--add", "--cacheinfo", &format!("100644,{oid},caf\u{e9}")],
@@ -1059,6 +1059,6 @@ mod tests {
             panic!("expected a loud error")
         };
         assert!(err.to_string().contains("non-ASCII"), "{err}");
-        assert!(!dir.join(".abelian").exists());
+        assert!(!dir.join(".tally").exists());
     }
 }

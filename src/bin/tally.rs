@@ -1,25 +1,25 @@
-//! abelian: the command over the abelian substrate.
+//! tally: the command over the tally substrate.
 //!
 //! Named for the group.  Its merge takes after the split tally stick — the
 //! twelfth century's distributed, two-party, checksummed ledger.  Every
 //! subcommand here automates a step
-//! the ANDON teaches by hand; with zero `abelian` binaries available, the
+//! the ANDON teaches by hand; with zero `tally` binaries available, the
 //! ANDON remains a complete, operable version control system.
 
 use std::process::exit;
 
 use arrrg::CommandLine;
 
-use abelian::ident::Sum;
-use abelian::log::{Annotation, Provenance};
-use abelian::patch::Intent;
-use abelian::repo::Repository;
-use abelian::union::{ConflictDirection, Stratum, union};
-use abelian::views::{Beat, fused_beats};
-use abelian::wire::FsStore;
-use abelian::{Error, Result};
+use tally::ident::Sum;
+use tally::log::{Annotation, Provenance};
+use tally::patch::Intent;
+use tally::repo::Repository;
+use tally::union::{ConflictDirection, Stratum, union};
+use tally::views::{Beat, fused_beats};
+use tally::wire::FsStore;
+use tally::{Error, Result};
 
-const USAGE: &str = "USAGE: abelian <command> [options] [args]
+const USAGE: &str = "USAGE: tally <command> [options] [args]
 
 repository:
   init                             create an empty repository here
@@ -109,19 +109,19 @@ fn main() {
             return;
         }
         other => {
-            eprintln!("abelian: unknown command {other:?}\n");
+            eprintln!("tally: unknown command {other:?}\n");
             eprint!("{USAGE}");
             exit(64);
         }
     };
     if let Err(err) = result {
-        eprintln!("abelian {command}: {err}");
+        eprintln!("tally {command}: {err}");
         exit(1);
     }
 }
 
 fn repo() -> Result<Repository> {
-    let cwd = std::env::current_dir().map_err(abelian::ioerr("getting cwd"))?;
+    let cwd = std::env::current_dir().map_err(tally::ioerr("getting cwd"))?;
     Repository::discover(cwd)
 }
 
@@ -165,14 +165,14 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
     let (_, free) =
-        Options::from_arguments_relaxed("USAGE: abelian init [dir]", args);
+        Options::from_arguments_relaxed("USAGE: tally init [dir]", args);
     reject_extra("init", &free, 1)?;
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
-        None => std::env::current_dir().map_err(abelian::ioerr("getting cwd"))?,
+        None => std::env::current_dir().map_err(tally::ioerr("getting cwd"))?,
     };
     let repo = Repository::init(&dir)?;
-    println!("initialized empty abelian repository at {}", repo.root().display());
+    println!("initialized empty tally repository at {}", repo.root().display());
     Ok(())
 }
 
@@ -202,7 +202,7 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
         git: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian git pull [--fork FORK] [--git DIR] [branch]",
+        "USAGE: tally git pull [--fork FORK] [--git DIR] [branch]",
         args,
     );
     reject_extra("git pull", &free, 1)?;
@@ -243,9 +243,9 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
             (fork, branch, true)
         }
     };
-    let summary = abelian::git::pull(&repo, git_dir.as_deref(), &branch, &fork)?;
+    let summary = tally::git::pull(&repo, git_dir.as_deref(), &branch, &fork)?;
     if bind_now {
-        repo.write_mirror(&abelian::repo::MirrorBinding {
+        repo.write_mirror(&tally::repo::MirrorBinding {
             fork: fork.clone(),
             branch: branch.clone(),
         })?;
@@ -276,7 +276,7 @@ fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
         git: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian git reanchor [--fork FORK] [--git DIR] <commit>",
+        "USAGE: tally git reanchor [--fork FORK] [--git DIR] <commit>",
         args,
     );
     reject_extra("git reanchor", &free, 1)?;
@@ -291,10 +291,10 @@ fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
         .or_else(|| binding.as_ref().map(|b| b.fork.clone()))
         .unwrap_or_else(|| "main".to_string());
     let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
-    let commit = abelian::git::reanchor(&repo, git_dir.as_deref(), committish, &fork)?;
+    let commit = tally::git::reanchor(&repo, git_dir.as_deref(), committish, &fork)?;
     // Reanchor is the rebind `git pull`'s error sends users to: repoint the
     // mirror binding at the committish so the next pull fast-forwards from it.
-    repo.write_mirror(&abelian::repo::MirrorBinding {
+    repo.write_mirror(&tally::repo::MirrorBinding {
         fork: fork.clone(),
         branch: committish.to_string(),
     })?;
@@ -320,7 +320,7 @@ fn cmd_sum(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print the element records too, not only the sum.")]
         records: bool,
     }
-    let (options, free) = Options::from_arguments_relaxed("USAGE: abelian sum [--records]", args);
+    let (options, free) = Options::from_arguments_relaxed("USAGE: tally sum [--records]", args);
     reject_extra("sum", &free, 0)?;
     let repo = repo()?;
     let records = repo.records_of_working_tree()?;
@@ -344,7 +344,7 @@ fn cmd_status(args: &[&str]) -> Result<()> {
         porcelain: bool,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian status [--fork FORK] [--porcelain]", args);
+        Options::from_arguments_relaxed("USAGE: tally status [--fork FORK] [--porcelain]", args);
     reject_extra("status", &free, 0)?;
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
@@ -352,8 +352,8 @@ fn cmd_status(args: &[&str]) -> Result<()> {
     // index-vs-worktree (there is no index) but materialized-vs-committed.
     let committed = repo.current_state(fork)?;
     let working = repo.working_tree_manifest()?;
-    let changes = abelian::diff::diff_manifests(&committed.manifest, &working);
-    let pending = abelian::diff::pending_sum(&committed.sum, &working.sum());
+    let changes = tally::diff::diff_manifests(&committed.manifest, &working);
+    let pending = tally::diff::pending_sum(&committed.sum, &working.sum());
     if options.porcelain {
         for change in &changes {
             println!("{}\t{}", change.code(), change.path);
@@ -399,7 +399,7 @@ fn cmd_status(args: &[&str]) -> Result<()> {
 
 fn cmd_check(args: &[&str]) -> Result<()> {
     let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: abelian check [--fork FORK]", args);
+        ForkOptions::from_arguments_relaxed("USAGE: tally check [--fork FORK]", args);
     reject_extra("check", &free, 0)?;
     let repo = repo()?;
     let (expected, actual) = repo.check(options.fork())?;
@@ -416,7 +416,7 @@ fn cmd_check(args: &[&str]) -> Result<()> {
 
 fn cmd_snapshot(args: &[&str]) -> Result<()> {
     let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: abelian snapshot [--fork FORK]", args);
+        ForkOptions::from_arguments_relaxed("USAGE: tally snapshot [--fork FORK]", args);
     reject_extra("snapshot", &free, 0)?;
     let repo = repo()?;
     let sum = repo.snapshot(options.fork())?;
@@ -426,7 +426,7 @@ fn cmd_snapshot(args: &[&str]) -> Result<()> {
 
 fn cmd_materialize(args: &[&str]) -> Result<()> {
     let (options, free) = ForkOptions::from_arguments_relaxed(
-        "USAGE: abelian materialize [--fork FORK] <rev> [dest]",
+        "USAGE: tally materialize [--fork FORK] <rev> [dest]",
         args,
     );
     reject_extra("materialize", &free, 2)?;
@@ -436,7 +436,7 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     let repo = repo()?;
     // Any revision resolves: HEAD, a fork, sum:S, line:ID.  materialize no
     // longer demands a raw sum — rev-parse exists, let it resolve.
-    let resolved = abelian::revision::resolve(&repo, spec, options.fork())?;
+    let resolved = tally::revision::resolve(&repo, spec, options.fork())?;
     let manifest = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
     // Whole-tree, elsewhere, non-destructive: default to a fresh directory
     // beside the repository rather than over the working tree (that is
@@ -444,7 +444,7 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     let dest = match free.get(1) {
         Some(dest) => std::path::PathBuf::from(dest),
         None => {
-            let name = format!("abelian-{}", short(&resolved.sum));
+            let name = format!("tally-{}", short(&resolved.sum));
             std::path::PathBuf::from(name)
         }
     };
@@ -479,7 +479,7 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
         None => (args.to_vec(), Vec::new()),
     };
     let (options, revs) = Options::from_arguments_relaxed(
-        "USAGE: abelian restore [--fork FORK] [rev] [-- path...]",
+        "USAGE: tally restore [--fork FORK] [rev] [-- path...]",
         &left,
     );
     reject_extra("restore", &revs, 1)?;
@@ -487,7 +487,7 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     let repo = repo()?;
     // Default to HEAD: discard uncommitted working-tree edits.
     let spec = revs.first().map(String::as_str).unwrap_or("HEAD");
-    let resolved = abelian::revision::resolve(&repo, spec, fork)?;
+    let resolved = tally::revision::resolve(&repo, spec, fork)?;
     let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
     let filters = if paths.is_empty() { None } else { Some(paths.as_slice()) };
     let actions = repo.restore(&target, filters)?;
@@ -509,14 +509,14 @@ fn cmd_repoint(args: &[&str]) -> Result<()> {
         prose: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian repoint [--fork FORK] <rev>", args);
+        Options::from_arguments_relaxed("USAGE: tally repoint [--fork FORK] <rev>", args);
     reject_extra("repoint", &free, 1)?;
     let Some(spec) = free.first() else {
         return Err(Error::Invalid("repoint requires a revision".to_string()));
     };
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
-    let resolved = abelian::revision::resolve(&repo, spec, fork)?;
+    let resolved = tally::revision::resolve(&repo, spec, fork)?;
     let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
     let author = options.author.unwrap_or_else(whoami);
     let line = repo.repoint(fork, &target, &author, options.prose)?;
@@ -539,7 +539,7 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
         verbose: bool,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian rev-parse [--fork FORK] [--line|--verbose] <rev>",
+        "USAGE: tally rev-parse [--fork FORK] [--line|--verbose] <rev>",
         args,
     );
     reject_extra("rev-parse", &free, 1)?;
@@ -548,7 +548,7 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
     };
     let repo = repo()?;
     let resolved =
-        abelian::revision::resolve(&repo, spec, options.fork.as_deref().unwrap_or("main"))?;
+        tally::revision::resolve(&repo, spec, options.fork.as_deref().unwrap_or("main"))?;
     if options.verbose {
         println!("sum  {}", resolved.sum);
         println!("line {}", resolved.line.as_deref().unwrap_or("(anchor: no line)"));
@@ -590,7 +590,7 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         None => (args.to_vec(), Vec::new()),
     };
     let (options, revs) = Options::from_arguments_relaxed(
-        "USAGE: abelian diff [--fork FORK] [--stat] [--no-renames] [rev [rev]] [-- path...]",
+        "USAGE: tally diff [--fork FORK] [--stat] [--no-renames] [rev [rev]] [-- path...]",
         &left,
     );
     let fork = options.fork.as_deref().unwrap_or("main");
@@ -604,13 +604,13 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
             (state.manifest, repo.working_tree_manifest()?, "ref".to_string(), "working".to_string())
         }
         [a] => {
-            let ra = abelian::revision::resolve(&repo, a, fork)?;
+            let ra = tally::revision::resolve(&repo, a, fork)?;
             let ma = repo.manifest_at_lineage(&ra.fork, &ra.sum)?;
             (ma, repo.working_tree_manifest()?, short(&ra.sum), "working".to_string())
         }
         [a, b] => {
-            let ra = abelian::revision::resolve(&repo, a, fork)?;
-            let rb = abelian::revision::resolve(&repo, b, fork)?;
+            let ra = tally::revision::resolve(&repo, a, fork)?;
+            let rb = tally::revision::resolve(&repo, b, fork)?;
             let ma = repo.manifest_at_lineage(&ra.fork, &ra.sum)?;
             let mb = repo.manifest_at_lineage(&rb.fork, &rb.sum)?;
             (ma, mb, short(&ra.sum), short(&rb.sum))
@@ -619,14 +619,14 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
             return Err(Error::Invalid("diff takes at most two revisions".to_string()));
         }
     };
-    let mut changes = abelian::diff::diff_manifests(&before, &after);
+    let mut changes = tally::diff::diff_manifests(&before, &after);
     if !paths.is_empty() {
         changes.retain(|c| path_matches(&c.path, &paths));
     }
     let (renames, changes) = if options.no_renames {
         (Vec::new(), changes)
     } else {
-        abelian::diff::detect_renames(&changes)
+        tally::diff::detect_renames(&changes)
     };
     let blobs = repo.blobs();
     let read = |hash: &str| -> Result<Vec<u8>> { blobs.get(hash) };
@@ -646,7 +646,7 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
                 Some(rec) => read(&rec.blob)?,
                 None => Vec::new(),
             };
-            let (ins, del) = abelian::diff::line_stat(&old, &new);
+            let (ins, del) = tally::diff::line_stat(&old, &new);
             total_ins += ins;
             total_del += del;
             println!(" {} | +{ins} -{del}", c.path);
@@ -683,7 +683,7 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         }
         let la = format!("{}/{}", label_a, c.path.trim_start_matches('/'));
         let lb = format!("{}/{}", label_b, c.path.trim_start_matches('/'));
-        print!("{}", abelian::diff::unified(&old, &new, &la, &lb, context));
+        print!("{}", tally::diff::unified(&old, &new, &la, &lb, context));
     }
     Ok(())
 }
@@ -695,7 +695,7 @@ fn cmd_blame(args: &[&str]) -> Result<()> {
         fork: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian blame [--fork FORK] <path>", args);
+        Options::from_arguments_relaxed("USAGE: tally blame [--fork FORK] <path>", args);
     reject_extra("blame", &free, 1)?;
     let Some(raw) = free.first() else {
         return Err(Error::Invalid("blame requires a path".to_string()));
@@ -768,7 +768,7 @@ fn reject_extra(command: &str, free: &[String], max: usize) -> Result<()> {
 
 fn cmd_apply(args: &[&str]) -> Result<()> {
     let (options, free) = ApplyOptions::from_arguments_relaxed(
-        "USAGE: abelian apply [options] <patch.json>",
+        "USAGE: tally apply [options] <patch.json>",
         args,
     );
     reject_extra("apply", &free, 1)?;
@@ -778,10 +778,10 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
     let bytes = if *patch_path == "-" {
         use std::io::Read;
         let mut buf = Vec::new();
-        std::io::stdin().read_to_end(&mut buf).map_err(abelian::ioerr("reading stdin"))?;
+        std::io::stdin().read_to_end(&mut buf).map_err(tally::ioerr("reading stdin"))?;
         buf
     } else {
-        std::fs::read(patch_path).map_err(abelian::ioerr(format!("reading {patch_path}")))?
+        std::fs::read(patch_path).map_err(tally::ioerr(format!("reading {patch_path}")))?
     };
     let intent: Intent = serde_json::from_slice(&bytes)?;
     let repo = repo()?;
@@ -809,7 +809,7 @@ fn annotation_from(options: &ApplyOptions, repo: &Repository) -> Result<Annotati
             // v0 placeholder scheme: a detached signature blob; deliberately
             // under-specified (§2.5).
             let author = options.author.as_deref().unwrap_or("anonymous");
-            let body = format!("abelian detached signature v0\nsigned-by: {author}\n");
+            let body = format!("tally detached signature v0\nsigned-by: {author}\n");
             Some(repo.blobs().put(body.as_bytes())?)
         }
         (None, false) => None,
@@ -839,7 +839,7 @@ fn cmd_commit(args: &[&str]) -> Result<()> {
         None => (args.to_vec(), Vec::new()),
     };
     let (options, free) = ApplyOptions::from_arguments_relaxed(
-        "USAGE: abelian commit [options] [-- path...]",
+        "USAGE: tally commit [options] [-- path...]",
         &left,
     );
     reject_extra("commit", &free, 0)?;
@@ -875,7 +875,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         nocolor: bool,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian log [--fork FORK] [--view FUSES | --raw] [--nocolor]",
+        "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--nocolor]",
         args,
     );
     reject_extra("log", &free, 0)?;
@@ -908,7 +908,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         .view
         .as_deref()
         .map(|names| names.split(',').map(str::trim).filter(|n| !n.is_empty()).collect());
-    let lines: Vec<abelian::log::LogLine> =
+    let lines: Vec<tally::log::LogLine> =
         history.into_iter().map(|(_, line)| line).collect();
     for beat in fused_beats(&lines, view.as_deref()) {
         match beat {
@@ -978,7 +978,7 @@ impl Palette {
     }
 }
 
-fn line_header(line: &abelian::log::LogLine, palette: &Palette) -> String {
+fn line_header(line: &tally::log::LogLine, palette: &Palette) -> String {
     let provenance = match line.annotation.provenance {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
@@ -993,7 +993,7 @@ fn line_header(line: &abelian::log::LogLine, palette: &Palette) -> String {
     )
 }
 
-fn print_line_brief(line: &abelian::log::LogLine, palette: &Palette) {
+fn print_line_brief(line: &tally::log::LogLine, palette: &Palette) {
     let header = line_header(line, palette);
     // git-log style: only the subject (first line of the message) shares the
     // header line; the body is omitted for a one-line-per-commit summary.
@@ -1012,7 +1012,7 @@ fn format_committed(committed_ms: u64) -> String {
     }
 }
 
-fn print_line_full(line: &abelian::log::LogLine, palette: &Palette) {
+fn print_line_full(line: &tally::log::LogLine, palette: &Palette) {
     let provenance = match line.annotation.provenance {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
@@ -1050,7 +1050,7 @@ fn print_prose(header: &str, prose: &str) {
 
 fn cmd_show(args: &[&str]) -> Result<()> {
     let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: abelian show [--fork FORK] <id>", args);
+        ForkOptions::from_arguments_relaxed("USAGE: tally show [--fork FORK] <id>", args);
     reject_extra("show", &free, 1)?;
     let Some(id) = free.first() else {
         return Err(Error::Invalid("show requires a line id".to_string()));
@@ -1077,7 +1077,7 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         author: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian fuse [--fork FORK] [--prose P] <name> <from-id> <to-id>",
+        "USAGE: tally fuse [--fork FORK] [--prose P] <name> <from-id> <to-id>",
         args,
     );
     reject_extra("fuse", &free, 3)?;
@@ -1107,7 +1107,7 @@ fn cmd_gc_blobs(args: &[&str]) -> Result<()> {
         dry_run: bool,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian gc-blobs [--dry-run]", args);
+        Options::from_arguments_relaxed("USAGE: tally gc-blobs [--dry-run]", args);
     reject_extra("gc-blobs", &free, 0)?;
     let repo = repo()?;
     let collected = repo.gc_blobs(options.dry_run)?;
@@ -1129,7 +1129,7 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
         from: Option<String>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian fork [--from FORK] <name>", args);
+        Options::from_arguments_relaxed("USAGE: tally fork [--from FORK] <name>", args);
     reject_extra("fork", &free, 1)?;
     let Some(name) = free.first() else {
         return Err(Error::Invalid("fork requires a name".to_string()));
@@ -1147,7 +1147,7 @@ fn cmd_remove_fork(args: &[&str]) -> Result<()> {
         force: bool,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian remove-fork [--force] <name>", args);
+        Options::from_arguments_relaxed("USAGE: tally remove-fork [--force] <name>", args);
     reject_extra("remove-fork", &free, 1)?;
     let Some(name) = free.first() else {
         return Err(Error::Invalid("remove-fork requires a fork name".to_string()));
@@ -1167,7 +1167,7 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         author: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian union [--into FORK] <fork>",
+        "USAGE: tally union [--into FORK] <fork>",
         args,
     );
     reject_extra("union", &free, 1)?;
@@ -1225,13 +1225,13 @@ fn cmd_union(args: &[&str]) -> Result<()> {
 fn cmd_clone(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: abelian clone <store> <dest>", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: tally clone <store> <dest>", args);
     reject_extra("clone", &free, 2)?;
     let (Some(store), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("clone requires <store> <dest>".to_string()));
     };
     let store = FsStore::open(store)?;
-    let repo = abelian::wire::clone(&store, dest)?;
+    let repo = tally::wire::clone(&store, dest)?;
     println!("cloned into {}", repo.root().display());
     Ok(())
 }
@@ -1239,13 +1239,13 @@ fn cmd_clone(args: &[&str]) -> Result<()> {
 fn cmd_fetch(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: abelian fetch <store> <cache>", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: tally fetch <store> <cache>", args);
     reject_extra("fetch", &free, 2)?;
     let (Some(store), Some(cache)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("fetch requires <store> <cache>".to_string()));
     };
     let store = FsStore::open(store)?;
-    match abelian::wire::fetch(&store, std::path::Path::new(cache))? {
+    match tally::wire::fetch(&store, std::path::Path::new(cache))? {
         Some(manifest) => println!("fetched manifest seq {} ({})", manifest.seq, manifest.id),
         None => println!("the store has no manifest"),
     }
@@ -1259,14 +1259,14 @@ fn cmd_push(args: &[&str]) -> Result<()> {
         level: Option<i32>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian push [--level N] <store>", args);
+        Options::from_arguments_relaxed("USAGE: tally push [--level N] <store>", args);
     reject_extra("push", &free, 1)?;
     let Some(store) = free.first() else {
         return Err(Error::Invalid("push requires <store>".to_string()));
     };
     let repo = repo()?;
     let store = FsStore::open(store)?;
-    let manifest = abelian::wire::push(&repo, &store, options.level.unwrap_or(3))?;
+    let manifest = tally::wire::push(&repo, &store, options.level.unwrap_or(3))?;
     println!("pushed manifest seq {} ({})", manifest.seq, manifest.id);
     Ok(())
 }
@@ -1278,13 +1278,13 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
         level: Option<i32>,
     }
     let (options, free) =
-        Options::from_arguments_relaxed("USAGE: abelian pack [--level N] <dir>", args);
+        Options::from_arguments_relaxed("USAGE: tally pack [--level N] <dir>", args);
     reject_extra("pack", &free, 1)?;
     let Some(dir) = free.first() else {
         return Err(Error::Invalid("pack requires an output directory".to_string()));
     };
     let repo = repo()?;
-    let manifest = abelian::serve::pack(
+    let manifest = tally::serve::pack(
         &repo,
         std::path::Path::new(dir),
         1,
@@ -1298,13 +1298,13 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
 fn cmd_unpack(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: abelian unpack <dir> <dest>", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: tally unpack <dir> <dest>", args);
     reject_extra("unpack", &free, 2)?;
     let (Some(dir), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("unpack requires <dir> <dest>".to_string()));
     };
     let repo =
-        abelian::serve::unpack_dir(std::path::Path::new(dir), std::path::Path::new(dest))?;
+        tally::serve::unpack_dir(std::path::Path::new(dir), std::path::Path::new(dest))?;
     println!("unpacked into {}", repo.root().display());
     Ok(())
 }

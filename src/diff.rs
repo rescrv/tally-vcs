@@ -355,7 +355,7 @@ pub fn pending_sum(before: &Sum, after: &Sum) -> Sum {
 
 //////////////////////////////////////// intent synthesis /////////////////////////////////////////
 
-/// Synthesize the intent form of a path-level change set (`abelian commit`).
+/// Synthesize the intent form of a path-level change set (`tally commit`).
 ///
 /// The realized delta of a commit is mechanical; the intent is what lets the
 /// line travel — union stratum 3 replays intent, and re-enactment reads it.
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn synthesize_edit_takes_the_minimal_unique_span() {
         let old = b"fn main() {\n    println!(\"hello\");\n}\n";
-        let new = b"fn main() {\n    println!(\"hello, abelian\");\n}\n";
+        let new = b"fn main() {\n    println!(\"hello, tally\");\n}\n";
         let (old_str, new_str) = synthesize_edit(old, new).unwrap();
         assert_eq!(
             crate::patch::count_occurrences(old, old_str.as_bytes()),
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(kinds, vec!["edit", "delete", "chmod", "create"]);
         // Replay: the intent against the before-manifest reproduces after.
         let dir = std::env::temp_dir()
-            .join(format!("abelian-synth-{}", std::process::id()));
+            .join(format!("tally-synth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let blobs = crate::blobs::BlobStore::init(&dir).unwrap();

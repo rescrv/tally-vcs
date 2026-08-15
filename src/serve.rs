@@ -79,7 +79,7 @@ pub struct ServeManifest {
     /// Anchor sums the forks reference.
     pub anchors: Vec<String>,
     /// Segments retired by this swap; retained until the retention window
-    /// ages them out (§3.3) — the only thing abelian ever deletes, and they
+    /// ages them out (§3.3) — the only thing tally ever deletes, and they
     /// are re-encodings, not information.
     pub retire: Vec<String>,
 }
@@ -551,7 +551,7 @@ mod tests {
     use crate::patch::{Intent, Op};
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("abelian-serve-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-serve-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

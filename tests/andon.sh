@@ -2,19 +2,19 @@
 #
 # tests/andon.sh — assert the ANDON.md workflow, byte for byte.
 #
-# ANDON.md teaches abelian by hand — "a text editor, coreutils, and a few
-# lines of Python" — naming at each step the `abelian` command that
+# ANDON.md teaches tally by hand — "a text editor, coreutils, and a few
+# lines of Python" — naming at each step the `tally` command that
 # automates it.  This script walks the document end to end:
 #
-#   §1  elements        abelian sum --records
-#   §2  the sum         abelian sum, abelian check
-#   §3  snapshots       abelian commit, abelian snapshot
-#   §4  patches         abelian apply (including the refused preconditions)
-#   §5  the log         abelian show, abelian log --raw
-#   §6  fork and union  abelian fork, abelian union (strata 2 and 3)
-#   §7  fuse            abelian fuse (a lossless interpretation)
-#   §9  the Andon cord  abelian apply --provenance=andon — and then the
-#                       same pull performed with NO abelian binary at all:
+#   §1  elements        tally sum --records
+#   §2  the sum         tally sum, tally check
+#   §3  snapshots       tally commit, tally snapshot
+#   §4  patches         tally apply (including the refused preconditions)
+#   §5  the log         tally show, tally log --raw
+#   §6  fork and union  tally fork, tally union (strata 2 and 3)
+#   §7  fuse            tally fuse (a lossless interpretation)
+#   §9  the Andon cord  tally apply --provenance=andon — and then the
+#                       same pull performed with NO tally binary at all:
 #                       a hand-computed, hand-appended log line that the
 #                       binary must verify and accept.
 #
@@ -30,7 +30,7 @@
 # Requires: bash, python3, coreutils.  No network, no model — that is the
 # point of the document.
 #
-# Usage: tests/andon.sh [path-to-abelian]
+# Usage: tests/andon.sh [path-to-tally]
 
 set -euo pipefail
 export LC_ALL=C        # §3 sorts records bytewise; pin coreutils to bytes.
@@ -47,7 +47,7 @@ assert_eq() { # <label> <expected> <actual>
     note "$1: ok"
 }
 
-assert_bytes() { # <label> <hand-made file> <abelian-made file>
+assert_bytes() { # <label> <hand-made file> <tally-made file>
     if ! cmp -s "$2" "$3"; then
         echo "andon.sh: FAIL: $1: not byte-identical:" >&2
         cmp "$2" "$3" >&2 || true
@@ -56,13 +56,13 @@ assert_bytes() { # <label> <hand-made file> <abelian-made file>
     note "$1: byte-identical"
 }
 
-# `abelian check`'s whole output is a byte-assertable function of the sum.
+# `tally check`'s whole output is a byte-assertable function of the sum.
 assert_check() { # <expected sum>
     { printf 'log expects   %s\n' "$1"
       printf 'working tree  %s\n' "$1"
       printf 'ok\n'; } > "$ANDON_WORK/expect-check"
-    "$ABELIAN" check > "$ANDON_WORK/got-check"
-    assert_bytes "abelian check output" "$ANDON_WORK/expect-check" "$ANDON_WORK/got-check"
+    "$TALLY" check > "$ANDON_WORK/got-check"
+    assert_bytes "tally check output" "$ANDON_WORK/expect-check" "$ANDON_WORK/got-check"
 }
 
 # Canonical-JSON of stdin: one canonicalization, shared by both sides of a
@@ -73,14 +73,14 @@ canon() {
 
 ############################## prerequisites ##############################
 
-ABELIAN="${1:-${ABELIAN:-}}"
-if [ -z "$ABELIAN" ]; then
+TALLY="${1:-${TALLY:-}}"
+if [ -z "$TALLY" ]; then
     SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-    ABELIAN="$SELF_DIR/../target/debug/abelian"
+    TALLY="$SELF_DIR/../target/debug/tally"
 fi
-case "$ABELIAN" in /*) ;; *) ABELIAN="$(pwd)/$ABELIAN" ;; esac
-[ -f "$ABELIAN" ] || fail "abelian binary not found: $ABELIAN (hint: cargo build --locked)"
-[ -x "$ABELIAN" ] || fail "abelian binary not executable: $ABELIAN"
+case "$TALLY" in /*) ;; *) TALLY="$(pwd)/$TALLY" ;; esac
+[ -f "$TALLY" ] || fail "tally binary not found: $TALLY (hint: cargo build --locked)"
+[ -x "$TALLY" ] || fail "tally binary not executable: $TALLY"
 command -v python3 >/dev/null 2>&1 || fail "python3 not found; the ANDON's eleven lines run on it"
 
 # One scratch world.  Everything this script creates lives under it; the
@@ -89,13 +89,13 @@ ANDON_WORK=""
 cleanup() {
     if [ -n "$ANDON_WORK" ] && [ -d "$ANDON_WORK" ]; then
         case "$ANDON_WORK" in
-            *abelian-andon.*) rm -rf "$ANDON_WORK" ;;
+            *tally-andon.*) rm -rf "$ANDON_WORK" ;;
             *) echo "andon.sh: refusing to clean unexpected dir: $ANDON_WORK" >&2 ;;
         esac
     fi
 }
 trap cleanup EXIT
-ANDON_WORK=$(mktemp -d "${TMPDIR:-/tmp}/abelian-andon.XXXXXX")
+ANDON_WORK=$(mktemp -d "${TMPDIR:-/tmp}/tally-andon.XXXXXX")
 [ -d "$ANDON_WORK" ] || fail "mktemp -d failed"
 export ANDON_WORK
 REPO="$ANDON_WORK/repo"
@@ -120,13 +120,13 @@ H_TOOL=95e791bffc3c30febfeb0d2b0e31617f5c2bb4d4515e03b8ef3b254326d8a1a9
 S_1=10ca11a44b07381e9a34680c430011619fd7dd6ae11d3715efa26570819473bc
 
 # §4: one patch exercising all four span ops (edit, create, delete, chmod).
-H_MAIN1=c510d3ee18b39ba4128092936a41b573dec40a59a68261451fbfb7da09533046
+H_MAIN1=d31875dd788ad939fa4edd7ad6fa2c3171c5d6574c92a02f2a4e704aefd2368a
 H_LIB0=05114450eb289e964e733dc0ae3626df08665b0721cf98c507dff5c6e3ce4789
-S_2=7a6b2e42b2ad4e6a279eabf8ad62478275e3c46b5710c5b9aaf3c988d4faae40
+S_2=2e93572449f12249ea1e7f26916ad0c10174fbe9549769340946a82773106f36
 
 # §6: a fork, a disjoint edit on each side (stratum 2: realized replay)...
 H_LIB1=87ffd1c93a80e4da7889dbda511e78ddc1d3a084dfb2097a606865f13f28aac7
-S_DEV=edb8be2f63469afc04f9a9de75c563b9ed2ecae2fb0409ae5a1c1161d608a39a
+S_DEV=a1e0e711fa896edbc7797d0c59cdecf8e4bf0061f88bad28206eefff751e6390
 H_MAIN2=665420e13f70f60df70ce98351ef1c4742a49208f955cb40747cf7215ae19568
 S_3=4be97f408c0703f5bc6ee1ba09ec94d0db97fb506771e78a063d17d852b658ef
 S_UNION2=be36102e4ea04e8799c9dfa0344fb10753e300c80b662b7fb6655eb00dc54c49
@@ -141,10 +141,10 @@ S_UNION3=15bf57da4561a55b54eb2e5ec93014cdbb5bb891a5156b3b5fa961107d63029e
 # §9: the cord, pulled first with the binary...
 H_MAIN6=e87fb58c7c11b01b22646d1c2c968e2c98670a7caff064830cca0cddd0cc4dd7
 S_5=bf001c2f43bdb09811066ed0015740c5c3ebc8e78bea0cbfad33190e33c64510
-# ...and then by hand, with zero abelian binaries in the loop.
+# ...and then by hand, with zero tally binaries in the loop.
 H_MAIN7=41246b1ca32e9d787c9abafe56eb77d4e0895c4f8e331d407d8218d2efb4abcd
 S_CORD=d830b8cab1fed5cb20c5523ad9a6dbb9bd60481aa691d87b1bd45eee7f3870c2
-H_SIG=00cc442ebc35ed53e32bc155a6d9e2e1fc20ab11e7c7b6e5943edb1cf15eedb7
+H_SIG=0b1d2058603dee93114c34e55c16ed458e2da2b7589d2688e9f5d39397fd9931
 V_CORD_MS=1780000000000
 
 export S_EMPTY H_README H_MAIN0 H_TOOL S_1 H_MAIN1 H_LIB0 S_2 \
@@ -159,7 +159,7 @@ export S_EMPTY H_README H_MAIN0 H_TOOL S_1 H_MAIN1 H_LIB0 S_2 \
 printf '# andon test\n'                                            > "$EXPECT/README.md"
 printf 'fn main() {\n    println!("hello, andon");\n}\n'           > "$EXPECT/main0.rs"
 printf '#!/bin/sh\necho apply\n'                                   > "$EXPECT/tools_apply"
-printf 'fn main() {\n    println!("hello, abelian");\n}\n'         > "$EXPECT/main1.rs"
+printf 'fn main() {\n    println!("hello, tally");\n}\n'         > "$EXPECT/main1.rs"
 printf 'pub fn answer() -> u32 {\n    42\n}\n'                     > "$EXPECT/lib0.rs"
 printf 'pub fn answer() -> u32 {\n    137\n}\n'                    > "$EXPECT/lib1.rs"
 printf 'fn main() {\n    println!("hello, union");\n}\n'           > "$EXPECT/main2.rs"
@@ -168,7 +168,7 @@ printf 'fn main() {\n    println!("hello, union");\n    println!("done");\n}\n' 
 printf 'fn main() {\n    // dev2 was here\n    println!("hello, union");\n    println!("done");\n}\n' > "$EXPECT/main5.rs"
 printf 'fn main() {\n    // dev2 was here\n    println!("hello, union");\n    println!("done: CVE-2026-0001 patched");\n}\n' > "$EXPECT/main6.rs"
 printf 'fn main() {\n    // dev2 was here\n    println!("hello, union");\n    println!("done: CVE-2026-0001 patched by hand");\n}\n' > "$EXPECT/main7.rs"
-printf 'abelian detached signature v0\nsigned-by: oncall-human\n'  > "$EXPECT/sig-oncall"
+printf 'tally detached signature v0\nsigned-by: oncall-human\n'  > "$EXPECT/sig-oncall"
 
 # The patches of §4, §6, and §9, as an author writes them (ANDON §4 shows
 # this exact shape).  Written outside the repository so the tree walk of
@@ -177,7 +177,7 @@ cat > "$ANDON_WORK/patch1.json" <<'EOF'
 {"ops": [
   {"edit":   {"path": "/src/main.rs",
               "old_str": "println!(\"hello, andon\");",
-              "new_str": "println!(\"hello, abelian\");"}},
+              "new_str": "println!(\"hello, tally\");"}},
   {"create": {"path": "/src/lib.rs", "mode": "100644",
               "content_b64": "cHViIGZuIGFuc3dlcigpIC0+IHUzMiB7CiAgICA0Mgp9Cg=="}},
   {"delete": {"path": "/README.md", "blob": "490c2896fdde41efac3393f8459557db33071ba863d1adbd4642031565a34870"}},
@@ -189,7 +189,7 @@ cat > "$ANDON_WORK/patch-dev.json" <<'EOF'
 {"ops": [{"edit": {"path": "/src/lib.rs", "old_str": "42", "new_str": "137"}}]}
 EOF
 cat > "$ANDON_WORK/patch-main.json" <<'EOF'
-{"ops": [{"edit": {"path": "/src/main.rs", "old_str": "println!(\"hello, abelian\");", "new_str": "println!(\"hello, union\");"}}]}
+{"ops": [{"edit": {"path": "/src/main.rs", "old_str": "println!(\"hello, tally\");", "new_str": "println!(\"hello, union\");"}}]}
 EOF
 cat > "$ANDON_WORK/patch-dev2.json" <<'EOF'
 {"ops": [{"edit": {"path": "/src/main.rs", "old_str": "fn main() {", "new_str": "fn main() {\n    // dev2 was here"}}]}
@@ -327,7 +327,7 @@ from andon import add, state_of, sum_hex
 
 data = open(sys.argv[1], "rb").read()
 lines = data.split(b"\n")
-assert lines[0] == b"abelian-manifest v0", "bad manifest header"
+assert lines[0] == b"tally-manifest v0", "bad manifest header"
 assert lines[-1] == b"", "manifest must end with LF"
 claimed = lines[1].decode()
 assert claimed.startswith("sum ") and len(claimed) == 4 + 64, "bad sum line"
@@ -572,7 +572,7 @@ print(a["sig"])
 EOF
 
 cat > "$ANDON_WORK/showcheck.py" <<'EOF'
-"""§5: `abelian show` renders one line; re-canonicalized, the rendering
+"""§5: `tally show` renders one line; re-canonicalized, the rendering
 must be byte-identical to the stored line — the log's bytes are the
 authoritative form (I4)."""
 import json
@@ -634,7 +634,7 @@ print(sum_hex(s))
 EOF
 
 cat > "$ANDON_WORK/step9.py" <<'EOF'
-"""§9 with zero abelian binaries: the five steps of §4 and a hand-written
+"""§9 with zero tally binaries: the five steps of §4 and a hand-written
 log line with "provenance": "andon".  The binary is used only afterwards,
 to verify — that verification is the entire guarantee the document makes.
 Prints the hand-computed line id."""
@@ -650,7 +650,7 @@ from andon import (add, canonical, count_occurrences, from_hex, neg,
 W = os.environ["ANDON_WORK"]
 E = os.environ
 repo = sys.argv[1]
-log_path = os.path.join(repo, ".abelian", "forks", "main", "log.jsonl")
+log_path = os.path.join(repo, ".tally", "forks", "main", "log.jsonl")
 
 # §4 step 1: count occurrences of old_str in the current blob.
 main_rs = os.path.join(repo, "src", "main.rs")
@@ -694,9 +694,9 @@ assert sum_hex(s) == E["S_CORD"]
 
 # The v0 signature scheme is a detached signature blob; the pool is
 # content-addressed, so write it by hand.
-sig = b"abelian detached signature v0\nsigned-by: cord-puller\n"
+sig = b"tally detached signature v0\nsigned-by: cord-puller\n"
 assert sha3_hex(sig) == E["H_SIG"]
-blob_dir = os.path.join(repo, ".abelian", "blobs", E["H_SIG"][:2])
+blob_dir = os.path.join(repo, ".tally", "blobs", E["H_SIG"][:2])
 os.makedirs(blob_dir, exist_ok=True)
 with open(os.path.join(blob_dir, E["H_SIG"][2:]), "wb") as f:
     f.write(sig)
@@ -733,18 +733,18 @@ EOF
 
 ############################### the walk #################################
 
-step "§0 setup: abelian init"
-"$ABELIAN" init "$REPO" > /dev/null
+step "§0 setup: tally init"
+"$TALLY" init "$REPO" > /dev/null
 cd "$REPO"
-printf 'abelian v0\n' > "$EXPECT/version"
-assert_bytes "repository version file" "$EXPECT/version" .abelian/version
-EMPTY_SUM_GOT=$("$ABELIAN" sum)
+printf 'tally v0\n' > "$EXPECT/version"
+assert_bytes "repository version file" "$EXPECT/version" .tally/version
+EMPTY_SUM_GOT=$("$TALLY" sum)
 assert_eq "empty tree sums to zeros" "$S_EMPTY" "$EMPTY_SUM_GOT"
-printf 'abelian-manifest v0\nsum %s\n' "$S_EMPTY" > "$EXPECT/empty.manifest"
+printf 'tally-manifest v0\nsum %s\n' "$S_EMPTY" > "$EXPECT/empty.manifest"
 assert_bytes "empty anchor manifest" "$EXPECT/empty.manifest" \
-    ".abelian/anchors/$S_EMPTY.manifest"
+    ".tally/anchors/$S_EMPTY.manifest"
 
-step "§1 Elements — abelian sum --records"
+step "§1 Elements — tally sum --records"
 cp "$EXPECT/README.md" README.md
 mkdir -p src tools
 cp "$EXPECT/main0.rs" src/main.rs
@@ -760,37 +760,37 @@ for spec in "100644 /README.md README.md $H_README" \
     python3 "$ANDON_WORK/mkrecord.py" $spec >> "$ANDON_WORK/hand-records"
 done
 sort "$ANDON_WORK/hand-records" > "$ANDON_WORK/hand-records.sorted"
-"$ABELIAN" sum --records | sed '$d' > "$ANDON_WORK/abelian-records"
+"$TALLY" sum --records | sed '$d' > "$ANDON_WORK/tally-records"
 assert_bytes "§1 element records" "$ANDON_WORK/hand-records.sorted" \
-    "$ANDON_WORK/abelian-records"
+    "$ANDON_WORK/tally-records"
 
-step "§2 The sum — abelian sum"
+step "§2 The sum — tally sum"
 HAND_SUM1=$(python3 "$ANDON_WORK/fold.py" "$ANDON_WORK/hand-records.sorted")
 assert_eq "§2 hand fold == embedded vector" "$S_1" "$HAND_SUM1"
-ABELIAN_SUM1=$("$ABELIAN" sum)
-assert_eq "§2 abelian sum == hand fold" "$HAND_SUM1" "$ABELIAN_SUM1"
+TALLY_SUM1=$("$TALLY" sum)
+assert_eq "§2 tally sum == hand fold" "$HAND_SUM1" "$TALLY_SUM1"
 
-step "§3 Snapshots — abelian commit, abelian snapshot"
-COMMIT_OUT=$("$ABELIAN" commit --author andon-tester --prose 'initial: three elements')
+step "§3 Snapshots — tally commit, tally snapshot"
+COMMIT_OUT=$("$TALLY" commit --author andon-tester --prose 'initial: three elements')
 COMMIT_LINE1=${COMMIT_OUT%%$'\n'*}
 assert_eq "§3 commit lands at the working-tree sum" "$S_1" "${COMMIT_LINE1##* }"
-"$ABELIAN" snapshot > /dev/null
+"$TALLY" snapshot > /dev/null
 # By hand: a header, the sum line, and every record, sorted bytewise.
-{ printf 'abelian-manifest v0\n'
+{ printf 'tally-manifest v0\n'
   printf 'sum %s\n' "$S_1"
   cat "$ANDON_WORK/hand-records.sorted"; } > "$ANDON_WORK/hand-manifest"
-assert_bytes "§3 manifest" "$ANDON_WORK/hand-manifest" ".abelian/anchors/$S_1.manifest"
+assert_bytes "§3 manifest" "$ANDON_WORK/hand-manifest" ".tally/anchors/$S_1.manifest"
 python3 "$ANDON_WORK/check_manifest.py" "$ANDON_WORK/hand-manifest"
 note "§3 manifest verifies against its own sum line"
 assert_check "$S_1"
 
-step "§4 Patches — abelian apply"
+step "§4 Patches — tally apply"
 HAND_SUM2=$(python3 "$ANDON_WORK/step4_pre.py" "$REPO" "$ANDON_WORK/patch1.json")
 assert_eq "§4 hand five-step sum == embedded vector" "$S_2" "$HAND_SUM2"
-APPLY_OUT=$("$ABELIAN" apply --author andon-tester \
+APPLY_OUT=$("$TALLY" apply --author andon-tester \
     --prose 'span ops: edit, create, delete, chmod' "$ANDON_WORK/patch1.json")
-assert_eq "§4 abelian apply == hand arithmetic" "$HAND_SUM2" "${APPLY_OUT##* }"
-python3 "$ANDON_WORK/step4_post.py" .abelian/forks/main/log.jsonl \
+assert_eq "§4 tally apply == hand arithmetic" "$HAND_SUM2" "${APPLY_OUT##* }"
+python3 "$ANDON_WORK/step4_post.py" .tally/forks/main/log.jsonl \
     "$ANDON_WORK/patch1.json" > /dev/null
 note "§4 logged intent and realized delta match the hand computation"
 assert_bytes "§4 edited blob" "$EXPECT/main1.rs" src/main.rs
@@ -805,15 +805,15 @@ assert_check "$S_2"
 # "Anything but one: stop."  Every refused patch must leave state and log
 # untouched — the document's five steps are atomic.
 expect_refused() { # <label> <patch.json>
-    head_before=$("$ABELIAN" rev-parse HEAD)
-    lines_before=$(wc -l < .abelian/forks/main/log.jsonl | tr -d ' ')
-    if "$ABELIAN" apply --author andon-tester --prose 'must refuse' "$2" \
+    head_before=$("$TALLY" rev-parse HEAD)
+    lines_before=$(wc -l < .tally/forks/main/log.jsonl | tr -d ' ')
+    if "$TALLY" apply --author andon-tester --prose 'must refuse' "$2" \
             > "$ANDON_WORK/refused.out" 2>&1; then
-        fail "$1: abelian applied a patch the ANDON says to stop"
+        fail "$1: tally applied a patch the ANDON says to stop"
     fi
-    head_after=$("$ABELIAN" rev-parse HEAD)
+    head_after=$("$TALLY" rev-parse HEAD)
     assert_eq "$1: state untouched" "$head_before" "$head_after"
-    lines_after=$(wc -l < .abelian/forks/main/log.jsonl | tr -d ' ')
+    lines_after=$(wc -l < .tally/forks/main/log.jsonl | tr -d ' ')
     assert_eq "$1: log untouched" "$lines_before" "$lines_after"
     note "$1: refused, atomically"
 }
@@ -828,31 +828,31 @@ expect_refused "§4 delete with wrong blob (placeholder debt refused)" \
 expect_refused "§4 create of a present path" "$ANDON_WORK/bad-create.json"
 
 step "§5 The log — canonical bytes, chained ids, replayed sums"
-IDS=$(python3 "$ANDON_WORK/verify_log.py" .abelian/forks/main/log.jsonl \
+IDS=$(python3 "$ANDON_WORK/verify_log.py" .tally/forks/main/log.jsonl \
     "$S_EMPTY" 2 "$S_2")
 note "§5 both lines: canonical bytes, ids re-derived, prev chained, sums replayed"
 set -- $IDS
-"$ABELIAN" show "$2" > "$ANDON_WORK/show.json"
-python3 "$ANDON_WORK/showcheck.py" "$ANDON_WORK/show.json" .abelian/forks/main/log.jsonl
-note "§5 abelian show re-canonicalizes to the stored line, byte for byte"
-"$ABELIAN" log --raw > "$ANDON_WORK/log-raw"
+"$TALLY" show "$2" > "$ANDON_WORK/show.json"
+python3 "$ANDON_WORK/showcheck.py" "$ANDON_WORK/show.json" .tally/forks/main/log.jsonl
+note "§5 tally show re-canonicalizes to the stored line, byte for byte"
+"$TALLY" log --raw > "$ANDON_WORK/log-raw"
 for id in $IDS; do
-    grep -F -q "$id" "$ANDON_WORK/log-raw" || fail "§5: $id missing from abelian log --raw"
+    grep -F -q "$id" "$ANDON_WORK/log-raw" || fail "§5: $id missing from tally log --raw"
 done
-note "§5 abelian log --raw renders every line"
+note "§5 tally log --raw renders every line"
 
-step "§6 Fork and union — abelian fork, abelian union"
-FORK_OUT=$("$ABELIAN" fork dev)
-assert_eq "§6 abelian fork" "fork dev anchored at $S_2" "$FORK_OUT"
-{ printf 'abelian-fork v0\n'
+step "§6 Fork and union — tally fork, tally union"
+FORK_OUT=$("$TALLY" fork dev)
+assert_eq "§6 tally fork" "fork dev anchored at $S_2" "$FORK_OUT"
+{ printf 'tally-fork v0\n'
   printf 'anchor %s\n' "$S_2"
   printf 'manifest %s\n' "$S_2"; } > "$ANDON_WORK/hand-fork"
-assert_bytes "§6 fork file" "$ANDON_WORK/hand-fork" .abelian/forks/dev/fork
-[ -f .abelian/forks/dev/log.jsonl ] && [ ! -s .abelian/forks/dev/log.jsonl ] \
+assert_bytes "§6 fork file" "$ANDON_WORK/hand-fork" .tally/forks/dev/fork
+[ -f .tally/forks/dev/log.jsonl ] && [ ! -s .tally/forks/dev/log.jsonl ] \
     || fail "§6: a fresh fork is an anchor and an EMPTY log"
 note "§6 an anchor and an empty log — that is the whole file"
 # The fork anchors a manifest of the current state; byte-check it too.
-{ printf 'abelian-manifest v0\n'
+{ printf 'tally-manifest v0\n'
   printf 'sum %s\n' "$S_2"
   python3 "$ANDON_WORK/mkrecord.py" 100644 /src/lib.rs "$EXPECT/lib0.rs" "$H_LIB0"
   python3 "$ANDON_WORK/mkrecord.py" 100644 /src/main.rs "$EXPECT/main1.rs" "$H_MAIN1"
@@ -860,115 +860,115 @@ note "§6 an anchor and an empty log — that is the whole file"
 } > "$ANDON_WORK/hand-manifest-2"
 python3 "$ANDON_WORK/check_manifest.py" "$ANDON_WORK/hand-manifest-2"
 assert_bytes "§6 anchored manifest" "$ANDON_WORK/hand-manifest-2" \
-    ".abelian/anchors/$S_2.manifest"
+    ".tally/anchors/$S_2.manifest"
 
 # A disjoint edit on each side; union lands it at stratum 2.
 DELTA_LIB='[{"remove":"100644\t/src/lib.rs\t'$H_LIB0'","add":"100644\t/src/lib.rs\t'$H_LIB1'"}]'
-DEV_OUT=$("$ABELIAN" apply --fork dev --author andon-tester \
+DEV_OUT=$("$TALLY" apply --fork dev --author andon-tester \
     --prose 'dev: answer 137' "$ANDON_WORK/patch-dev.json")
 DEV_LINE_ID=${DEV_OUT%% *}
 HAND_DEV=$(printf '%s' "$DELTA_LIB" | python3 "$ANDON_WORK/arith.py" "$S_2")
 assert_eq "§6 dev sum, by hand" "$S_DEV" "$HAND_DEV"
-assert_eq "§6 dev sum, abelian == hand" "$HAND_DEV" "${DEV_OUT##* }"
-DEV_IDS=$(python3 "$ANDON_WORK/verify_log.py" .abelian/forks/dev/log.jsonl \
+assert_eq "§6 dev sum, tally == hand" "$HAND_DEV" "${DEV_OUT##* }"
+DEV_IDS=$(python3 "$ANDON_WORK/verify_log.py" .tally/forks/dev/log.jsonl \
     "$S_2" 1 "$S_DEV")
 assert_eq "§6 dev log verifies against its anchor" "$DEV_LINE_ID" "$DEV_IDS"
 HAND_DELTA_CANON=$(printf '%s' "$DELTA_LIB" | canon)
-DEV_DELTA_CANON=$(python3 "$ANDON_WORK/canon_realized.py" .abelian/forks/dev/log.jsonl)
+DEV_DELTA_CANON=$(python3 "$ANDON_WORK/canon_realized.py" .tally/forks/dev/log.jsonl)
 assert_eq "§6 dev realized delta == hand delta" "$HAND_DELTA_CANON" "$DEV_DELTA_CANON"
 
 DELTA_MAIN='[{"remove":"100644\t/src/main.rs\t'$H_MAIN1'","add":"100644\t/src/main.rs\t'$H_MAIN2'"}]'
-MAIN_OUT=$("$ABELIAN" apply --author andon-tester \
+MAIN_OUT=$("$TALLY" apply --author andon-tester \
     --prose 'main: hello union' "$ANDON_WORK/patch-main.json")
 HAND_S3=$(printf '%s' "$DELTA_MAIN" | python3 "$ANDON_WORK/arith.py" "$S_2")
 assert_eq "§6 main sum, by hand" "$S_3" "$HAND_S3"
-assert_eq "§6 main sum, abelian == hand" "$HAND_S3" "${MAIN_OUT##* }"
+assert_eq "§6 main sum, tally == hand" "$HAND_S3" "${MAIN_OUT##* }"
 
-UNION_OUT=$("$ABELIAN" union --author andon-tester dev)
+UNION_OUT=$("$TALLY" union --author andon-tester dev)
 printf '%s\n' "$UNION_OUT" | grep -F -q "(stratum 2: realized replay)" \
     || fail "§6: expected stratum 2 (realized replay), got: $UNION_OUT"
 printf '%s\n' "$UNION_OUT" | grep -F -q " <- $DEV_LINE_ID " \
     || fail "§6: union must name the origin line, got: $UNION_OUT"
 HAND_UNION2=$(printf '%s' "$DELTA_LIB" | python3 "$ANDON_WORK/arith.py" "$S_3")
 assert_eq "§6 union sum, by hand (stratum 2)" "$S_UNION2" "$HAND_UNION2"
-HEAD_AFTER_UNION=$("$ABELIAN" rev-parse HEAD)
-assert_eq "§6 union sum, abelian == hand" "$HAND_UNION2" "$HEAD_AFTER_UNION"
-python3 "$ANDON_WORK/unionline.py" .abelian/forks/main/log.jsonl dev \
+HEAD_AFTER_UNION=$("$TALLY" rev-parse HEAD)
+assert_eq "§6 union sum, tally == hand" "$HAND_UNION2" "$HEAD_AFTER_UNION"
+python3 "$ANDON_WORK/unionline.py" .tally/forks/main/log.jsonl dev \
     "$DEV_LINE_ID" "$S_UNION2" > /dev/null
 note "§6 landed line carries union provenance and names its origin"
-DEV_AFTER_UNION=$("$ABELIAN" rev-parse --fork dev HEAD)
+DEV_AFTER_UNION=$("$TALLY" rev-parse --fork dev HEAD)
 assert_eq "§6 union does not mutate the source fork" "$S_DEV" "$DEV_AFTER_UNION"
 
 # Now two disjoint-span edits to the SAME file; union lands at stratum 3.
-"$ABELIAN" fork dev2 > /dev/null
+"$TALLY" fork dev2 > /dev/null
 DELTA_DEV2='[{"remove":"100644\t/src/main.rs\t'$H_MAIN2'","add":"100644\t/src/main.rs\t'$H_MAIN3'"}]'
-DEV2_OUT=$("$ABELIAN" apply --fork dev2 --author andon-tester \
+DEV2_OUT=$("$TALLY" apply --fork dev2 --author andon-tester \
     --prose 'dev2: comment at top' "$ANDON_WORK/patch-dev2.json")
 DEV2_LINE_ID=${DEV2_OUT%% *}
 HAND_DEV2=$(printf '%s' "$DELTA_DEV2" | python3 "$ANDON_WORK/arith.py" "$S_UNION2")
 assert_eq "§6 dev2 sum, by hand" "$S_DEV2" "$HAND_DEV2"
-assert_eq "§6 dev2 sum, abelian == hand" "$HAND_DEV2" "${DEV2_OUT##* }"
-python3 "$ANDON_WORK/verify_log.py" .abelian/forks/dev2/log.jsonl \
+assert_eq "§6 dev2 sum, tally == hand" "$HAND_DEV2" "${DEV2_OUT##* }"
+python3 "$ANDON_WORK/verify_log.py" .tally/forks/dev2/log.jsonl \
     "$S_UNION2" 1 "$S_DEV2" > /dev/null
 note "§6 dev2 log verifies against its anchor"
 DELTA_MAIN2='[{"remove":"100644\t/src/main.rs\t'$H_MAIN2'","add":"100644\t/src/main.rs\t'$H_MAIN4'"}]'
-MAIN2_OUT=$("$ABELIAN" apply --author andon-tester \
+MAIN2_OUT=$("$TALLY" apply --author andon-tester \
     --prose 'main: add done' "$ANDON_WORK/patch-main2.json")
 HAND_S4=$(printf '%s' "$DELTA_MAIN2" | python3 "$ANDON_WORK/arith.py" "$S_UNION2")
 assert_eq "§6 main sum, by hand" "$S_4" "$HAND_S4"
-assert_eq "§6 main sum, abelian == hand" "$HAND_S4" "${MAIN2_OUT##* }"
+assert_eq "§6 main sum, tally == hand" "$HAND_S4" "${MAIN2_OUT##* }"
 
 # By hand FIRST: stratum 2's consumed record is missing (the target
 # drifted), so re-validate the span and compute the fresh delta by hand.
 HAND_UNION3=$(python3 "$ANDON_WORK/step6b.py" "$REPO")
 assert_eq "§6 union sum, by hand (stratum 3)" "$S_UNION3" "$HAND_UNION3"
-UNION2_OUT=$("$ABELIAN" union --author andon-tester dev2)
+UNION2_OUT=$("$TALLY" union --author andon-tester dev2)
 printf '%s\n' "$UNION2_OUT" | grep -F -q "(stratum 3: intent replay)" \
     || fail "§6: expected stratum 3 (intent replay), got: $UNION2_OUT"
-HEAD_AFTER_UNION3=$("$ABELIAN" rev-parse HEAD)
-assert_eq "§6 union sum, abelian == hand" "$HAND_UNION3" "$HEAD_AFTER_UNION3"
-python3 "$ANDON_WORK/unionline.py" .abelian/forks/main/log.jsonl dev2 \
+HEAD_AFTER_UNION3=$("$TALLY" rev-parse HEAD)
+assert_eq "§6 union sum, tally == hand" "$HAND_UNION3" "$HEAD_AFTER_UNION3"
+python3 "$ANDON_WORK/unionline.py" .tally/forks/main/log.jsonl dev2 \
     "$DEV2_LINE_ID" "$S_UNION3" > /dev/null
 assert_bytes "§6 disjoint spans, same file: both edits present" \
     "$EXPECT/main5.rs" src/main.rs
 assert_check "$S_UNION3"
 
 step "§7 Fuse — a lossless interpretation"
-IDS_BEFORE=$(python3 "$ANDON_WORK/verify_log.py" .abelian/forks/main/log.jsonl \
+IDS_BEFORE=$(python3 "$ANDON_WORK/verify_log.py" .tally/forks/main/log.jsonl \
     "$S_EMPTY" 6 "$S_UNION3")
 set -- $IDS_BEFORE
 FROM_ID=$2
 TO_ID=$6
-cp .abelian/forks/main/log.jsonl "$ANDON_WORK/log-before-fuse"
-BYTES_BEFORE=$(wc -c < .abelian/forks/main/log.jsonl | tr -d ' ')
-FUSE_OUT=$("$ABELIAN" fuse --author andon-tester \
+cp .tally/forks/main/log.jsonl "$ANDON_WORK/log-before-fuse"
+BYTES_BEFORE=$(wc -c < .tally/forks/main/log.jsonl | tr -d ' ')
+FUSE_OUT=$("$TALLY" fuse --author andon-tester \
     --prose 'the span-ops beat' span-ops "$FROM_ID" "$TO_ID")
 printf '%s\n' "$FUSE_OUT" | grep -F -q \
     "fused[span-ops] $FROM_ID..$TO_ID (lossless: the fine structure remains underneath)" \
     || fail "§7: unexpected fuse output: $FUSE_OUT"
-FUSE_ID=$(python3 "$ANDON_WORK/fuseline.py" .abelian/forks/main/log.jsonl \
+FUSE_ID=$(python3 "$ANDON_WORK/fuseline.py" .tally/forks/main/log.jsonl \
     span-ops "$FROM_ID" "$TO_ID" "$S_UNION3")
 note "§7 fuse line $FUSE_ID: empty intent, empty realized, identity arithmetic"
 # Lossless means the covered lines' bytes are still there, untouched.
-head -c "$BYTES_BEFORE" .abelian/forks/main/log.jsonl \
+head -c "$BYTES_BEFORE" .tally/forks/main/log.jsonl \
     > "$ANDON_WORK/log-prefix-after-fuse"
 assert_bytes "§7 fuse is an interpretation, never a mutation" \
     "$ANDON_WORK/log-before-fuse" "$ANDON_WORK/log-prefix-after-fuse"
-"$ABELIAN" log --raw > "$ANDON_WORK/log-raw"
+"$TALLY" log --raw > "$ANDON_WORK/log-raw"
 for id in $IDS_BEFORE; do
     grep -F -q "$id" "$ANDON_WORK/log-raw" \
-        || fail "§7: line $id missing from abelian log --raw"
+        || fail "§7: line $id missing from tally log --raw"
 done
-note "§7 abelian log --raw still renders every covered line"
-"$ABELIAN" log > "$ANDON_WORK/log-fused"
+note "§7 tally log --raw still renders every covered line"
+"$TALLY" log > "$ANDON_WORK/log-fused"
 grep -E -q 'fuse\(span-ops, [0-9]+ lines\)' "$ANDON_WORK/log-fused" \
     || fail "§7: the default view does not render the beat"
-note "§7 abelian log renders the fused beat at the default zoom"
+note "§7 tally log renders the fused beat at the default zoom"
 # A view is a just-in-time filter: declare the fuse names each time.
-"$ABELIAN" log --view span-ops > "$ANDON_WORK/log-view-hit"
+"$TALLY" log --view span-ops > "$ANDON_WORK/log-view-hit"
 grep -E -q 'fuse\(span-ops, [0-9]+ lines\)' "$ANDON_WORK/log-view-hit" \
     || fail "§7: --view span-ops does not render the beat"
-"$ABELIAN" log --view no-such-fuse > "$ANDON_WORK/log-view-miss"
+"$TALLY" log --view no-such-fuse > "$ANDON_WORK/log-view-miss"
 if grep -E -q 'fuse\(' "$ANDON_WORK/log-view-miss"; then
     fail "§7: --view no-such-fuse should collapse nothing"
 fi
@@ -980,37 +980,37 @@ step "§9 The Andon cord — pulled with the binary"
 DELTA_ANDON='[{"remove":"100644\t/src/main.rs\t'$H_MAIN5'","add":"100644\t/src/main.rs\t'$H_MAIN6'"}]'
 HAND_ANDON=$(printf '%s' "$DELTA_ANDON" | python3 "$ANDON_WORK/arith.py" "$S_UNION3")
 assert_eq "§9 cord sum, by hand" "$S_5" "$HAND_ANDON"
-ANDON_OUT=$("$ABELIAN" apply --author oncall-human --provenance=andon \
+ANDON_OUT=$("$TALLY" apply --author oncall-human --provenance=andon \
     --reason="CVE-2026-0001" --sign \
     --prose 'emergency: patch the greeting' "$ANDON_WORK/patch-andon.json")
-assert_eq "§9 cord sum, abelian == hand" "$HAND_ANDON" "${ANDON_OUT##* }"
-SIG=$(python3 "$ANDON_WORK/andonline.py" .abelian/forks/main/log.jsonl \
+assert_eq "§9 cord sum, tally == hand" "$HAND_ANDON" "${ANDON_OUT##* }"
+SIG=$(python3 "$ANDON_WORK/andonline.py" .tally/forks/main/log.jsonl \
     "CVE-2026-0001")
 note "§9 andon line: reason and sig present; reads honestly absent"
 assert_bytes "§9 detached signature blob" "$EXPECT/sig-oncall" \
-    ".abelian/blobs/${SIG:0:2}/${SIG:2}"
+    ".tally/blobs/${SIG:0:2}/${SIG:2}"
 assert_bytes "§9 cord blob" "$EXPECT/main6.rs" src/main.rs
 assert_check "$S_5"
 
-step "§9 The Andon cord — pulled by hand, with zero abelian binaries"
+step "§9 The Andon cord — pulled by hand, with zero tally binaries"
 CORD_ID=$(python3 "$ANDON_WORK/step9.py" "$REPO")
 note "§9 hand-written log line: $CORD_ID"
 # The binary's only role now is verification — the document's guarantee.
 assert_check "$S_CORD"
-CORD_HEAD=$("$ABELIAN" rev-parse HEAD)
-assert_eq "§9 abelian rev-parse accepts the hand line" "$S_CORD" "$CORD_HEAD"
-CORD_HEAD_LINE=$("$ABELIAN" rev-parse --line HEAD)
+CORD_HEAD=$("$TALLY" rev-parse HEAD)
+assert_eq "§9 tally rev-parse accepts the hand line" "$S_CORD" "$CORD_HEAD"
+CORD_HEAD_LINE=$("$TALLY" rev-parse --line HEAD)
 assert_eq "§9 the hand line is the head" "$CORD_ID" "$CORD_HEAD_LINE"
-"$ABELIAN" show "$CORD_ID" > "$ANDON_WORK/show-cord.json"
+"$TALLY" show "$CORD_ID" > "$ANDON_WORK/show-cord.json"
 python3 "$ANDON_WORK/showcheck.py" "$ANDON_WORK/show-cord.json" \
-    .abelian/forks/main/log.jsonl
-note "§9 abelian show re-canonicalizes to the hand-written bytes"
+    .tally/forks/main/log.jsonl
+note "§9 tally show re-canonicalizes to the hand-written bytes"
 assert_bytes "§9 cord blob" "$EXPECT/main7.rs" src/main.rs
 
 step "§5 final sweep — the whole chain, by hand"
-python3 "$ANDON_WORK/verify_log.py" .abelian/forks/main/log.jsonl \
+python3 "$ANDON_WORK/verify_log.py" .tally/forks/main/log.jsonl \
     "$S_EMPTY" 9 "$S_CORD" > /dev/null
 note "§5 all nine lines: canonical bytes, ids re-derived, prev chained, sums replayed"
 
 echo
-echo "andon.sh: PASS — the ANDON.md workflow is byte-identical to abelian's commands"
+echo "andon.sh: PASS — the ANDON.md workflow is byte-identical to tally's commands"

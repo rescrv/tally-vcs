@@ -1,14 +1,14 @@
 //! §2.3 Fork files: an anchor plus a log.
 //!
 //! A fork is what git called a branch and what a harness calls a session;
-//! abelian does not distinguish.  The fork file is three lines; the current
+//! tally does not distinguish.  The fork file is three lines; the current
 //! state of a fork is the anchor manifest plus the replay of its log.
 
 use crate::ident::{Sum, is_hex64};
 use crate::{Error, Result};
 
 /// The first line of every fork file.
-pub const FORK_HEADER: &str = "abelian-fork v0";
+pub const FORK_HEADER: &str = "tally-fork v0";
 
 /// A fork file: `anchor` names a state sum, `manifest` names the anchor
 /// manifest `anchors/<sum>.manifest`, whose own `sum` header must equal
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(ForkFile::parse(b"not a fork\n").is_err());
-        assert!(ForkFile::parse(b"abelian-fork v0\nanchor xyz\nmanifest xyz\n").is_err());
+        assert!(ForkFile::parse(b"tally-fork v0\nanchor xyz\nmanifest xyz\n").is_err());
     }
 
     #[test]

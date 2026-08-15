@@ -1,4 +1,4 @@
-//! `.abelianignore`: gitignore-style exclusion for the working-tree walk.
+//! `.tallyignore`: gitignore-style exclusion for the working-tree walk.
 //!
 //! One file at the repository root, read by `records_of_working_tree`.
 //! Semantics follow gitignore(5): blank lines and `#` comments are skipped,

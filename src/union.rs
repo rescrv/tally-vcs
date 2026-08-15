@@ -54,7 +54,7 @@ pub enum ConflictDirection {
 /// mechanically — every span precondition still held — but where one side's
 /// observed read set (§5) names state the other side wrote.  The bytes
 /// applied; the reasoning may be stale.  This is exactly the conflict class
-/// that distinguishes abelian from a purely textual merge, and it is
+/// that distinguishes tally from a purely textual merge, and it is
 /// reported, never silently swallowed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticConflict {
@@ -522,7 +522,7 @@ mod tests {
 
     fn temp_repo(name: &str) -> Repository {
         let dir =
-            std::env::temp_dir().join(format!("abelian-union-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tally-union-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Repository::init(&dir).unwrap()

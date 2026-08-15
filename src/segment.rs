@@ -194,7 +194,7 @@ pub struct BuiltSegment {
 }
 
 /// Build a segment from inputs.  The payload is a single standard zstd
-/// frame so a raw segment yields to `zstd -d` without `abelian` present;
+/// frame so a raw segment yields to `zstd -d` without `tally` present;
 /// `level` is a packing policy (§5), on the encoding side of the Wall.
 pub fn build_segment(inputs: &[SegmentInput], level: i32) -> Result<BuiltSegment> {
     let mut frame_plain = Vec::new();
@@ -593,7 +593,7 @@ mod tests {
         use crate::log::Annotation;
         use crate::patch::{Intent, RealizedEntry};
         let base = b"fn main() { println!(\"hello\"); }\n".to_vec();
-        let new_content = b"fn main() { println!(\"hello, abelian\"); }\n".to_vec();
+        let new_content = b"fn main() { println!(\"hello, tally\"); }\n".to_vec();
         let target = sha3_hex(&new_content);
         let line = LogLine {
             id: "test-line".to_string(),
@@ -602,7 +602,7 @@ mod tests {
                 ops: vec![Op::Edit {
                     path: "/src/main.rs".to_string(),
                     old_str: "hello".to_string(),
-                    new_str: "hello, abelian".to_string(),
+                    new_str: "hello, tally".to_string(),
                 }],
             },
             realized: vec![RealizedEntry {
@@ -627,7 +627,7 @@ mod tests {
         // the create's content, never from the base blob.
         let base = b"the old file, wholly unrelated\n".to_vec();
         let created = b"fresh start: hello\n";
-        let new_content = b"fresh start: hello, abelian\n".to_vec();
+        let new_content = b"fresh start: hello, tally\n".to_vec();
         let target = sha3_hex(&new_content);
         let intent_with_create = |blob: Option<String>, content_b64: Option<String>| Intent {
             ops: vec![
@@ -641,7 +641,7 @@ mod tests {
                 Op::Edit {
                     path: "/f".to_string(),
                     old_str: "hello".to_string(),
-                    new_str: "hello, abelian".to_string(),
+                    new_str: "hello, tally".to_string(),
                 },
             ],
         };
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn pk_is_standard_zstd() {
         // The emergency path: a raw segment yields to plain zstd decoding
-        // without abelian present.
+        // without tally present.
         let built = build_segment(&[SegmentInput::Blob(b"emergency".to_vec())], 19).unwrap();
         let plain = zstd::stream::decode_all(&built.pk[..]).unwrap();
         assert_eq!(plain, b"emergency");

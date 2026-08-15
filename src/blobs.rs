@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     fn tempdir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("abelian-blobs-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-blobs-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -219,10 +219,10 @@ mod tests {
     #[test]
     fn put_get_round_trip() {
         let store = BlobStore::init(tempdir("roundtrip")).unwrap();
-        let hash = store.put(b"hello, abelian\n").unwrap();
-        assert_eq!(hash, sha3_hex(b"hello, abelian\n"));
+        let hash = store.put(b"hello, tally\n").unwrap();
+        assert_eq!(hash, sha3_hex(b"hello, tally\n"));
         assert!(store.has(&hash).unwrap());
-        assert_eq!(store.get(&hash).unwrap(), b"hello, abelian\n");
+        assert_eq!(store.get(&hash).unwrap(), b"hello, tally\n");
     }
 
     #[test]

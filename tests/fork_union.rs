@@ -12,20 +12,20 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use abelian::b64;
-use abelian::ident::{ElementRecord, Sum, sha3_hex};
-use abelian::log::Annotation;
-use abelian::manifest::Manifest;
-use abelian::patch::{Intent, Op, RealizedEntry};
-use abelian::repo::Repository;
-use abelian::Error;
-use abelian::union::{Stratum, union};
+use tally::b64;
+use tally::ident::{ElementRecord, Sum, sha3_hex};
+use tally::log::Annotation;
+use tally::manifest::Manifest;
+use tally::patch::{Intent, Op, RealizedEntry};
+use tally::repo::Repository;
+use tally::Error;
+use tally::union::{Stratum, union};
 
 /////////////////////////////////////////// scaffolding ///////////////////////////////////////////
 
 fn temp_repo(name: &str) -> Repository {
     let dir = std::env::temp_dir().join(format!(
-        "abelian-fork-union-{name}-{}",
+        "tally-fork-union-{name}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);

@@ -397,7 +397,7 @@ mod tests {
 
     fn temp_repo(name: &str) -> Repository {
         let dir =
-            std::env::temp_dir().join(format!("abelian-rev-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tally-rev-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Repository::init(&dir).unwrap()

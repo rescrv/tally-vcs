@@ -1,4 +1,4 @@
-//! abelian: a version control substrate in which states are sums, patches
+//! tally: a version control substrate in which states are sums, patches
 //! commute, and history is arithmetic.
 //!
 //! State identity forms an abelian group: patches are elements, composition

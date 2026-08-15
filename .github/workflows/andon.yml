@@ -14,12 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build abelian
+      - name: Build tally
         run: cargo build --locked
       # Walk the whole ANDON by hand (coreutils + a few lines of python3,
       # as the document prescribes) and assert every step is byte-identical
-      # to the abelian command that automates it.  The finale pulls the
+      # to the tally command that automates it.  The finale pulls the
       # Andon cord with no binary in the loop: a hand-written log line the
       # freshly built binary must verify and accept.
-      - name: Walk the ANDON by hand and diff every step against abelian
-        run: tests/andon.sh ./target/debug/abelian
+      - name: Walk the ANDON by hand and diff every step against tally
+        run: tests/andon.sh ./target/debug/tally

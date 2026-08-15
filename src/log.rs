@@ -109,7 +109,7 @@ pub struct Annotation {
 }
 
 /// One applied patch, as the log records it: intent plus realization plus
-/// the annotation that carries the whole reason abelian exists.
+/// the annotation that carries the whole reason tally exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogLine {
     /// SHA3-256 of the canonical JSON with `id` absent (§1.3).
@@ -353,7 +353,7 @@ mod tests {
     use crate::ident::{ElementRecord, sha3_hex};
 
     fn blobs(name: &str) -> BlobStore {
-        let dir = std::env::temp_dir().join(format!("abelian-log-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-log-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         BlobStore::init(dir).unwrap()
     }

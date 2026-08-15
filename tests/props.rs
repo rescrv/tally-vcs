@@ -11,19 +11,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use proptest::prelude::*;
 
-use abelian::b64;
-use abelian::blobs::BlobStore;
-use abelian::diff::pending_sum;
-use abelian::ident::{
+use tally::b64;
+use tally::blobs::BlobStore;
+use tally::diff::pending_sum;
+use tally::ident::{
     ElementRecord, Sum, canonical_json, record_id, sha3_hex, sum_of_records, validate_path,
     verify_record_id,
 };
-use abelian::manifest::Manifest;
-use abelian::patch::{
+use tally::manifest::Manifest;
+use tally::patch::{
     Intent, Op, apply_intent, apply_realized_to_manifest, apply_realized_to_sum,
     count_occurrences, replace_unique,
 };
-use abelian::segment::{ImageItem, Segment, SegmentInput, build_segment, image_setsum};
+use tally::segment::{ImageItem, Segment, SegmentInput, build_segment, image_setsum};
 
 /////////////////////////////////////////// strategies ////////////////////////////////////////////
 
@@ -362,7 +362,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_blobs() -> (std::path::PathBuf, BlobStore) {
     let dir = std::env::temp_dir().join(format!(
-        "abelian-props-{}-{}",
+        "tally-props-{}-{}",
         std::process::id(),
         TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -702,11 +702,11 @@ proptest! {
         );
 
         let segment = Segment::open(&built.pk, &built.idx, &built.segid, &built.idx_sha3).unwrap();
-        let no_blob = |h: &str| -> abelian::Result<Vec<u8>> {
-            Err(abelian::Error::Corrupt(format!("unexpected blob fetch {h}")))
+        let no_blob = |h: &str| -> tally::Result<Vec<u8>> {
+            Err(tally::Error::Corrupt(format!("unexpected blob fetch {h}")))
         };
-        let no_line = |id: &str| -> abelian::Result<abelian::log::LogLine> {
-            Err(abelian::Error::Corrupt(format!("unexpected line fetch {id}")))
+        let no_line = |id: &str| -> tally::Result<tally::log::LogLine> {
+            Err(tally::Error::Corrupt(format!("unexpected line fetch {id}")))
         };
         for (entry, original) in segment.entries.iter().zip(&blobs) {
             let bytes = segment.materialize(entry, &no_blob, &no_line).unwrap();

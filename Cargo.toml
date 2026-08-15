@@ -1,24 +1,24 @@
 [package]
-name = "abelian"
+name = "tally-vcs"
 version = "0.1.0"
 edition = "2024"
 description = "A version control substrate in which states are sums, patches commute, and history is arithmetic."
 license = "Apache-2.0"
 
 [features]
-# The pi coding-agent integration (the abelian-pi-editor binary).
+# The pi coding-agent integration (the tally-pi-editor binary).
 pi = []
 
 [lib]
-name = "abelian"
+name = "tally"
 
 [[bin]]
-name = "abelian"
-path = "src/bin/abelian.rs"
+name = "tally"
+path = "src/bin/tally.rs"
 
-# Purpose-built hook pi's text editor calls (see .pi/extensions/abelian-editor.ts).
+# Purpose-built hook pi's text editor calls (see .pi/extensions/tally-editor.ts).
 [[bin]]
-name = "abelian-pi-editor"
+name = "tally-pi-editor"
 path = "src/bin/pi-editor.rs"
 required-features = ["pi"]
 

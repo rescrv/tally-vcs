@@ -14,12 +14,12 @@ use std::sync::OnceLock;
 
 use proptest::prelude::*;
 
-use abelian::b64;
-use abelian::ident::is_hex64;
-use abelian::log::Annotation;
-use abelian::patch::{Intent, Op};
-use abelian::repo::Repository;
-use abelian::revision::resolve;
+use tally::b64;
+use tally::ident::is_hex64;
+use tally::log::Annotation;
+use tally::patch::{Intent, Op};
+use tally::repo::Repository;
+use tally::revision::resolve;
 
 /////////////////////////////////////////// the fixture ///////////////////////////////////////////
 
@@ -84,7 +84,7 @@ fn fixture() -> &'static Fixture {
     static FIXTURE: OnceLock<Fixture> = OnceLock::new();
     FIXTURE.get_or_init(|| {
         let dir = std::env::temp_dir()
-            .join(format!("abelian-revision-props-{}", std::process::id()));
+            .join(format!("tally-revision-props-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let repo = Repository::init(&dir).unwrap();

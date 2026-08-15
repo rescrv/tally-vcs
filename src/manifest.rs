@@ -12,7 +12,7 @@ use crate::ident::{ElementRecord, Sum, sum_of_records};
 use crate::{Error, Result};
 
 /// The first line of every manifest.
-pub const MANIFEST_HEADER: &str = "abelian-manifest v0";
+pub const MANIFEST_HEADER: &str = "tally-manifest v0";
 
 /// A materialized state: elements keyed by path.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

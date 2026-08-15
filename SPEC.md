@@ -1,10 +1,10 @@
-# abelian: specification, v0
+# tally: specification, v0
 
 This document is normative. The [ANDON](ANDON.md) is the walkthrough and the
 rationale; where the two disagree, this document is wrong and should be fixed,
 because the ANDON was approved first and the design flows from it. Conformance
 language: MUST and MUST NOT mark requirements whose violation makes an
-implementation not-abelian; everything else is stated as fact about the format
+implementation not-tally; everything else is stated as fact about the format
 and is equally binding, just less shouted.
 
 A repository has one logical content and up to two physical forms. The **loose
@@ -93,8 +93,8 @@ edge of the Wall:
 ### §2.1 Layout
 
 ```
-.abelian/
-  version                    # "abelian v0\n"
+.tally/
+  version                    # "tally v0\n"
   blobs/ab/cdef01…           # raw content; filename is the sha3-256 hex
   forks/<name>/
     fork                     # anchor reference
@@ -123,7 +123,7 @@ spilled read sets, zstd dictionaries.
 ### §2.3 Fork file
 
 ```
-abelian-fork v0
+tally-fork v0
 anchor <64 hex>
 manifest <64 hex>
 ```
@@ -131,13 +131,13 @@ manifest <64 hex>
 `manifest` names `anchors/<sum>.manifest`, which MUST exist and whose own
 `sum` header MUST equal `anchor`. The empty repository is anchor all-zeros
 with an empty manifest. A fork is an anchor plus a log; a fork is also a
-session; abelian does not distinguish. The current state of a fork is the
+session; tally does not distinguish. The current state of a fork is the
 anchor manifest plus the replay of its log.
 
 ### §2.4 Manifests
 
 ```
-abelian-manifest v0
+tally-manifest v0
 sum <64 hex>
 <element record>
 <element record>
@@ -146,7 +146,7 @@ sum <64 hex>
 
 Records sorted bytewise. Sorting serves humans and diff tools; the sum is
 order-blind. A manifest whose `sum` disagrees with the fold of its records is
-corrupt. Manifests are compactions — derived, never primary. `abelian snapshot`
+corrupt. Manifests are compactions — derived, never primary. `tally snapshot`
 writes one and MAY repoint the fork file at it; earlier log lines remain.
 
 ### §2.5 The log
@@ -244,8 +244,8 @@ lossless by construction because the fused lines remain in the log
 underneath, forever.
 
 A **view** is not a line. It is a render-time filter naming the fuses to
-collapse, declared just in time on each render: `abelian log` collapses
-every fuse; `abelian log --view incident,release` collapses only fuses
+collapse, declared just in time on each render: `tally log` collapses
+every fuse; `tally log --view incident,release` collapses only fuses
 named `incident` or `release`. Nothing about a view is stored, so nothing
 about it needs consensus, transport, or re-keying.
 
@@ -295,7 +295,7 @@ seg/<segid>.idx              # entry table, plain text
 `segid` is the lowercase hex SHA3-256 of the `.pk` bytes — segments are
 content-addressed, so immutability is enforced by naming, uploads are
 idempotent, and caches never invalidate. `.pk` payloads use standard zstd
-frames so that a raw segment yields to `zstd -d` without `abelian` present.
+frames so that a raw segment yields to `zstd -d` without `tally` present.
 
 `.idx` is one line per entry, space-separated, LF-terminated:
 
@@ -401,7 +401,7 @@ sufficient condition (bit-identical unpack) remains the scrub-level check.
 
 > **I2 (equivalence).** `unpack` is total, deterministic, and model-free, and
 > unpack-before-compaction equals unpack-after, bit for bit at the loose
-> level. Retired segments are the only thing abelian ever deletes, and they
+> level. Retired segments are the only thing tally ever deletes, and they
 > are re-encodings, not information.
 
 Retired segments MUST be retained until every manifest referencing them ages
@@ -471,11 +471,11 @@ uses against object storage.
 
 **Andon over the wire.** The emergency path is loose-first: fetch, unpack,
 operate per the ANDON with an editor and stdlib Python, repack, push. With
-no `abelian` at all this requires `curl`, `zstd`, and Python — acceptable, and
+no `tally` at all this requires `curl`, `zstd`, and Python — acceptable, and
 the reason `.pk` uses standard zstd frames and `.idx` is plain text.
 
 Authorization is storage ACL plus the `sig` requirement on andon lines;
-abelian adds no auth protocol of its own. Anything smarter — maintainer
+tally adds no auth protocol of its own. Anything smarter — maintainer
 policy, review gates on a fork — is the Datalog layer's job, enforced by
 the maintainer agent as *a client*, never by the server.
 
@@ -506,7 +506,7 @@ so it is versioned with the format.
 - **I3** — the repository is append-only; `index/` is a deletable cache.
 - **I4** — log lines and manifests are byte-preserved; blobs are
   re-encodable.
-- **I5** — with zero models available, abelian degrades to a complete,
+- **I5** — with zero models available, tally degrades to a complete,
   operable VCS; the model is a layer, never a load-bearing wall.
 - **I6** — the native format is human-writable: an editor and one static
   binary suffice to operate the emergency path, and the walkthrough in the

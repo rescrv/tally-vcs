@@ -149,7 +149,7 @@ mod tests {
 
     fn blobs(name: &str) -> BlobStore {
         let dir =
-            std::env::temp_dir().join(format!("abelian-blame-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tally-blame-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         BlobStore::init(dir).unwrap()
     }

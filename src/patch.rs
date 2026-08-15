@@ -319,7 +319,7 @@ mod tests {
 
     fn store(name: &str) -> BlobStore {
         let dir =
-            std::env::temp_dir().join(format!("abelian-patch-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("tally-patch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         BlobStore::init(dir).unwrap()
     }
@@ -340,7 +340,7 @@ mod tests {
             ops: vec![Op::Edit {
                 path: "/src/main.rs".to_string(),
                 old_str: "hello".to_string(),
-                new_str: "hello, abelian".to_string(),
+                new_str: "hello, tally".to_string(),
             }],
         };
         let mut sum = manifest.sum();
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(sum, manifest.sum(), "arithmetic must agree with the manifest");
         let (hash, content) = &realization.new_blobs[0];
         assert_eq!(*hash, sha3_hex(content));
-        assert_eq!(content, b"fn main() { println!(\"hello, abelian\"); }\n");
+        assert_eq!(content, b"fn main() { println!(\"hello, tally\"); }\n");
     }
 
     #[test]

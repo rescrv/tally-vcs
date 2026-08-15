@@ -197,7 +197,7 @@ pub fn fetch(store: &dyn ObjectStore, cache: &std::path::Path) -> Result<Option<
 /// splice, and gets an error telling it to union.
 pub fn push(repo: &Repository, store: &dyn ObjectStore, level: i32) -> Result<ServeManifest> {
     let staging = std::env::temp_dir().join(format!(
-        "abelian-push-{}-{}",
+        "tally-push-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -301,7 +301,7 @@ mod tests {
     use crate::patch::{Intent, Op};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("abelian-wire-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-wire-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

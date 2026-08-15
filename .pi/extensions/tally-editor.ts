@@ -1,10 +1,10 @@
 /**
- * abelian text-editor override (proof of concept)
+ * tally text-editor override (proof of concept)
  * ------------------------------------------------
  * Overrides pi's built-in `edit` and `write` tools by registering tools with
  * the same names. Instead of touching the filesystem directly, every mutation
- * is routed through the purpose-built `abelian-pi-editor` hook binary, which
- * turns the tool call into an abelian patch: exact-match precondition, sum
+ * is routed through the purpose-built `tally-pi-editor` hook binary, which
+ * turns the tool call into an tally patch: exact-match precondition, sum
  * arithmetic, durable log append with the observed read set, and a
  * best-effort working-tree refresh.
  *
@@ -13,20 +13,20 @@
  *
  * Setup
  * -----
- * Requires an abelian repository in the project (`abelian init`) and the hook
+ * Requires an tally repository in the project (`tally init`) and the hook
  * binary. Build it with the `pi` feature (it is gated behind it):
- *   cargo build --features pi --bin abelian-pi-editor
- * The extension looks for the binary at `target/{release,debug}/abelian-pi-editor`
+ *   cargo build --features pi --bin tally-pi-editor
+ * The extension looks for the binary at `target/{release,debug}/tally-pi-editor`
  * under the project root, then on PATH. Override the location with
- * `ABELIAN_PI_EDITOR=/path/to/abelian-pi-editor`.
+ * `TALLY_PI_EDITOR=/path/to/tally-pi-editor`.
  *
  * If the binary cannot be found the extension warns once at session start and
  * registers degraded `edit`/`write` tools that return a clear, actionable
  * error instead of failing per call with an opaque launch error. Set
- * `ABELIAN_FALLBACK_NATIVE=1` to instead fall through to Pi's native
+ * `TALLY_FALLBACK_NATIVE=1` to instead fall through to Pi's native
  * `edit`/`write` so the agent is not bricked while the binary is missing.
  *
- * Divergence from Pi's built-in `edit`: abelian replaces only the matched span
+ * Divergence from Pi's built-in `edit`: tally replaces only the matched span
  * and keeps every untouched byte byte-identical; it does NOT reproduce Pi's
  * whole-file normalization write-back that rewrites unchanged lines. This is
  * intentional and stricter, and better for the substrate.
@@ -99,18 +99,18 @@ function prepareEditArguments(input: unknown): unknown {
 // Returns the resolved binary path, or null if it cannot be located anywhere
 // we know to look (explicit override, project target dirs, PATH).
 function resolveHook(cwd: string): string | null {
-	const env = process.env.ABELIAN_PI_EDITOR;
+	const env = process.env.TALLY_PI_EDITOR;
 	if (env) return existsSync(env) ? env : null;
 	for (const candidate of [
-		join(cwd, "target", "release", "abelian-pi-editor"),
-		join(cwd, "target", "debug", "abelian-pi-editor"),
+		join(cwd, "target", "release", "tally-pi-editor"),
+		join(cwd, "target", "debug", "tally-pi-editor"),
 	]) {
 		if (existsSync(candidate)) return candidate;
 	}
 	// Fall back to PATH, but verify it is actually present so we can fail loudly
 	// at load rather than opaquely per call.
 	for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-		if (dir && existsSync(join(dir, "abelian-pi-editor"))) return join(dir, "abelian-pi-editor");
+		if (dir && existsSync(join(dir, "tally-pi-editor"))) return join(dir, "tally-pi-editor");
 	}
 	return null;
 }
@@ -167,9 +167,9 @@ function runHook(
 			cwd,
 			env: {
 				...process.env,
-				// abelian treats sessions and forks as the same object.
-				...(sessionId ? { PI_SESSION_ID: sessionId, ABELIAN_FORK: sessionId } : {}),
-				...(prose ? { ABELIAN_PROSE: prose } : {}),
+				// tally treats sessions and forks as the same object.
+				...(sessionId ? { PI_SESSION_ID: sessionId, TALLY_FORK: sessionId } : {}),
+				...(prose ? { TALLY_PROSE: prose } : {}),
 			},
 			signal,
 		});
@@ -189,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 	// tools run in a degraded mode (see below). Cached and refreshed on each
 	// session_start so a mid-session `cargo build` is picked up on next session.
 	let hookBin: string | null = null;
-	const fallbackNative = process.env.ABELIAN_FALLBACK_NATIVE === "1";
+	const fallbackNative = process.env.TALLY_FALLBACK_NATIVE === "1";
 	// The assistant message id whose prose has already been attributed to a
 	// patch this turn. Ensures the between-call narrative lands on exactly one
 	// change even when a turn issues several edits/writes.
@@ -200,8 +200,8 @@ export default function (pi: ExtensionAPI) {
 		if (!hookBin) {
 			ctx.ui.notify(
 				fallbackNative
-					? "abelian-pi-editor not found; falling back to native edit/write. Build it with: cargo build --features pi --bin abelian-pi-editor"
-					: "abelian-pi-editor not found; edit/write are degraded. Build it with: cargo build --features pi --bin abelian-pi-editor (or set ABELIAN_FALLBACK_NATIVE=1)",
+					? "tally-pi-editor not found; falling back to native edit/write. Build it with: cargo build --features pi --bin tally-pi-editor"
+					: "tally-pi-editor not found; edit/write are degraded. Build it with: cargo build --features pi --bin tally-pi-editor (or set TALLY_FALLBACK_NATIVE=1)",
 				"warn",
 			);
 		}
@@ -213,7 +213,7 @@ export default function (pi: ExtensionAPI) {
 		prepareArguments?: (args: unknown) => unknown,
 	) => {
 		// Lazily built native tool definition, used only when the hook is missing
-		// and ABELIAN_FALLBACK_NATIVE=1.
+		// and TALLY_FALLBACK_NATIVE=1.
 		let nativeTool: ToolDefinition | undefined;
 		const native = (cwd: string): ToolDefinition => {
 			if (!nativeTool) {
@@ -226,12 +226,12 @@ export default function (pi: ExtensionAPI) {
 
 		pi.registerTool({
 			name, // same name as built-in → overrides it
-			label: `${name} (abelian)`,
+			label: `${name} (tally)`,
 			...(prepareArguments ? { prepareArguments } : {}),
 			description:
 				name === "edit"
-					? "Edit a file via the abelian substrate using exact text replacement (edits[].oldText must be unique). The change is recorded as a patch with its observed read set."
-					: "Write a file via the abelian substrate (create or whole-file overwrite). The change is recorded as a patch with its observed read set.",
+					? "Edit a file via the tally substrate using exact text replacement (edits[].oldText must be unique). The change is recorded as a patch with its observed read set."
+					: "Write a file via the tally substrate (create or whole-file overwrite). The change is recorded as a patch with its observed read set.",
 			parameters: parameters as never,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const bin = hookBin ?? resolveHook(ctx.cwd);
@@ -243,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							{
 								type: "text",
-								text: `abelian ${name} unavailable: abelian-pi-editor binary not found. Build it with: cargo build --features pi --bin abelian-pi-editor (or set ABELIAN_PI_EDITOR / ABELIAN_FALLBACK_NATIVE=1).`,
+								text: `tally ${name} unavailable: tally-pi-editor binary not found. Build it with: cargo build --features pi --bin tally-pi-editor (or set TALLY_PI_EDITOR / TALLY_FALLBACK_NATIVE=1).`,
 							},
 						],
 						details: { error: true },
@@ -264,7 +264,7 @@ export default function (pi: ExtensionAPI) {
 					result = await runHook(bin, name, params, ctx.cwd, sessionId, prose, signal);
 				} catch (err) {
 					return {
-						content: [{ type: "text", text: `abelian ${name} failed to launch: ${String(err)}` }],
+						content: [{ type: "text", text: `tally ${name} failed to launch: ${String(err)}` }],
 						details: { error: true },
 						isError: true,
 					};
@@ -272,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 				if (result.code !== 0) {
 					return {
 						content: [
-							{ type: "text", text: result.stderr.trim() || `abelian ${name} exited ${result.code}` },
+							{ type: "text", text: result.stderr.trim() || `tally ${name} exited ${result.code}` },
 						],
 						details: { error: true, code: result.code },
 						isError: true,
@@ -290,7 +290,7 @@ export default function (pi: ExtensionAPI) {
 						: `wrote ${parsed.path ?? (params as { path: string }).path}`;
 				return {
 					content: [
-						{ type: "text", text: `${summary}\nabelian ${parsed.id ?? ""} sum=${parsed.sum ?? ""}`.trim() },
+						{ type: "text", text: `${summary}\ntally ${parsed.id ?? ""} sum=${parsed.sum ?? ""}`.trim() },
 					],
 					details: parsed,
 				};
