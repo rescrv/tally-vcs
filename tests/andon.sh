@@ -12,7 +12,7 @@
 #   §4  patches         abelian apply (including the refused preconditions)
 #   §5  the log         abelian show, abelian log --raw
 #   §6  fork and union  abelian fork, abelian union (strata 2 and 3)
-#   §7  fuse            abelian fuse (a lossless view)
+#   §7  fuse            abelian fuse (a lossless interpretation)
 #   §9  the Andon cord  abelian apply --provenance=andon — and then the
 #                       same pull performed with NO abelian binary at all:
 #                       a hand-computed, hand-appended log line that the
@@ -537,20 +537,20 @@ assert line["sum_after"] == want_sum
 print(line["id"])
 EOF
 
-cat > "$ANDON_WORK/viewline.py" <<'EOF'
-"""§7: a fuse is a view — empty intent, empty realized delta, the
-arithmetic identity; a rendering, never a mutation."""
+cat > "$ANDON_WORK/fuseline.py" <<'EOF'
+"""§7: a fuse names an interval under one interpretation — empty intent,
+empty realized delta, the arithmetic identity; never a mutation."""
 import json
 import sys
 
-log_path, want_from, want_to, want_sum = sys.argv[1:5]
+log_path, want_name, want_from, want_to, want_sum = sys.argv[1:6]
 line = json.loads(open(log_path, "rb").read().splitlines()[-1])
 a = line["annotation"]
-assert a["provenance"] == "view"
-assert a["view"] == {"from": want_from, "to": want_to}
-assert line["intent"] == {"ops": []}, "a view carries no intent ops"
-assert line["realized"] == [], "a view carries an empty realized delta"
-assert line["sum_after"] == want_sum, "a view is the arithmetic identity"
+assert a["provenance"] == "fuse"
+assert a["fuse"] == {"name": want_name, "from": want_from, "to": want_to}
+assert line["intent"] == {"ops": []}, "a fuse carries no intent ops"
+assert line["realized"] == [], "a fuse carries an empty realized delta"
+assert line["sum_after"] == want_sum, "a fuse is the arithmetic identity"
 print(line["id"])
 EOF
 
@@ -933,7 +933,7 @@ assert_bytes "§6 disjoint spans, same file: both edits present" \
     "$EXPECT/main5.rs" src/main.rs
 assert_check "$S_UNION3"
 
-step "§7 Fuse — a lossless view"
+step "§7 Fuse — a lossless interpretation"
 IDS_BEFORE=$(python3 "$ANDON_WORK/verify_log.py" .abelian/forks/main/log.jsonl \
     "$S_EMPTY" 6 "$S_UNION3")
 set -- $IDS_BEFORE
@@ -942,17 +942,17 @@ TO_ID=$6
 cp .abelian/forks/main/log.jsonl "$ANDON_WORK/log-before-fuse"
 BYTES_BEFORE=$(wc -c < .abelian/forks/main/log.jsonl | tr -d ' ')
 FUSE_OUT=$("$ABELIAN" fuse --author andon-tester \
-    --prose 'the span-ops beat' "$FROM_ID" "$TO_ID")
+    --prose 'the span-ops beat' span-ops "$FROM_ID" "$TO_ID")
 printf '%s\n' "$FUSE_OUT" | grep -F -q \
-    "fused $FROM_ID..$TO_ID (lossless: the fine structure remains underneath)" \
+    "fused[span-ops] $FROM_ID..$TO_ID (lossless: the fine structure remains underneath)" \
     || fail "§7: unexpected fuse output: $FUSE_OUT"
-VIEW_ID=$(python3 "$ANDON_WORK/viewline.py" .abelian/forks/main/log.jsonl \
-    "$FROM_ID" "$TO_ID" "$S_UNION3")
-note "§7 view line $VIEW_ID: empty intent, empty realized, identity arithmetic"
+FUSE_ID=$(python3 "$ANDON_WORK/fuseline.py" .abelian/forks/main/log.jsonl \
+    span-ops "$FROM_ID" "$TO_ID" "$S_UNION3")
+note "§7 fuse line $FUSE_ID: empty intent, empty realized, identity arithmetic"
 # Lossless means the covered lines' bytes are still there, untouched.
 head -c "$BYTES_BEFORE" .abelian/forks/main/log.jsonl \
     > "$ANDON_WORK/log-prefix-after-fuse"
-assert_bytes "§7 fuse is a view, never a mutation" \
+assert_bytes "§7 fuse is an interpretation, never a mutation" \
     "$ANDON_WORK/log-before-fuse" "$ANDON_WORK/log-prefix-after-fuse"
 "$ABELIAN" log --raw > "$ANDON_WORK/log-raw"
 for id in $IDS_BEFORE; do
@@ -961,9 +961,20 @@ for id in $IDS_BEFORE; do
 done
 note "§7 abelian log --raw still renders every covered line"
 "$ABELIAN" log > "$ANDON_WORK/log-fused"
-grep -E -q 'fuse\([0-9]+ lines\)' "$ANDON_WORK/log-fused" \
-    || fail "§7: the fused view does not render the beat"
+grep -E -q 'fuse\(span-ops, [0-9]+ lines\)' "$ANDON_WORK/log-fused" \
+    || fail "§7: the default view does not render the beat"
 note "§7 abelian log renders the fused beat at the default zoom"
+# A view is a just-in-time filter: declare the fuse names each time.
+"$ABELIAN" log --view span-ops > "$ANDON_WORK/log-view-hit"
+grep -E -q 'fuse\(span-ops, [0-9]+ lines\)' "$ANDON_WORK/log-view-hit" \
+    || fail "§7: --view span-ops does not render the beat"
+"$ABELIAN" log --view no-such-fuse > "$ANDON_WORK/log-view-miss"
+if grep -E -q 'fuse\(' "$ANDON_WORK/log-view-miss"; then
+    fail "§7: --view no-such-fuse should collapse nothing"
+fi
+grep -F -q "$FROM_ID" "$ANDON_WORK/log-view-miss" \
+    || fail "§7: --view no-such-fuse hides the un-fused lines"
+note "§7 --view filters to the named fuses, just in time"
 
 step "§9 The Andon cord — pulled with the binary"
 DELTA_ANDON='[{"remove":"100644\t/src/main.rs\t'$H_MAIN5'","add":"100644\t/src/main.rs\t'$H_MAIN6'"}]'

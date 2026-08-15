@@ -57,9 +57,10 @@ patches:
   commit --prose P [-- path...]    append the pending working-tree patch to the log
                                    (status previews it; a pathspec commits part of it)
   apply [file|-]                   validate and apply an intent; append to the log
-  log [--view NAME | --raw]        render history (default view: fused)
+  log [--view FUSES | --raw]       render history (default: collapse every fuse;
+                                   --view a,b collapses only the named fuses)
   show <id>                        render one log line
-  fuse <from> <to>                 compose a span into one narrative beat (lossless)
+  fuse <name> <from> <to>          name a span under one interpretation (lossless)
 
 wire:
   clone <store> <dest>             clone a packed repository from an object store
@@ -822,7 +823,7 @@ fn annotation_from(options: &ApplyOptions, repo: &Repository) -> Result<Annotati
         prose: options.prose.clone(),
         reads: None,
         origin: None,
-        view: None,
+        fuse: None,
         import: None,
     })
 }
@@ -866,7 +867,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     struct Options {
         #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
         fork: Option<String>,
-        #[arrrg(optional, "The named view to render (default: fused).", "NAME")]
+        #[arrrg(optional, "Collapse only the named fuses (comma-separated; default: every fuse).", "FUSES")]
         view: Option<String>,
         #[arrrg(flag, "Render the un-fused chain: every line, full.")]
         raw: bool,
@@ -874,7 +875,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         nocolor: bool,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian log [--fork FORK] [--view NAME | --raw] [--nocolor]",
+        "USAGE: abelian log [--fork FORK] [--view FUSES | --raw] [--nocolor]",
         args,
     );
     reject_extra("log", &free, 0)?;
@@ -900,26 +901,34 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         }
         return Ok(());
     }
-    // A named view is a zoom level, not a different interface.  `fused` is
-    // the default view; agent-maintained views slot in here by name.
-    let view = options.view.as_deref().unwrap_or("fused");
-    if view != "fused" {
-        return Err(Error::Invalid(format!(
-            "unknown view {view:?}; the only view is `fused` (--raw shows the un-fused chain)"
-        )));
-    }
+    // A view is a zoom level, not a different interface: the caller declares
+    // the fuse names to collapse, just in time, each time.  No --view: every
+    // fuse collapses.
+    let view: Option<Vec<&str>> = options
+        .view
+        .as_deref()
+        .map(|names| names.split(',').map(str::trim).filter(|n| !n.is_empty()).collect());
     let lines: Vec<abelian::log::LogLine> =
         history.into_iter().map(|(_, line)| line).collect();
-    for beat in fused_beats(&lines) {
+    for beat in fused_beats(&lines, view.as_deref()) {
         match beat {
-            Beat::Fused { view, lines } => {
+            Beat::Fused { fuse, lines } => {
+                let name = fuse
+                    .annotation
+                    .fuse
+                    .as_ref()
+                    .map(|f| f.name.as_str())
+                    .unwrap_or("");
                 let header = format!(
                     "{}  {}  {}",
                     palette.id(lines.last().map(|l| l.id.as_str()).unwrap_or("")),
-                    palette.provenance(Provenance::View, &format!("fuse({} lines)", lines.len())),
-                    view.annotation.author,
+                    palette.provenance(
+                        Provenance::Fuse,
+                        &format!("fuse({name}, {} lines)", lines.len()),
+                    ),
+                    fuse.annotation.author,
                 );
-                print_prose(&header, view.annotation.prose.as_deref().unwrap_or(""));
+                print_prose(&header, fuse.annotation.prose.as_deref().unwrap_or(""));
             }
             Beat::Single(line) => print_line_brief(line, &palette),
         }
@@ -953,13 +962,13 @@ impl Palette {
     }
 
     /// Provenance is the signal: agent green, ANDON the bold-red cord,
-    /// union cyan, view magenta.
+    /// union cyan, fuse magenta.
     fn provenance(&self, provenance: Provenance, text: &str) -> String {
         let code = match provenance {
             Provenance::Agent => "32",
             Provenance::Andon => "1;31",
             Provenance::Union => "36",
-            Provenance::View => "35",
+            Provenance::Fuse => "35",
         };
         self.paint(code, text)
     }
@@ -974,7 +983,7 @@ fn line_header(line: &abelian::log::LogLine, palette: &Palette) -> String {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
         Provenance::Union => "union",
-        Provenance::View => "view",
+        Provenance::Fuse => "fuse",
     };
     format!(
         "{}  {}  {}",
@@ -1008,7 +1017,7 @@ fn print_line_full(line: &abelian::log::LogLine, palette: &Palette) {
         Provenance::Agent => "agent",
         Provenance::Andon => "ANDON",
         Provenance::Union => "union",
-        Provenance::View => "view",
+        Provenance::Fuse => "fuse",
     };
     // git-log style: the id line stands alone, then Author and Date each on
     // their own line, mirroring `git log`'s commit/Author/Date block.
@@ -1068,23 +1077,24 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         author: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: abelian fuse [--fork FORK] [--prose P] <from-id> <to-id>",
+        "USAGE: abelian fuse [--fork FORK] [--prose P] <name> <from-id> <to-id>",
         args,
     );
-    reject_extra("fuse", &free, 2)?;
-    let (Some(from), Some(to)) = (free.first(), free.get(1)) else {
-        return Err(Error::Invalid("fuse requires <from-id> <to-id>".to_string()));
+    reject_extra("fuse", &free, 3)?;
+    let (Some(name), Some(from), Some(to)) = (free.first(), free.get(1), free.get(2)) else {
+        return Err(Error::Invalid("fuse requires <name> <from-id> <to-id>".to_string()));
     };
     let repo = repo()?;
     let line = repo.fuse(
         options.fork.as_deref().unwrap_or("main"),
+        name,
         from,
         to,
         options.prose,
         &options.author.unwrap_or_else(whoami),
     )?;
     println!(
-        "{} fused {from}..{to} (lossless: the fine structure remains underneath)",
+        "{} fused[{name}] {from}..{to} (lossless: the fine structure remains underneath)",
         line.id
     );
     Ok(())

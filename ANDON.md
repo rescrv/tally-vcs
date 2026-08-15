@@ -296,27 +296,29 @@ stops before stratum 4 unless invited.
 
 ## 7. Fuse and reading
 
-`fuse` composes a span of patches into one narrative beat — what git called a
-commit, squash, and fixup, unified. It is **lossless**: a fuse is a view — a
-log line with an empty realized delta, never a mutation of the lines it
-covers:
+`fuse` names a span of patches under one interpretation — what git called a
+commit, squash, and fixup, unified. It is **lossless**: a fuse is a log line
+with an empty realized delta, never a mutation of the lines it covers:
 
 ```json
 {"intent": {"ops": []}, "realized": [], "sum_after": "…",
- "annotation": {"provenance": "view", "view": {"from": "id-17", "to": "id-42"},
+ "annotation": {"provenance": "fuse",
+                "fuse": {"name": "retry-loop", "from": "id-17", "to": "id-42"},
                 "prose": "retry loop: bounded backoff", "author": "…"}}
 ```
 
 The fine structure — every tool call — remains underneath, forever, at
-$0.02/GB-month. Because a view is a line, it travels: union lands it like
+$0.02/GB-month. Because a fuse is a line, it travels: union lands it like
 any other patch (its arithmetic is the identity) and re-keys the span onto
-the target's ids, so the narrative survives fuse → union → remove-fork. And
-because views are ordered, a span can be annotated after the fact and a
-later view supersedes an earlier one it overlaps — fuse a span as an active
-incident, later mark it resolved; both lines stay, and any log prefix
-renders the status it had then. `abelian read` renders at a chosen zoom:
-`--fused` for the human narrative, `--raw` for the tool-call stream. The
-human view of history is a default zoom level, not a different interface.
+the target's ids while the name travels untouched, so the narrative
+survives fuse → union → remove-fork. Fuses overlap freely — nothing
+supersedes — so a span can be annotated after the fact and answered later
+under the same name: fuse a span as an active incident, later mark it
+resolved; both lines stay, and any log prefix renders the chapters it had
+then. A view is not a line but a render-time filter: `abelian log`
+collapses every fuse, `--view retry-loop` collapses only the fuses named,
+`--raw` shows the tool-call stream. The human view of history is a default
+zoom level, not a different interface.
 
 ## 8. Authors
 
@@ -399,7 +401,7 @@ annotation. Union is stratified — arithmetic, realized replay, intent
 replay, re-enactment — and only the last stratum costs tokens. Two patches commute
 iff writes miss each other's reads and each other. Snapshots are compactions;
 forks are anchors plus logs; sessions and branches are the same object;
-fuse is a lossless view; rebase is a rendering option. Agents write; humans
+fuse is a lossless interpretation; rebase is a rendering option. Agents write; humans
 submit; the Andon cord is this document. Nothing observed is ever discarded,
 because generation costs five orders of magnitude more than storage.
 

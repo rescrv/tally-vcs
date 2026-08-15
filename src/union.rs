@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::blobs::BlobStore;
-use crate::log::{Annotation, LogLine, Origin, Provenance, ViewSpan, last_state_position};
+use crate::log::{Annotation, Fuse, LogLine, Origin, Provenance, last_state_position};
 use crate::manifest::Manifest;
 use crate::patch::{apply_intent, apply_realized_to_manifest, apply_realized_to_sum};
 use crate::repo::Repository;
@@ -113,8 +113,8 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
     let mut outcome = UnionOutcome::default();
 
     // Stratum 1: arithmetic.  Equal sums mean the states are already
-    // identical, but views are arithmetic identities the sum cannot see:
-    // uncarried view lines still land below.
+    // identical, but fuses are arithmetic identities the sum cannot see:
+    // uncarried fuse lines still land below.
     let target_state = repo.current_state(target)?;
     if source_state.sum == target_state.sum {
         outcome.already_identical = true;
@@ -143,9 +143,9 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
     let blobs = repo.blobs();
     let target_before = &target_state.manifest;
 
-    // What the target already carries, and the re-key map for view spans:
-    // union re-seals ids, so a landed view's `from`/`to` follow the
-    // `origin_id -> landed id` correspondence.
+    // What the target already carries, and the re-key map for fuse spans:
+    // union re-seals ids, so a landed fuse's `from`/`to` follow the
+    // `origin_id -> landed id` correspondence.  The name travels untouched.
     let mut carried = BTreeSet::new();
     let mut rekey: BTreeMap<String, String> = BTreeMap::new();
     for line in &target_state.lines {
@@ -174,14 +174,15 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         if carried.contains(&line.id) {
             continue;
         }
-        if outcome.already_identical && line.annotation.view.is_none() {
+        if outcome.already_identical && line.annotation.fuse.is_none() {
             // The arithmetic already accounts for every patch line; only
-            // views still travel.
+            // fuses still travel.
             continue;
         }
-        let view = line.annotation.view.as_ref().map(|v| ViewSpan {
-            from: rekey.get(&v.from).cloned().unwrap_or_else(|| v.from.clone()),
-            to: rekey.get(&v.to).cloned().unwrap_or_else(|| v.to.clone()),
+        let fuse = line.annotation.fuse.as_ref().map(|f| Fuse {
+            name: f.name.clone(),
+            from: rekey.get(&f.from).cloned().unwrap_or_else(|| f.from.clone()),
+            to: rekey.get(&f.to).cloned().unwrap_or_else(|| f.to.clone()),
         });
         let annotation = Annotation {
             author: author.to_string(),
@@ -192,7 +193,7 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             prose: line.annotation.prose.clone(),
             reads: line.annotation.reads.clone(),
             origin: Some(Origin { fork: source.to_string(), id: line.id.clone() }),
-            view,
+            fuse,
             import: line.annotation.import.clone(),
         };
 
@@ -621,28 +622,30 @@ mod tests {
     }
 
     #[test]
-    fn views_travel_through_union_rekeyed() {
+    fn fuses_travel_through_union_rekeyed() {
         // The ISSUE reproduction: fork, two patches, fuse, union — the
         // fused beat must be visible on main, re-keyed to main's ids.
-        let repo = temp_repo("views");
+        let repo = temp_repo("fuses");
         repo.create_fork("session-1", "main").unwrap();
         let l1 = repo.apply("session-1", create("/a", b"one\n"), note("t")).unwrap();
         let l2 = repo.apply("session-1", edit("/a", "one", "two"), note("t")).unwrap();
-        repo.fuse("session-1", &l1.id, &l2.id, Some("one narrative beat".to_string()), "sid")
+        repo.fuse("session-1", "beat", &l1.id, &l2.id, Some("one narrative beat".to_string()), "sid")
             .unwrap();
         let outcome = union(&repo, "session-1", "main", "maintainer").unwrap();
         assert!(outcome.complete());
-        assert_eq!(outcome.landed.len(), 3, "two patches plus the view line");
+        assert_eq!(outcome.landed.len(), 3, "two patches plus the fuse line");
         let state = repo.current_state("main").unwrap();
-        let beats = crate::views::fused_beats(&state.lines);
+        let beats = crate::views::fused_beats(&state.lines, None);
         assert_eq!(beats.len(), 1, "main renders one fused beat, not raw lines");
-        let crate::views::Beat::Fused { view, lines } = &beats[0] else {
+        let crate::views::Beat::Fused { fuse, lines } = &beats[0] else {
             panic!("expected the fused beat on main");
         };
         assert_eq!(lines.len(), 2);
-        assert_eq!(view.annotation.prose.as_deref(), Some("one narrative beat"));
-        // Re-keyed through the landed origin map: the span names main's ids.
-        let span = view.annotation.view.as_ref().unwrap();
+        assert_eq!(fuse.annotation.prose.as_deref(), Some("one narrative beat"));
+        // Re-keyed through the landed origin map: the span names main's ids;
+        // the name travels untouched.
+        let span = fuse.annotation.fuse.as_ref().unwrap();
+        assert_eq!(span.name, "beat");
         assert_eq!(span.from, outcome.landed[0].line.id);
         assert_eq!(span.to, outcome.landed[1].line.id);
         assert_ne!(span.from, l1.id);
@@ -652,21 +655,22 @@ mod tests {
     }
 
     #[test]
-    fn views_land_even_when_sums_are_already_identical() {
-        // A view is an arithmetic identity, so stratum 1 cannot see it;
+    fn fuses_land_even_when_sums_are_already_identical() {
+        // A fuse is an arithmetic identity, so stratum 1 cannot see it;
         // union must land it anyway.
-        let repo = temp_repo("views-s1");
+        let repo = temp_repo("fuses-s1");
         repo.create_fork("s", "main").unwrap();
         let l1 = repo.apply("s", create("/a", b"a\n"), note("t")).unwrap();
         let first = union(&repo, "s", "main", "maintainer").unwrap();
         assert_eq!(first.landed.len(), 1);
         // Fuse after the fact: the sums are already equal.
-        repo.fuse("s", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
+        repo.fuse("s", "beat", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(outcome.already_identical, "stratum 1 fired on the arithmetic");
-        assert_eq!(outcome.landed.len(), 1, "and the view still landed");
+        assert_eq!(outcome.landed.len(), 1, "and the fuse still landed");
         let span =
-            outcome.landed[0].line.annotation.view.as_ref().unwrap();
+            outcome.landed[0].line.annotation.fuse.as_ref().unwrap();
+        assert_eq!(span.name, "beat");
         assert_eq!(span.from, first.landed[0].line.id, "re-keyed to main's line");
         // Idempotent: a third union carries nothing new.
         let again = union(&repo, "s", "main", "maintainer").unwrap();

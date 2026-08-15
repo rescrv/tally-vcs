@@ -13,7 +13,7 @@ use crate::blobs::{BlobStore, fsync_dir};
 use crate::fork::{ForkFile, validate_fork_name};
 use crate::ident::{ElementRecord, Sum};
 use crate::ignore::Ignore;
-use crate::log::{Annotation, LogLine, Provenance, ViewSpan, last_state_position,
+use crate::log::{Annotation, Fuse, LogLine, Provenance, last_state_position,
                  parse_log_lenient};
 use crate::manifest::Manifest;
 use crate::patch::{Intent, Realization, RealizedEntry, apply_intent,
@@ -293,8 +293,8 @@ impl Repository {
     /// "Subsumed" is a property the tool decides, not a flag someone set: a
     /// line counts as subsumed when another fork carries it outright or
     /// carries a union line whose `origin` names it (union re-seals ids, so
-    /// the origin is the linkage, §2.5).  Views are log lines (§2.6), so an
-    /// unsubsumed view refuses too — a fused rendering is never silently
+    /// the origin is the linkage, §2.5).  Fuses are log lines (§2.6), so an
+    /// unsubsumed fuse refuses too — a fused rendering is never silently
     /// dropped.  The `main` fork is never removable — the empty repository
     /// always has it (§2.3).
     pub fn remove_fork(&self, name: &str, force: bool) -> Result<()> {
@@ -1181,22 +1181,25 @@ impl Repository {
         crate::blame::blame_path(path, &lines, &self.blobs())
     }
 
-    ///////////////////////////////////////// views ///////////////////////////////////////////
+    ///////////////////////////////////////// fuses ///////////////////////////////////////////
 
-    /// §2.6 Fuse: append a view line — provenance `view`, a span
+    /// §2.6 Fuse: append a fuse line — provenance `fuse`, a named span
     /// annotation, and an empty realized delta (an arithmetic identity), so
-    /// it is a log line like any other: it travels through union, it counts
-    /// as unsubsumed work, and it is ordered, so a later view supersedes an
-    /// earlier one it overlaps.  A rendering, never a mutation: the fused
-    /// lines remain underneath.
+    /// it is a log line like any other: it travels through union, and it
+    /// counts as unsubsumed work.  An interpretation, never a mutation: the
+    /// fused lines remain underneath.
     pub fn fuse(
         &self,
         fork: &str,
+        name: &str,
         from: &str,
         to: &str,
         prose: Option<String>,
         author: &str,
     ) -> Result<LogLine> {
+        if name.is_empty() {
+            return Err(Error::Invalid("a fuse requires a non-empty name".to_string()));
+        }
         let state = self.current_state(fork)?;
         let index_of = |id: &str| state.lines.iter().position(|l| l.id == id);
         let (Some(a), Some(b)) = (index_of(from), index_of(to)) else {
@@ -1211,9 +1214,13 @@ impl Repository {
         }
         let annotation = Annotation {
             author: author.to_string(),
-            provenance: Provenance::View,
+            provenance: Provenance::Fuse,
             prose,
-            view: Some(ViewSpan { from: from.to_string(), to: to.to_string() }),
+            fuse: Some(Fuse {
+                name: name.to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+            }),
             ..Annotation::default()
         };
         self.apply(fork, Intent::default(), annotation)
@@ -1668,17 +1675,17 @@ mod tests {
     }
 
     #[test]
-    fn remove_fork_never_drops_the_only_view() {
-        // A view is a log line, so the unsubsumed-work check protects it: a
+    fn remove_fork_never_drops_the_only_fuse() {
+        // A fuse is a log line, so the unsubsumed-work check protects it: a
         // fused rendering is never silently deleted with its fork.
-        let repo = temp_repo("rm-view");
+        let repo = temp_repo("rm-fuse");
         repo.create_fork("s", "main").unwrap();
         let l1 = repo.apply("s", create("/a", b"a\n"), note("t")).unwrap();
         crate::union::union(&repo, "s", "main", "maintainer").unwrap();
-        // Fuse after the fact: the fork now holds the only copy of the view.
-        repo.fuse("s", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
-        assert!(repo.remove_fork("s", false).is_err(), "the view is unsubsumed work");
-        // Union carries the view; then removal is safe.
+        // Fuse after the fact: the fork now holds the only copy of the fuse.
+        repo.fuse("s", "beat", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
+        assert!(repo.remove_fork("s", false).is_err(), "the fuse is unsubsumed work");
+        // Union carries the fuse; then removal is safe.
         crate::union::union(&repo, "s", "main", "maintainer").unwrap();
         repo.remove_fork("s", false).unwrap();
     }

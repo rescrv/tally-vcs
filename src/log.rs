@@ -28,14 +28,17 @@ pub enum Provenance {
     Andon,
     /// Landed by union from another fork; `origin` names the source line.
     Union,
-    /// A fuse view (§2.6): a rendering appended to the log.  Carries a
-    /// `view` span and an empty realized delta — an arithmetic identity.
-    View,
+    /// A fuse (§2.6): an interpretation appended to the log.  Carries a
+    /// `fuse` span and an empty realized delta — an arithmetic identity.
+    Fuse,
 }
 
-/// The span a view fuses, by line id, inclusive (§2.6).
+/// A fuse: one interval of the log under a named interpretation (§2.6).
+/// The span is by line id, inclusive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ViewSpan {
+pub struct Fuse {
+    /// The fuse's name: the handle a view filters to.
+    pub name: String,
     /// First line id of the span.
     pub from: String,
     /// Last line id of the span, inclusive.
@@ -97,11 +100,12 @@ pub struct Annotation {
     /// present, `prose` carries the commit message verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import: Option<GitImport>,
-    /// For view lines, the fused span (§2.6).  A line carrying a view MUST
-    /// have an empty realized delta: a view is a rendering, never a
-    /// mutation.  Union re-keys `from`/`to` when the line lands elsewhere.
+    /// For fuse lines, the named span (§2.6).  A line carrying a fuse MUST
+    /// have an empty realized delta: a fuse is an interpretation, never a
+    /// mutation.  Union re-keys `from`/`to` when the line lands elsewhere;
+    /// the name travels untouched.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub view: Option<ViewSpan>,
+    pub fuse: Option<Fuse>,
 }
 
 /// One applied patch, as the log records it: intent plus realization plus
@@ -131,24 +135,29 @@ pub struct LogLine {
 impl LogLine {
     /// Validate provenance-dependent requirements (§2.5).
     pub fn validate(&self) -> Result<()> {
-        if self.annotation.view.is_some() && !self.realized.is_empty() {
+        if self.annotation.fuse.is_some() && !self.realized.is_empty() {
             return Err(Error::Invalid(
-                "view lines carry an empty realized delta: a view is a rendering, \
+                "fuse lines carry an empty realized delta: a fuse is an interpretation, \
                  never a mutation"
                     .to_string(),
             ));
         }
         match self.annotation.provenance {
             Provenance::Agent => Ok(()),
-            Provenance::View => {
-                if self.annotation.view.is_none() {
+            Provenance::Fuse => {
+                let Some(fuse) = &self.annotation.fuse else {
                     return Err(Error::Invalid(
-                        "view lines require a view span".to_string(),
+                        "fuse lines require a fuse span".to_string(),
+                    ));
+                };
+                if fuse.name.is_empty() {
+                    return Err(Error::Invalid(
+                        "fuse lines require a non-empty name".to_string(),
                     ));
                 }
                 if !self.intent.ops.is_empty() {
                     return Err(Error::Invalid(
-                        "view lines carry no intent ops".to_string(),
+                        "fuse lines carry no intent ops".to_string(),
                     ));
                 }
                 Ok(())
