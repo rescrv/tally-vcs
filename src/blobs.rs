@@ -14,8 +14,11 @@ use crate::{Error, Result, ioerr};
 /// A content-addressed blob store rooted at `blobs/`.
 ///
 /// The path of a blob is `blobs/<first 2 hex>/<remaining 62 hex>`.  Write
-/// protocol: stream to `blobs/tmp/<random>` hashing as you go; fsync;
-/// `rename(2)` into place.  A collision on rename is a deduplication hit.
+/// protocol: stream to `blobs/tmp/<random>` hashing as you go; `rename(2)`
+/// into place.  Single writes fsync the temp file and the fan-out directory;
+/// bulk writers ([`BlobStore::put_unsynced`]) skip both fsyncs and call
+/// [`BlobStore::sync`] once, before the commit that references the blobs.
+/// A collision on rename is a deduplication hit.
 pub struct BlobStore {
     root: PathBuf,
 }
@@ -85,8 +88,30 @@ impl BlobStore {
     }
 
     /// Write `content` to the pool; returns its hash.  Idempotent: an
-    /// existing blob of the same name is a deduplication hit.
+    /// existing blob of the same name is a deduplication hit.  The blob is
+    /// fsync'd before this returns, so it is durable before anything can
+    /// reference it.
     pub fn put(&self, content: &[u8]) -> Result<String> {
+        self.write(content, Durability::Immediate)
+    }
+
+    /// Write `content` to the pool like [`BlobStore::put`], but skip every
+    /// fsync: the rename is visible, the bytes are not yet durable.  Bulk
+    /// writers (git import, working-tree ingest, union replay, unpack) use
+    /// this and then call [`BlobStore::sync`] once before any log line
+    /// referencing the blobs is appended, preserving I8 write-ahead ordering
+    /// with a single device sync instead of two fsyncs per blob.
+    pub fn put_unsynced(&self, content: &[u8]) -> Result<String> {
+        self.write(content, Durability::Deferred)
+    }
+
+    /// Make every deferred ([`BlobStore::put_unsynced`]) write durable in
+    /// one device-level sync of the filesystem holding the pool.
+    pub fn sync(&self) -> Result<()> {
+        sync_device(&self.root)
+    }
+
+    fn write(&self, content: &[u8], durability: Durability) -> Result<String> {
         let hash = sha3_hex(content);
         let dst = self.path_for(&hash)?;
         if dst.exists() {
@@ -98,13 +123,17 @@ impl BlobStore {
         {
             let mut f = fs::File::create(&tmp).map_err(ioerr("creating blob temp file"))?;
             f.write_all(content).map_err(ioerr("writing blob temp file"))?;
-            f.sync_all().map_err(ioerr("fsyncing blob temp file"))?;
+            if durability == Durability::Immediate {
+                f.sync_all().map_err(ioerr("fsyncing blob temp file"))?;
+            }
         }
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(ioerr("creating blob fan-out directory"))?;
         }
         fs::rename(&tmp, &dst).map_err(ioerr(format!("renaming blob {hash} into place")))?;
-        fsync_dir(dst.parent().unwrap_or(&self.root))?;
+        if durability == Durability::Immediate {
+            fsync_dir(dst.parent().unwrap_or(&self.root))?;
+        }
         Ok(hash)
     }
 
@@ -126,10 +155,54 @@ impl BlobStore {
     }
 }
 
+/// Whether a blob write fsyncs before returning.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Durability {
+    /// fsync the temp file and the fan-out directory: durable on return.
+    Immediate,
+    /// No fsync at all: [`BlobStore::sync`] must run before any commit that
+    /// references the blob.
+    Deferred,
+}
+
 /// fsync a directory so a rename into it is durable.
 pub fn fsync_dir(dir: &Path) -> Result<()> {
     let f = fs::File::open(dir).map_err(ioerr(format!("opening directory {}", dir.display())))?;
     f.sync_all().map_err(ioerr(format!("fsyncing directory {}", dir.display())))
+}
+
+/// Sync the device holding `dir`, making every deferred write on that
+/// filesystem durable in one call: `syncfs(2)` on Linux, `sync(2)` on other
+/// unix.  Bulk blob writers use this in place of per-blob fsyncs: write
+/// every file unsynced, sync once, then commit.
+pub fn sync_device(dir: &Path) -> Result<()> {
+    sync_device_impl(dir)
+}
+
+#[cfg(target_os = "linux")]
+fn sync_device_impl(dir: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let f = fs::File::open(dir).map_err(ioerr(format!("opening directory {}", dir.display())))?;
+    if unsafe { libc::syncfs(f.as_raw_fd()) } != 0 {
+        return Err(ioerr(format!("syncfs on {}", dir.display()))(
+            std::io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn sync_device_impl(_dir: &Path) -> Result<()> {
+    // No per-filesystem sync outside Linux; sync(2) flushes every device.
+    unsafe { libc::sync() }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_device_impl(_dir: &Path) -> Result<()> {
+    // The durability protocol is unix-shaped (fsync_dir opens directories);
+    // there is nothing to sync here.
+    Ok(())
 }
 
 #[cfg(test)]
@@ -158,6 +231,16 @@ mod tests {
         let a = store.put(b"same bytes").unwrap();
         let b = store.put(b"same bytes").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn put_unsynced_then_sync_round_trip() {
+        let store = BlobStore::init(tempdir("deferred")).unwrap();
+        let hash = store.put_unsynced(b"deferred durability\n").unwrap();
+        assert_eq!(hash, sha3_hex(b"deferred durability\n"));
+        store.sync().unwrap();
+        assert!(store.has(&hash).unwrap());
+        assert_eq!(store.get(&hash).unwrap(), b"deferred durability\n");
     }
 
     #[test]

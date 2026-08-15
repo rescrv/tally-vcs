@@ -606,7 +606,10 @@ pub fn reanchor(
     Ok(commit)
 }
 
-/// Ingest one commit's tree into the pool and derive its manifest.
+/// Ingest one commit's tree into the pool and derive its manifest.  Blobs
+/// land unsynced: the imports below write thousands per run, so they defer
+/// to one device sync before the commit that references them (see
+/// [`BlobStore::put_unsynced`]) rather than fsyncing each blob.
 fn commit_manifest(
     blobs: &BlobStore,
     git_dir: &Path,
@@ -615,7 +618,7 @@ fn commit_manifest(
     let mut manifest = Manifest::new();
     for entry in entries {
         let content = read_git_blob(git_dir, &entry.oid)?;
-        let blob = blobs.put(&content)?;
+        let blob = blobs.put_unsynced(&content)?;
         manifest.insert(ElementRecord::new(&entry.mode, &entry.path, &blob)?)?;
     }
     Ok(manifest)
@@ -631,6 +634,8 @@ fn import_linear(
     let algorithm = object_format(git_dir)?;
     let anchor = commit_manifest(&blobs, git_dir, &trees[0])?;
     let anchor_sum = anchor.sum();
+    // The anchor commits the blobs commit_manifest pooled unsynced.
+    blobs.sync()?;
     repo.write_anchor_manifest(&anchor)?;
     // One line per commit.  The oldest commit's line is zero-op (the anchor
     // carries its state); each later line's realized delta takes the parent
@@ -689,10 +694,12 @@ fn import(repo: &Repository, git_dir: &Path, entries: &[GitEntry]) -> Result<()>
     let mut manifest = Manifest::new();
     for entry in entries {
         let content = read_git_blob(git_dir, &entry.oid)?;
-        let blob = blobs.put(&content)?;
+        let blob = blobs.put_unsynced(&content)?;
         manifest.insert(ElementRecord::new(&entry.mode, &entry.path, &blob)?)?;
     }
     let sum = manifest.sum();
+    // The anchor and fork file commit the blobs pooled unsynced above.
+    blobs.sync()?;
     repo.write_anchor_manifest(&manifest)?;
     repo.create_fork_raw("main", &ForkFile::at(&sum))?;
     Ok(())

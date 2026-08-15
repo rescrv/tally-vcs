@@ -379,8 +379,11 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
     let repo = Repository::init_bare(dest)?;
     let blobs = repo.blobs();
     for content in unpacked.blobs.values() {
-        blobs.put(content)?;
+        blobs.put_unsynced(content)?;
     }
+    // One device sync for the whole pool, before any anchor or fork that
+    // references these blobs is written below.
+    blobs.sync()?;
     // Anchors are derived, never primary: every anchor sum is a state on
     // some fork's history, so derive manifests to a fixpoint.  Start from
     // the empty state; a fork whose anchor is known contributes every state

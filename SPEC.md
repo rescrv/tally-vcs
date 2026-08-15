@@ -112,10 +112,13 @@ edge of the Wall:
 
 Raw bytes. No framing, no compression, no type tag. The path is
 `blobs/<first 2 hex>/<remaining 62 hex>`. Write protocol: stream to
-`blobs/tmp/<random>` hashing as you go; fsync; `rename(2)` into place. A
-collision on rename is a deduplication hit; discard the temp file. Everything
-content-shaped shares this pool: file contents, PR prose, spilled read sets,
-zstd dictionaries.
+`blobs/tmp/<random>` hashing as you go; `rename(2)` into place. A single
+write fsyncs the temp file and the fan-out directory; a bulk write (git
+import, working-tree ingest, union replay, unpack) skips both fsyncs and
+syncs the device once (`syncfs`/`sync`) before the commit that references
+the blobs. A collision on rename is a deduplication hit; discard the temp
+file. Everything content-shaped shares this pool: file contents, PR prose,
+spilled read sets, zstd dictionaries.
 
 ### §2.3 Fork file
 
@@ -244,9 +247,10 @@ it resolved. Dangling or reversed spans are ignored at render, never fatal.
 0. flock forks/<f>/lock
 1. LOAD     current manifest (index cache if fresh, else anchor + replay)
 2. VALIDATE every op against manifest + blobs; any failure → write nothing
-3. WRITE    new blobs (tmp+rename+fsync); idempotent, uncommitted
+3. WRITE    new blobs (tmp+rename, unsynced); idempotent, uncommitted
 4. REALIZE  deltas; fold: sum ← sum + Σ neg(removes) + Σ adds
-5. APPEND   log line; fsync file, fsync directory     ← LINEARIZATION POINT
+5. APPEND   log line; device sync (blobs), fsync file, fsync directory
+            ← LINEARIZATION POINT
 6. REFRESH  index and working tree; best-effort, derived
 7. unlock
 ```
@@ -254,6 +258,8 @@ it resolved. Dangling or reversed spans are ignored at render, never fatal.
 > **I8 (commit points).** Loose: the fsync'd log append is the sole
 > linearization point. Blobs MUST be durable before any line referencing them
 > is appended (write-ahead ordering), so a committed line never dangles.
+> Bulk blob writes fsync nothing per blob; one device sync (`syncfs`/`sync`)
+> before the append carries the ordering for the whole pool.
 
 Crash recovery: a torn final line (invalid JSON, or id fails
 re-verification) is truncated as never-committed. Orphan blobs from aborted

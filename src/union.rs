@@ -213,8 +213,10 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
                     // Write the re-realized blobs now: content-addressed and
                     // idempotent, they are safe to leave even if the union
                     // aborts (gc-blobs reclaims the unreferenced ones).
+                    // Unsynced: the committing append syncs the device
+                    // before the log fsync.
                     for (_, content) in &realization.new_blobs {
-                        blobs.put(content)?;
+                        blobs.put_unsynced(content)?;
                     }
                     (realization.realized, Stratum::IntentReplay)
                 }

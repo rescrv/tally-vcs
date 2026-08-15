@@ -90,6 +90,9 @@ impl Repository {
     /// `log.jsonl` bytes an unpack produced.  The anchor manifest must
     /// already exist.
     pub fn restore_fork(&self, name: &str, fork_file: &ForkFile, log_bytes: &[u8]) -> Result<()> {
+        // The log bytes reference blobs the caller may have pooled unsynced
+        // (git import, unpack); make them durable before the fork exists.
+        self.blobs().sync()?;
         self.create_fork_raw(name, fork_file)?;
         let path = self.log_path(name);
         fs::write(&path, log_bytes).map_err(ioerr("restoring fork log"))?;
@@ -643,10 +646,13 @@ impl Repository {
         // 2. VALIDATE every op; any failure → write nothing.
         let realization: Realization =
             apply_intent(&intent, &mut manifest, &self.blobs())?;
-        // 3. WRITE new blobs (tmp+rename+fsync); idempotent, uncommitted.
+        // 3. WRITE new blobs (tmp+rename, unsynced); idempotent,
+        //    uncommitted.  The device sync before the step-5 append makes
+        //    them durable: write-ahead ordering with one sync for the whole
+        //    pool instead of two fsyncs per blob.
         let blobs = self.blobs();
         for (hash, content) in &realization.new_blobs {
-            let written = blobs.put(content)?;
+            let written = blobs.put_unsynced(content)?;
             debug_assert_eq!(&written, hash);
         }
         // 4. REALIZE deltas; fold the sum.
@@ -661,6 +667,9 @@ impl Repository {
             annotation,
         };
         let bytes = line.seal(&blobs)?;
+        // 4b. SYNC the device: every blob this line references is durable
+        // before the append (I8 write-ahead ordering).
+        blobs.sync()?;
         // 5. APPEND log line; fsync file, fsync directory ← LINEARIZATION POINT.
         let path = self.log_path(fork);
         let mut file = fs::OpenOptions::new()
@@ -714,6 +723,10 @@ impl Repository {
             annotation,
         };
         let bytes = line.seal(&blobs)?;
+        // The caller pooled this line's blobs, possibly unsynced (commit's
+        // working-tree scan); one device sync makes them durable before the
+        // append (I8 write-ahead ordering).
+        blobs.sync()?;
         let path = self.log_path(fork);
         let mut file = fs::OpenOptions::new()
             .append(true)
@@ -781,6 +794,9 @@ impl Repository {
         if lines.is_empty() {
             return Ok(0);
         }
+        // One device sync covers every blob the batch references, however it
+        // was pooled (I8 write-ahead ordering).
+        blobs.sync()?;
         // Append the whole batch, fsync file, fsync directory ← LINEARIZATION POINT.
         let path = self.log_path(fork);
         let mut file = fs::OpenOptions::new()
@@ -804,14 +820,18 @@ impl Repository {
     /// caller must already hold it, because union replays the whole merge
     /// against an in-memory manifest under one lock and commits the result
     /// here or not at all.  Every blob the lines reference must already be
-    /// durable (union writes them, idempotent and uncommitted, during the
-    /// replay).  `bytes` is the concatenation of the lines' sealed encodings
+    /// written (union pools them unsynced, idempotent and uncommitted,
+    /// during the replay); the device sync below makes them durable before
+    /// the append.  `bytes` is the concatenation of the lines' sealed encodings
     /// in order; because log parsing is line-atomic, an empty batch is a
     /// no-op and a partial write is never partially interpreted.
     pub fn append_sealed_locked(&self, fork: &str, lines: &[LogLine], bytes: &[u8]) -> Result<()> {
         if lines.is_empty() {
             return Ok(());
         }
+        // The replay pooled the lines' blobs unsynced; one device sync makes
+        // them durable before the append (I8 write-ahead ordering).
+        self.blobs().sync()?;
         let path = self.log_path(fork);
         let mut file = fs::OpenOptions::new()
             .append(true)
@@ -949,13 +969,13 @@ impl Repository {
                 let target = target.to_str().ok_or_else(|| {
                     Error::Invalid(format!("non-UTF-8 symlink target: {}", path.display()))
                 })?;
-                let blob = self.blobs().put(target.as_bytes())?;
+                let blob = self.blobs().put_unsynced(target.as_bytes())?;
                 records.push(ElementRecord::new("120000", &element_path, &blob)?);
             } else if meta.is_dir() {
                 self.walk_tree(&path, ignore, records)?;
             } else {
                 let content = fs::read(&path).map_err(ioerr("reading working tree file"))?;
-                let blob = self.blobs().put(&content)?;
+                let blob = self.blobs().put_unsynced(&content)?;
                 #[cfg(unix)]
                 let mode = {
                     use std::os::unix::fs::PermissionsExt;
@@ -993,8 +1013,9 @@ impl Repository {
     /// The pending patch is what `status` shows — the working tree diffed
     /// against the fork's current state.  There is no index: the blob pool
     /// already plays that part, because the working-tree scan ingests every
-    /// blob it hashes, so by the time the line is appended every referenced
-    /// blob is durable (I8 write-ahead ordering, for free).  `filters`
+    /// blob it hashes, and the device sync [`Repository::apply_realized`]
+    /// runs before appending makes every referenced blob durable (I8
+    /// write-ahead ordering).  `filters`
     /// restricts the commit to matching paths — partial commits without a
     /// third state to reconcile; the leftover stays pending.
     ///
