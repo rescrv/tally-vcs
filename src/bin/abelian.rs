@@ -291,6 +291,12 @@ fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
         .unwrap_or_else(|| "main".to_string());
     let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
     let commit = abelian::git::reanchor(&repo, git_dir.as_deref(), committish, &fork)?;
+    // Reanchor is the rebind `git pull`'s error sends users to: repoint the
+    // mirror binding at the committish so the next pull fast-forwards from it.
+    repo.write_mirror(&abelian::repo::MirrorBinding {
+        fork: fork.clone(),
+        branch: committish.to_string(),
+    })?;
     println!("reanchored mirror {fork} onto {commit}");
     println!("head {}", repo.current_state(&fork)?.sum.hexdigest());
     Ok(())
