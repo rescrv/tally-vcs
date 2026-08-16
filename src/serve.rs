@@ -104,7 +104,10 @@ impl ServeManifest {
         verify_record_id(&value)?;
         let manifest: ServeManifest = serde_json::from_value(value)?;
         if manifest.v != 0 {
-            return Err(Error::Corrupt(format!("unsupported manifest version {}", manifest.v)));
+            return Err(Error::Corrupt(format!(
+                "unsupported manifest version {}",
+                manifest.v
+            )));
         }
         Ok(manifest)
     }
@@ -209,8 +212,14 @@ pub fn pack(
     }
     // Segments are content-addressed: an existing name is the same bytes,
     // so a lost put-if-absent race is a no-op.
-    put_if_absent(&out_dir.join("seg").join(format!("{}.pk", built.segid)), &built.pk)?;
-    put_if_absent(&out_dir.join("seg").join(format!("{}.idx", built.segid)), &built.idx)?;
+    put_if_absent(
+        &out_dir.join("seg").join(format!("{}.pk", built.segid)),
+        &built.pk,
+    )?;
+    put_if_absent(
+        &out_dir.join("seg").join(format!("{}.idx", built.segid)),
+        &built.idx,
+    )?;
 
     let mut segments = BTreeMap::new();
     segments.insert(
@@ -237,8 +246,10 @@ pub fn pack(
     manifest.id = record_id(&serde_json::to_value(&manifest)?)?;
     // Manifests are seq-addressed: losing the put-if-absent means another
     // packer took this seq, and silently dropping ours would lie.
-    if !put_if_absent(&out_dir.join("manifest").join(format!("{seq}.json")), &manifest.to_bytes()?)?
-    {
+    if !put_if_absent(
+        &out_dir.join("manifest").join(format!("{seq}.json")),
+        &manifest.to_bytes()?,
+    )? {
         return Err(Error::Invalid(format!(
             "manifest {seq}.json already exists in {}; pack lost the put-if-absent",
             out_dir.display()
@@ -277,7 +288,9 @@ pub fn unpack_segments(
     let mut opened = Vec::new();
     for (segid, meta) in &manifest.segments {
         if meta.pk_sha3 != *segid {
-            return Err(Error::Corrupt(format!("segment {segid}: pk_sha3 differs from segid")));
+            return Err(Error::Corrupt(format!(
+                "segment {segid}: pk_sha3 differs from segid"
+            )));
         }
         let pk = fetch(&format!("seg/{segid}.pk"))?;
         let idx = fetch(&format!("seg/{segid}.idx"))?;
@@ -331,7 +344,11 @@ pub fn unpack_segments(
     };
     let mut constructed = Vec::new();
     for (segid, entry) in &constructs {
-        let segment = &opened.iter().find(|(s, _)| s == segid).expect("opened above").1;
+        let segment = &opened
+            .iter()
+            .find(|(s, _)| s == segid)
+            .expect("opened above")
+            .1;
         let bytes = segment.materialize(entry, &fetch_blob, &fetch_line)?;
         constructed.push((entry.sha3.clone(), bytes));
     }
@@ -369,7 +386,11 @@ pub fn unpack_segments(
         }
         logs.insert(fork.clone(), bytes);
     }
-    Ok(Unpacked { manifest: manifest.clone(), blobs, logs })
+    Ok(Unpacked {
+        manifest: manifest.clone(),
+        blobs,
+        logs,
+    })
 }
 
 /// Materialize an unpacked repository as a loose one at `dest`.  Anchor
@@ -393,7 +414,10 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
     known.insert(Sum::zero().hexdigest(), Manifest::new());
     let mut parsed: BTreeMap<&String, Vec<LogLine>> = BTreeMap::new();
     for fork in unpacked.manifest.forks.keys() {
-        parsed.insert(fork, parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty))?);
+        parsed.insert(
+            fork,
+            parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty))?,
+        );
     }
     // Every state a log passes through is derivable by replay, guarded by
     // arithmetic: a derived manifest is recorded only when its running sum
@@ -422,10 +446,10 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
         initials.insert(fork, initial_sum(lines)?);
     }
     let derive = |from: &Manifest,
-                      from_sum: &str,
-                      lines: &[LogLine],
-                      initial: &Option<String>,
-                      known: &mut BTreeMap<String, Manifest>| {
+                  from_sum: &str,
+                  lines: &[LogLine],
+                  initial: &Option<String>,
+                  known: &mut BTreeMap<String, Manifest>| {
         let start = if initial.as_deref() == Some(from_sum) {
             0
         } else {
@@ -449,7 +473,9 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
             if sum.hexdigest() != line.sum_after {
                 return; // wrong context; record nothing further
             }
-            known.entry(line.sum_after.clone()).or_insert_with(|| manifest.clone());
+            known
+                .entry(line.sum_after.clone())
+                .or_insert_with(|| manifest.clone());
         }
     };
     let mut unresolved: Vec<&String> = unpacked.manifest.forks.keys().collect();
@@ -487,7 +513,10 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
             .get(&head.anchor)
             .expect("fixpoint resolved every fork");
         repo.write_anchor_manifest(anchor_manifest)?;
-        let fork_file = ForkFile { anchor: head.anchor.clone(), manifest: head.anchor.clone() };
+        let fork_file = ForkFile {
+            anchor: head.anchor.clone(),
+            manifest: head.anchor.clone(),
+        };
         repo.restore_fork(fork, &fork_file, unpacked.logs.get(fork).unwrap_or(&empty))?;
         let state = repo.current_state(fork)?;
         if state.sum.hexdigest() != head.head_sum || state.head_id != head.head_id {
@@ -569,12 +598,16 @@ mod tests {
     }
 
     fn note() -> Annotation {
-        Annotation { author: "t".to_string(), ..Annotation::default() }
+        Annotation {
+            author: "t".to_string(),
+            ..Annotation::default()
+        }
     }
 
     fn populated(name: &str) -> Repository {
         let repo = Repository::init(temp_dir(&format!("{name}-loose"))).unwrap();
-        repo.apply("main", create("/src/main.rs", b"fn main() {}\n"), note()).unwrap();
+        repo.apply("main", create("/src/main.rs", b"fn main() {}\n"), note())
+            .unwrap();
         repo.apply(
             "main",
             Intent {
@@ -588,7 +621,8 @@ mod tests {
         )
         .unwrap();
         repo.create_fork("session-1", "main").unwrap();
-        repo.apply("session-1", create("/notes.md", b"# notes\n"), note()).unwrap();
+        repo.apply("session-1", create("/notes.md", b"# notes\n"), note())
+            .unwrap();
         repo
     }
 
@@ -611,7 +645,10 @@ mod tests {
             );
         }
         // The blob pool survives.
-        assert_eq!(repo.blobs().list().unwrap(), restored.blobs().list().unwrap());
+        assert_eq!(
+            repo.blobs().list().unwrap(),
+            restored.blobs().list().unwrap()
+        );
         // States agree.
         for fork in ["main", "session-1"] {
             assert_eq!(
@@ -636,7 +673,8 @@ mod tests {
         let repo = populated("snap");
         repo.snapshot("main").unwrap();
         repo.snapshot("session-1").unwrap();
-        repo.apply("main", create("/after-snap.rs", b"a\n"), note()).unwrap();
+        repo.apply("main", create("/after-snap.rs", b"a\n"), note())
+            .unwrap();
         let packed = temp_dir("snap-packed");
         pack(&repo, &packed, 1, "", 3).unwrap();
         let restored = unpack_dir(&packed, &temp_dir("snap-restored")).unwrap();
@@ -646,7 +684,10 @@ mod tests {
                 restored.current_state(fork).unwrap().sum,
                 "fork {fork}"
             );
-            assert_eq!(repo.log_bytes(fork).unwrap(), restored.log_bytes(fork).unwrap());
+            assert_eq!(
+                repo.log_bytes(fork).unwrap(),
+                restored.log_bytes(fork).unwrap()
+            );
         }
     }
 
@@ -659,7 +700,9 @@ mod tests {
         let parsed = ServeManifest::parse(&bytes).unwrap();
         assert_eq!(parsed, manifest);
         // Tampering breaks the id.
-        let tampered = String::from_utf8(bytes).unwrap().replace("\"seq\":1", "\"seq\":2");
+        let tampered = String::from_utf8(bytes)
+            .unwrap()
+            .replace("\"seq\":1", "\"seq\":2");
         assert!(ServeManifest::parse(tampered.as_bytes()).is_err());
     }
 
@@ -680,7 +723,8 @@ mod tests {
             assert_eq!(ia, ib);
         }
         // New content moves the delta off zero.
-        repo.apply("main", create("/new.rs", b"n\n"), note()).unwrap();
+        repo.apply("main", create("/new.rs", b"n\n"), note())
+            .unwrap();
         let packed_c = temp_dir("compact-c");
         let c = pack(&repo, &packed_c, 3, &b.id, 3).unwrap();
         assert_ne!(swap_delta(&b, &c).unwrap(), Sum::zero());

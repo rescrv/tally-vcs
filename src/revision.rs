@@ -54,14 +54,23 @@ fn lineage_states(repo: &Repository, fork: &str) -> Result<Vec<StatePoint>> {
             let inverse: Vec<RealizedEntry> = first
                 .realized
                 .iter()
-                .map(|e| RealizedEntry { remove: e.add.clone(), add: e.remove.clone() })
+                .map(|e| RealizedEntry {
+                    remove: e.add.clone(),
+                    add: e.remove.clone(),
+                })
                 .collect();
             apply_realized_to_sum(&after, &inverse)?.hexdigest()
         }
     };
-    let mut points = vec![StatePoint { sum: base, line: None }];
+    let mut points = vec![StatePoint {
+        sum: base,
+        line: None,
+    }];
     for line in lines {
-        points.push(StatePoint { sum: line.sum_after.clone(), line: Some(line.id.clone()) });
+        points.push(StatePoint {
+            sum: line.sum_after.clone(),
+            line: Some(line.id.clone()),
+        });
     }
     Ok(points)
 }
@@ -103,25 +112,22 @@ fn split_suffixes(spec: &str) -> (&str, Vec<&str>) {
                 suffixes.push(&rest[j..k]);
                 j = k;
             }
-            b'@' if rb.get(j + 1) == Some(&b'{') => {
-                match rest[j..].find('}') {
-                    Some(off) => {
-                        suffixes.push(&rest[j..j + off + 1]);
-                        j += off + 1;
-                    }
-                    None => {
-                        suffixes.push(&rest[j..]);
-                        j = rb.len();
-                    }
+            b'@' if rb.get(j + 1) == Some(&b'{') => match rest[j..].find('}') {
+                Some(off) => {
+                    suffixes.push(&rest[j..j + off + 1]);
+                    j += off + 1;
                 }
-            }
+                None => {
+                    suffixes.push(&rest[j..]);
+                    j = rb.len();
+                }
+            },
             _ => {
                 // Not a recognized suffix operator; fold it back into nothing
                 // (the base already ended here), treat as a stray character.
                 // Slice the whole character: a one-byte slice of a multibyte
                 // char would panic at the char boundary.
-                let ch_len =
-                    rest[j..].chars().next().map(char::len_utf8).unwrap_or(1);
+                let ch_len = rest[j..].chars().next().map(char::len_utf8).unwrap_or(1);
                 suffixes.push(&rest[j..j + ch_len]);
                 j += ch_len;
             }
@@ -290,10 +296,7 @@ fn resolve_sum(
 /// forks in name order (from `fork_names`, which sorts) and take the last
 /// occurrence on the first fork that carries the sum; the fork label only
 /// records where we read it, since the state is the same wherever it lives.
-fn resolve_sum_global(
-    repo: &Repository,
-    s: &str,
-) -> Result<(String, usize, Vec<StatePoint>)> {
+fn resolve_sum_global(repo: &Repository, s: &str) -> Result<(String, usize, Vec<StatePoint>)> {
     for fork in repo.fork_names()? {
         let points = lineage_states(repo, &fork)?;
         if let Some(idx) = points.iter().rposition(|p| p.sum == s) {
@@ -396,8 +399,7 @@ mod tests {
     use crate::patch::{Intent, Op};
 
     fn temp_repo(name: &str) -> Repository {
-        let dir =
-            std::env::temp_dir().join(format!("tally-rev-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-rev-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Repository::init(&dir).unwrap()
@@ -424,7 +426,10 @@ mod tests {
     }
 
     fn note() -> Annotation {
-        Annotation { author: "t".to_string(), ..Annotation::default() }
+        Annotation {
+            author: "t".to_string(),
+            ..Annotation::default()
+        }
     }
 
     #[test]
@@ -487,7 +492,10 @@ mod tests {
         // @{1} on the session is the state before c — main's head, across
         // the lineage boundary.
         let back = resolve(&repo, "session@{1}", "main").unwrap();
-        assert_eq!(back.sum, repo.current_state("main").unwrap().sum.hexdigest());
+        assert_eq!(
+            back.sum,
+            repo.current_state("main").unwrap().sum.hexdigest()
+        );
     }
 
     #[test]
@@ -554,7 +562,13 @@ mod tests {
         assert_eq!(by_sum.line.as_deref(), Some(d.id.as_str()));
         // But the two lines have distinct ids, so each id resolves cleanly to
         // its own point, even though they name the same state.
-        assert_eq!(resolve(&repo, &a.id, "main").unwrap().line.as_deref(), Some(a.id.as_str()));
-        assert_eq!(resolve(&repo, &d.id, "main").unwrap().line.as_deref(), Some(d.id.as_str()));
+        assert_eq!(
+            resolve(&repo, &a.id, "main").unwrap().line.as_deref(),
+            Some(a.id.as_str())
+        );
+        assert_eq!(
+            resolve(&repo, &d.id, "main").unwrap().line.as_deref(),
+            Some(d.id.as_str())
+        );
     }
 }

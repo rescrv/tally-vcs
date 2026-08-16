@@ -26,7 +26,10 @@ impl ForkFile {
     /// A fork anchored at the given sum, whose manifest is that same state.
     pub fn at(anchor: &Sum) -> Self {
         let hex = anchor.hexdigest();
-        ForkFile { anchor: hex.clone(), manifest: hex }
+        ForkFile {
+            anchor: hex.clone(),
+            manifest: hex,
+        }
     }
 
     /// The empty repository's fork: anchor all-zeros, empty manifest.
@@ -36,7 +39,11 @@ impl ForkFile {
 
     /// Serialize the three lines.
     pub fn to_bytes(&self) -> Vec<u8> {
-        format!("{FORK_HEADER}\nanchor {}\nmanifest {}\n", self.anchor, self.manifest).into_bytes()
+        format!(
+            "{FORK_HEADER}\nanchor {}\nmanifest {}\n",
+            self.anchor, self.manifest
+        )
+        .into_bytes()
     }
 
     /// Parse and validate a fork file.
@@ -57,9 +64,14 @@ impl ForkFile {
             .and_then(|l| l.strip_prefix("manifest "))
             .ok_or_else(|| Error::Corrupt("fork file missing manifest line".to_string()))?;
         if !is_hex64(anchor) || !is_hex64(manifest) {
-            return Err(Error::Corrupt("fork anchor/manifest must be 64 hex".to_string()));
+            return Err(Error::Corrupt(
+                "fork anchor/manifest must be 64 hex".to_string(),
+            ));
         }
-        Ok(ForkFile { anchor: anchor.to_string(), manifest: manifest.to_string() })
+        Ok(ForkFile {
+            anchor: anchor.to_string(),
+            manifest: manifest.to_string(),
+        })
     }
 }
 

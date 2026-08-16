@@ -30,8 +30,15 @@ impl Manifest {
     pub fn from_records(records: impl IntoIterator<Item = ElementRecord>) -> Result<Self> {
         let mut manifest = Manifest::new();
         for record in records {
-            if manifest.elements.insert(record.path.clone(), record.clone()).is_some() {
-                return Err(Error::Corrupt(format!("duplicate path in manifest: {}", record.path)));
+            if manifest
+                .elements
+                .insert(record.path.clone(), record.clone())
+                .is_some()
+            {
+                return Err(Error::Corrupt(format!(
+                    "duplicate path in manifest: {}",
+                    record.path
+                )));
             }
         }
         Ok(manifest)
@@ -51,7 +58,10 @@ impl Manifest {
     /// Insert an element; the path must be absent.
     pub fn insert(&mut self, record: ElementRecord) -> Result<()> {
         if self.elements.contains_key(&record.path) {
-            return Err(Error::Precondition(format!("path already present: {}", record.path)));
+            return Err(Error::Precondition(format!(
+                "path already present: {}",
+                record.path
+            )));
         }
         self.elements.insert(record.path.clone(), record);
         Ok(())
@@ -177,7 +187,10 @@ mod tests {
         let r = rec("100644", "/a", b"a");
         let mut m = Manifest::from_records([r.clone()]).unwrap();
         let absent = rec("100644", "/b", b"b");
-        assert!(m.remove(&absent).is_err(), "placeholder debt must be refused");
+        assert!(
+            m.remove(&absent).is_err(),
+            "placeholder debt must be refused"
+        );
         let wrong_blob = rec("100644", "/a", b"different");
         assert!(m.remove(&wrong_blob).is_err());
         m.remove(&r).unwrap();

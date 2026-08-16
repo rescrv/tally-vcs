@@ -12,29 +12,29 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use tally::Error;
 use tally::b64;
 use tally::ident::{ElementRecord, Sum, sha3_hex};
 use tally::log::Annotation;
 use tally::manifest::Manifest;
 use tally::patch::{Intent, Op, RealizedEntry};
 use tally::repo::Repository;
-use tally::Error;
 use tally::union::{Stratum, union};
 
 /////////////////////////////////////////// scaffolding ///////////////////////////////////////////
 
 fn temp_repo(name: &str) -> Repository {
-    let dir = std::env::temp_dir().join(format!(
-        "tally-fork-union-{name}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("tally-fork-union-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     Repository::init(&dir).unwrap()
 }
 
 fn note(author: &str) -> Annotation {
-    Annotation { author: author.to_string(), ..Annotation::default() }
+    Annotation {
+        author: author.to_string(),
+        ..Annotation::default()
+    }
 }
 
 /// xorshift64*: deterministic, seedable, no dev-dependencies.
@@ -75,7 +75,12 @@ struct Model {
 impl Model {
     fn unique_line(&mut self, path: &str) -> String {
         self.counter += 1;
-        format!("L{:06} {} salt{:016x}\n", self.counter, path, self.counter.wrapping_mul(0x9E3779B97F4A7C15))
+        format!(
+            "L{:06} {} salt{:016x}\n",
+            self.counter,
+            path,
+            self.counter.wrapping_mul(0x9E3779B97F4A7C15)
+        )
     }
 
     /// The sum the repository must reach if it applied the same deltas.
@@ -106,7 +111,8 @@ impl Model {
             for _ in 0..1 + rng.below(4) {
                 content.extend_from_slice(self.unique_line(&path).as_bytes());
             }
-            self.files.insert(path.clone(), ("100644".to_string(), content.clone()));
+            self.files
+                .insert(path.clone(), ("100644".to_string(), content.clone()));
             Intent {
                 ops: vec![Op::Create {
                     path,
@@ -136,15 +142,29 @@ impl Model {
             // Delete: consume the whole element by blob hash.
             let path = mine[rng.below(mine.len())].clone();
             let (_, content) = self.files.remove(&path).unwrap();
-            Intent { ops: vec![Op::Delete { path, blob: sha3_hex(&content) }] }
+            Intent {
+                ops: vec![Op::Delete {
+                    path,
+                    blob: sha3_hex(&content),
+                }],
+            }
         } else {
             // Chmod: flip 100644 <-> 100755.
             let path = mine[rng.below(mine.len())].clone();
             let (mode, _) = self.files.get(&path).unwrap().clone();
-            let new_mode =
-                if mode == "100644" { "100755".to_string() } else { "100644".to_string() };
+            let new_mode = if mode == "100644" {
+                "100755".to_string()
+            } else {
+                "100644".to_string()
+            };
             self.files.get_mut(&path).unwrap().0 = new_mode.clone();
-            Intent { ops: vec![Op::Chmod { path, old_mode: mode, new_mode }] }
+            Intent {
+                ops: vec![Op::Chmod {
+                    path,
+                    old_mode: mode,
+                    new_mode,
+                }],
+            }
         }
     }
 }
@@ -232,7 +252,11 @@ fn generated_deltas_converge_across_forks() {
     }
     let a = repo.current_state("target-a").unwrap().sum;
     let b = repo.current_state("target-b").unwrap().sum;
-    assert_eq!(a.hexdigest(), b.hexdigest(), "patches commute; union order is irrelevant");
+    assert_eq!(
+        a.hexdigest(),
+        b.hexdigest(),
+        "patches commute; union order is irrelevant"
+    );
 
     // Idempotence: a second union carries nothing.
     for name in &names {
@@ -254,16 +278,25 @@ fn generated_deltas_converge_across_forks() {
 #[test]
 fn deltas_of_every_kind_travel_through_union() {
     let repo = temp_repo("kinds");
-    repo.apply("main", create("/a.txt", b"alpha\nbeta\ngamma\n"), note("t")).unwrap();
-    repo.apply("main", create("/doomed.txt", b"bye\n"), note("t")).unwrap();
-    repo.apply("main", create("/script.sh", b"#!/bin/sh\n"), note("t")).unwrap();
+    repo.apply("main", create("/a.txt", b"alpha\nbeta\ngamma\n"), note("t"))
+        .unwrap();
+    repo.apply("main", create("/doomed.txt", b"bye\n"), note("t"))
+        .unwrap();
+    repo.apply("main", create("/script.sh", b"#!/bin/sh\n"), note("t"))
+        .unwrap();
     repo.create_fork("s", "main").unwrap();
 
     // The fork: an edit, a delete, a chmod, a create, and a symlink.
-    repo.apply("s", edit("/a.txt", "beta", "BETA"), note("s")).unwrap();
+    repo.apply("s", edit("/a.txt", "beta", "BETA"), note("s"))
+        .unwrap();
     repo.apply(
         "s",
-        Intent { ops: vec![Op::Delete { path: "/doomed.txt".to_string(), blob: sha3_hex(b"bye\n") }] },
+        Intent {
+            ops: vec![Op::Delete {
+                path: "/doomed.txt".to_string(),
+                blob: sha3_hex(b"bye\n"),
+            }],
+        },
         note("s"),
     )
     .unwrap();
@@ -279,7 +312,8 @@ fn deltas_of_every_kind_travel_through_union() {
         note("s"),
     )
     .unwrap();
-    repo.apply("s", create("/new.txt", b"fresh\n"), note("s")).unwrap();
+    repo.apply("s", create("/new.txt", b"fresh\n"), note("s"))
+        .unwrap();
     repo.apply(
         "s",
         Intent {
@@ -297,24 +331,54 @@ fn deltas_of_every_kind_travel_through_union() {
     // Main drifts in a disjoint span of the edited file: the edit must fall
     // through stratum 2 to stratum 3; everything untouched by the drift
     // still lands at stratum 2.
-    repo.apply("main", edit("/a.txt", "gamma", "GAMMA"), note("t")).unwrap();
+    repo.apply("main", edit("/a.txt", "gamma", "GAMMA"), note("t"))
+        .unwrap();
 
     let outcome = union(&repo, "s", "main", "maintainer").unwrap();
     assert!(outcome.complete(), "all five kinds land mechanically");
     assert_eq!(outcome.landed.len(), 5);
-    assert_eq!(outcome.landed[0].stratum, Stratum::IntentReplay, "edit re-validated under drift");
+    assert_eq!(
+        outcome.landed[0].stratum,
+        Stratum::IntentReplay,
+        "edit re-validated under drift"
+    );
     for landed in &outcome.landed[1..] {
-        assert_eq!(landed.stratum, Stratum::RealizedReplay, "undrifted records replay directly");
+        assert_eq!(
+            landed.stratum,
+            Stratum::RealizedReplay,
+            "undrifted records replay directly"
+        );
     }
 
     let state = repo.current_state("main").unwrap();
-    let blob = repo.blobs().get(&state.manifest.get("/a.txt").unwrap().blob).unwrap();
-    assert_eq!(blob, b"alpha\nBETA\nGAMMA\n", "both sides' edits are present");
-    assert!(state.manifest.get("/doomed.txt").is_none(), "the delete travelled");
-    assert_eq!(state.manifest.get("/script.sh").unwrap().mode, "100755", "the chmod travelled");
-    assert_eq!(state.manifest.get("/link").unwrap().mode, "120000", "the symlink travelled");
+    let blob = repo
+        .blobs()
+        .get(&state.manifest.get("/a.txt").unwrap().blob)
+        .unwrap();
+    assert_eq!(
+        blob, b"alpha\nBETA\nGAMMA\n",
+        "both sides' edits are present"
+    );
+    assert!(
+        state.manifest.get("/doomed.txt").is_none(),
+        "the delete travelled"
+    );
+    assert_eq!(
+        state.manifest.get("/script.sh").unwrap().mode,
+        "100755",
+        "the chmod travelled"
+    );
+    assert_eq!(
+        state.manifest.get("/link").unwrap().mode,
+        "120000",
+        "the symlink travelled"
+    );
     let (expected, actual) = repo.check("main").unwrap();
-    assert_eq!(expected.hexdigest(), actual.hexdigest(), "working tree matches, symlink included");
+    assert_eq!(
+        expected.hexdigest(),
+        actual.hexdigest(),
+        "working tree matches, symlink included"
+    );
 }
 
 /// Stratum 4 is a gate, not a stratum: conflicting assumptions stop union
@@ -323,54 +387,97 @@ fn deltas_of_every_kind_travel_through_union() {
 #[test]
 fn conflicts_gate_reenactment_and_leave_the_target_sound() {
     let repo = temp_repo("gate");
-    repo.apply("main", create("/x.txt", b"needle\n"), note("t")).unwrap();
+    repo.apply("main", create("/x.txt", b"needle\n"), note("t"))
+        .unwrap();
     repo.create_fork("s", "main").unwrap();
 
     // Line 1 commutes; line 2's span dies on main; line 3 sits behind it.
     // Union is atomic: because line 2 gates, *none* of the three lands.
-    repo.apply("s", create("/ok.txt", b"fine\n"), note("s")).unwrap();
-    let dead = repo.apply("s", edit("/x.txt", "needle", "thread"), note("s")).unwrap();
-    repo.apply("s", create("/after.txt", b"later\n"), note("s")).unwrap();
-    repo.apply("main", edit("/x.txt", "needle", "nail"), note("t")).unwrap();
+    repo.apply("s", create("/ok.txt", b"fine\n"), note("s"))
+        .unwrap();
+    let dead = repo
+        .apply("s", edit("/x.txt", "needle", "thread"), note("s"))
+        .unwrap();
+    repo.apply("s", create("/after.txt", b"later\n"), note("s"))
+        .unwrap();
+    repo.apply("main", edit("/x.txt", "needle", "nail"), note("t"))
+        .unwrap();
 
     let before = repo.current_state("main").unwrap();
     let outcome = union(&repo, "s", "main", "maintainer").unwrap();
     assert!(!outcome.complete());
-    assert!(outcome.landed.is_empty(), "atomic: no prefix lands before the gate");
+    assert!(
+        outcome.landed.is_empty(),
+        "atomic: no prefix lands before the gate"
+    );
     let (gated_id, evidence) = outcome.needs_reenactment.as_ref().unwrap();
-    assert_eq!(gated_id, &dead.id, "the gate names the line whose assumptions died");
-    assert!(evidence.contains("0 times"), "evidence is the failed precondition: {evidence}");
+    assert_eq!(
+        gated_id, &dead.id,
+        "the gate names the line whose assumptions died"
+    );
+    assert!(
+        evidence.contains("0 times"),
+        "evidence is the failed precondition: {evidence}"
+    );
 
     let state = repo.current_state("main").unwrap();
-    assert!(state.manifest.get("/ok.txt").is_none(), "the commuting line did not leak");
-    assert!(state.manifest.get("/after.txt").is_none(), "nor the line behind the gate");
-    assert_eq!(state.sum.hexdigest(), before.sum.hexdigest(), "target byte-for-byte untouched");
-    let blob = repo.blobs().get(&state.manifest.get("/x.txt").unwrap().blob).unwrap();
+    assert!(
+        state.manifest.get("/ok.txt").is_none(),
+        "the commuting line did not leak"
+    );
+    assert!(
+        state.manifest.get("/after.txt").is_none(),
+        "nor the line behind the gate"
+    );
+    assert_eq!(
+        state.sum.hexdigest(),
+        before.sum.hexdigest(),
+        "target byte-for-byte untouched"
+    );
+    let blob = repo
+        .blobs()
+        .get(&state.manifest.get("/x.txt").unwrap().blob)
+        .unwrap();
     assert_eq!(blob, b"nail\n", "the target's own history is untouched");
 
     // Duplicate creates gate too: the same path born on both sides is a
     // conflict, not a merge.
     repo.create_fork("dup", "main").unwrap();
-    repo.apply("dup", create("/same.txt", b"mine\n"), note("d")).unwrap();
-    repo.apply("main", create("/same.txt", b"yours\n"), note("t")).unwrap();
+    repo.apply("dup", create("/same.txt", b"mine\n"), note("d"))
+        .unwrap();
+    repo.apply("main", create("/same.txt", b"yours\n"), note("t"))
+        .unwrap();
     let outcome = union(&repo, "dup", "main", "maintainer").unwrap();
-    assert!(!outcome.complete(), "duplicate create is stratum-4 material");
+    assert!(
+        !outcome.complete(),
+        "duplicate create is stratum-4 material"
+    );
     assert!(outcome.landed.is_empty());
 
     // Delete-vs-edit gates: the fork consumed the whole element, main
     // rewrote it.  Seat /ok.txt on main first — the atomic union above left
     // main untouched, so the element the fork deletes must exist here.
-    repo.apply("main", create("/ok.txt", b"fine\n"), note("t")).unwrap();
+    repo.apply("main", create("/ok.txt", b"fine\n"), note("t"))
+        .unwrap();
     repo.create_fork("del", "main").unwrap();
     repo.apply(
         "del",
-        Intent { ops: vec![Op::Delete { path: "/ok.txt".to_string(), blob: sha3_hex(b"fine\n") }] },
+        Intent {
+            ops: vec![Op::Delete {
+                path: "/ok.txt".to_string(),
+                blob: sha3_hex(b"fine\n"),
+            }],
+        },
         note("d"),
     )
     .unwrap();
-    repo.apply("main", edit("/ok.txt", "fine", "changed"), note("t")).unwrap();
+    repo.apply("main", edit("/ok.txt", "fine", "changed"), note("t"))
+        .unwrap();
     let outcome = union(&repo, "del", "main", "maintainer").unwrap();
-    assert!(!outcome.complete(), "delete of a rewritten element must gate");
+    assert!(
+        !outcome.complete(),
+        "delete of a rewritten element must gate"
+    );
 }
 
 /// Fork-of-fork chains and snapshot-repointed anchors: union still carries,
@@ -467,8 +574,9 @@ fn bench_fork_union_throughput() {
     // is a pool put once, untimed, and the timed region is pure commit
     // path: seal, chain, sum, one fsync per batch.
     let blobs = repo.blobs();
-    let pool: Vec<String> =
-        (0..BLOB_POOL).map(|i| blobs.put(format!("blob {i}\n").as_bytes()).unwrap()).collect();
+    let pool: Vec<String> = (0..BLOB_POOL)
+        .map(|i| blobs.put(format!("blob {i}\n").as_bytes()).unwrap())
+        .collect();
     repo.create_fork("firehose", "main").unwrap();
     let mut current: Vec<Option<usize>> = vec![None; PATHS]; // path -> pool index
     let mut brng = Rng::new(0xF14E);
@@ -482,8 +590,8 @@ fn bench_fork_union_throughput() {
             let path = format!("/hose/f{p:04}.txt");
             let next = brng.below(BLOB_POOL);
             let add = ElementRecord::new("100644", &path, &pool[next]).unwrap();
-            let remove = current[p]
-                .map(|old| ElementRecord::new("100644", &path, &pool[old]).unwrap());
+            let remove =
+                current[p].map(|old| ElementRecord::new("100644", &path, &pool[old]).unwrap());
             if remove.as_ref().is_some_and(|r| r.blob == add.blob) {
                 // A no-op delta is not a commit; nudge the content.
                 continue;
@@ -508,9 +616,7 @@ fn bench_fork_union_throughput() {
     let state = repo.current_state("firehose").unwrap();
     assert_eq!(state.lines.len(), committed);
     let records = current.iter().enumerate().filter_map(|(p, blob)| {
-        blob.map(|b| {
-            ElementRecord::new("100644", &format!("/hose/f{p:04}.txt"), &pool[b]).unwrap()
-        })
+        blob.map(|b| ElementRecord::new("100644", &format!("/hose/f{p:04}.txt"), &pool[b]).unwrap())
     });
     let expected = Manifest::from_records(records).unwrap().sum();
     assert_eq!(
@@ -546,17 +652,32 @@ fn bench_fork_union_throughput() {
     );
 
     eprintln!("bench_fork_union_throughput:");
-    eprintln!("  interactive apply : {APPLY_N:>6} commits in {apply_el:>10.3?} = {apply_rate:>9.1} commits/s");
-    eprintln!("  batched firehose  : {committed:>6} commits in {batch_el:>10.3?} = {batch_rate:>9.1} commits/s");
-    eprintln!("  union carry       : {UNION_N:>6} lines   in {union_el:>10.3?} = {union_rate:>9.1} lines/s");
+    eprintln!(
+        "  interactive apply : {APPLY_N:>6} commits in {apply_el:>10.3?} = {apply_rate:>9.1} commits/s"
+    );
+    eprintln!(
+        "  batched firehose  : {committed:>6} commits in {batch_el:>10.3?} = {batch_rate:>9.1} commits/s"
+    );
+    eprintln!(
+        "  union carry       : {UNION_N:>6} lines   in {union_el:>10.3?} = {union_rate:>9.1} lines/s"
+    );
 
     // Floors.  The fsync-bound paths must beat 10/s anywhere; the batched
     // path must beat 500 commits/s even in an unoptimized debug build (it
     // clears 1,000/s with optimizations, the target this test exists to
     // prove).
-    assert!(apply_rate >= 10.0, "interactive applies too slow: {apply_rate:.1}/s < 10/s");
-    assert!(union_rate >= 10.0, "union carry too slow: {union_rate:.1}/s < 10/s");
-    assert!(batch_rate >= 500.0, "batched commits too slow: {batch_rate:.1}/s < 500/s");
+    assert!(
+        apply_rate >= 10.0,
+        "interactive applies too slow: {apply_rate:.1}/s < 10/s"
+    );
+    assert!(
+        union_rate >= 10.0,
+        "union carry too slow: {union_rate:.1}/s < 10/s"
+    );
+    assert!(
+        batch_rate >= 500.0,
+        "batched commits too slow: {batch_rate:.1}/s < 500/s"
+    );
 }
 
 /////////////////////////////////////// error-path coverage ///////////////////////////////////////
@@ -566,31 +687,45 @@ fn bench_fork_union_throughput() {
 #[test]
 fn violated_preconditions_write_nothing() {
     let repo = temp_repo("preconditions");
-    repo.apply("main", create("/f.txt", b"content\n"), note("t")).unwrap();
+    repo.apply("main", create("/f.txt", b"content\n"), note("t"))
+        .unwrap();
     let before = repo.current_state("main").unwrap();
 
     // Edit of an absent path.
-    let err = repo.apply("main", edit("/absent.txt", "a", "b"), note("t")).unwrap_err();
+    let err = repo
+        .apply("main", edit("/absent.txt", "a", "b"), note("t"))
+        .unwrap_err();
     assert!(matches!(err, Error::Precondition(_)));
     // Create of a present path.
-    let err = repo.apply("main", create("/f.txt", b"again\n"), note("t")).unwrap_err();
+    let err = repo
+        .apply("main", create("/f.txt", b"again\n"), note("t"))
+        .unwrap_err();
     assert!(matches!(err, Error::Precondition(_)));
     // Delete with the wrong blob hash.
     let err = repo
         .apply(
             "main",
             Intent {
-                ops: vec![Op::Delete { path: "/f.txt".to_string(), blob: sha3_hex(b"wrong\n") }],
+                ops: vec![Op::Delete {
+                    path: "/f.txt".to_string(),
+                    blob: sha3_hex(b"wrong\n"),
+                }],
             },
             note("t"),
         )
         .unwrap_err();
     assert!(matches!(err, Error::Precondition(_)));
     // Edit whose span is ambiguous (occurs zero times).
-    let err = repo.apply("main", edit("/f.txt", "no such span", "x"), note("t")).unwrap_err();
+    let err = repo
+        .apply("main", edit("/f.txt", "no such span", "x"), note("t"))
+        .unwrap_err();
     assert!(matches!(err, Error::Precondition(_)));
 
     let after = repo.current_state("main").unwrap();
-    assert_eq!(before.sum.hexdigest(), after.sum.hexdigest(), "failures wrote nothing");
+    assert_eq!(
+        before.sum.hexdigest(),
+        after.sum.hexdigest(),
+        "failures wrote nothing"
+    );
     assert_eq!(before.lines.len(), after.lines.len());
 }

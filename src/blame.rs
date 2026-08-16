@@ -42,7 +42,9 @@ pub fn blame_path(path: &str, history: &[&LogLine], blobs: &BlobStore) -> Result
                 continue;
             }
             match op {
-                Op::Create { blob, content_b64, .. } => {
+                Op::Create {
+                    blob, content_b64, ..
+                } => {
                     let bytes = match (blob, content_b64) {
                         (Some(hash), _) => blobs.get(hash)?,
                         (None, Some(b64_content)) => b64::decode(b64_content)?,
@@ -56,7 +58,9 @@ pub fn blame_path(path: &str, history: &[&LogLine], blobs: &BlobStore) -> Result
                     content = bytes;
                     exists = true;
                 }
-                Op::Edit { old_str, new_str, .. } => {
+                Op::Edit {
+                    old_str, new_str, ..
+                } => {
                     let old = old_str.as_bytes();
                     let new = new_str.as_bytes();
                     let at = find_unique(&content, old).ok_or_else(|| {
@@ -87,7 +91,9 @@ pub fn blame_path(path: &str, history: &[&LogLine], blobs: &BlobStore) -> Result
         }
     }
     if !exists {
-        return Err(Error::Invalid(format!("path {path} does not exist at this state")));
+        return Err(Error::Invalid(format!(
+            "path {path} does not exist at this state"
+        )));
     }
     Ok(roll_up_lines(&content, &owners, history))
 }
@@ -124,7 +130,11 @@ fn roll_up_lines(content: &[u8], owners: &[usize], history: &[&LogLine]) -> Vec<
         }
         let newest = owners[range.clone()].iter().copied().max();
         let owner = newest.map(|n| history[n].id.clone()).unwrap_or_default();
-        let text_end = if content[range.end - 1] == b'\n' { range.end - 1 } else { range.end };
+        let text_end = if content[range.end - 1] == b'\n' {
+            range.end - 1
+        } else {
+            range.end
+        };
         let text = String::from_utf8_lossy(&content[range.start..text_end]).into_owned();
         out.push(BlamedLine { owner, text });
     };
@@ -148,8 +158,7 @@ mod tests {
     use crate::patch::{Intent, Op};
 
     fn blobs(name: &str) -> BlobStore {
-        let dir =
-            std::env::temp_dir().join(format!("tally-blame-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-blame-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         BlobStore::init(dir).unwrap()
     }
@@ -162,7 +171,10 @@ mod tests {
             realized: vec![],
             sum_after: "0".repeat(64),
             committed_ms: 0,
-            annotation: Annotation { author: author.to_string(), ..Annotation::default() },
+            annotation: Annotation {
+                author: author.to_string(),
+                ..Annotation::default()
+            },
         }
     }
 
@@ -182,15 +194,37 @@ mod tests {
         let edit = line(
             "bbb",
             "billy",
-            vec![Op::Edit { path: "/f".into(), old_str: "two".into(), new_str: "TWO".into() }],
+            vec![Op::Edit {
+                path: "/f".into(),
+                old_str: "two".into(),
+                new_str: "TWO".into(),
+            }],
         );
         let history = [&create, &edit];
         let blamed = blame_path("/f", &history, &store).unwrap();
         assert_eq!(blamed.len(), 3);
         // The edited line belongs to billy; the untouched lines to alice.
-        assert_eq!(blamed[0], BlamedLine { owner: "aaa".into(), text: "one".into() });
-        assert_eq!(blamed[1], BlamedLine { owner: "bbb".into(), text: "TWO".into() });
-        assert_eq!(blamed[2], BlamedLine { owner: "aaa".into(), text: "three".into() });
+        assert_eq!(
+            blamed[0],
+            BlamedLine {
+                owner: "aaa".into(),
+                text: "one".into()
+            }
+        );
+        assert_eq!(
+            blamed[1],
+            BlamedLine {
+                owner: "bbb".into(),
+                text: "TWO".into()
+            }
+        );
+        assert_eq!(
+            blamed[2],
+            BlamedLine {
+                owner: "aaa".into(),
+                text: "three".into()
+            }
+        );
     }
 
     #[test]
@@ -209,12 +243,20 @@ mod tests {
         let e1 = line(
             "c2",
             "b",
-            vec![Op::Edit { path: "/f".into(), old_str: "alpha".into(), new_str: "ALPHA".into() }],
+            vec![Op::Edit {
+                path: "/f".into(),
+                old_str: "alpha".into(),
+                new_str: "ALPHA".into(),
+            }],
         );
         let e2 = line(
             "c3",
             "c",
-            vec![Op::Edit { path: "/f".into(), old_str: "beta".into(), new_str: "BETA".into() }],
+            vec![Op::Edit {
+                path: "/f".into(),
+                old_str: "beta".into(),
+                new_str: "BETA".into(),
+            }],
         );
         let history = [&create, &e1, &e2];
         let blamed = blame_path("/f", &history, &store).unwrap();
@@ -237,7 +279,14 @@ mod tests {
                 content_b64: Some(b64::encode(b"x\n")),
             }],
         );
-        let del = line("c2", "a", vec![Op::Delete { path: "/f".into(), blob: "0".repeat(64) }]);
+        let del = line(
+            "c2",
+            "a",
+            vec![Op::Delete {
+                path: "/f".into(),
+                blob: "0".repeat(64),
+            }],
+        );
         let history = [&create, &del];
         assert!(blame_path("/f", &history, &store).is_err());
     }

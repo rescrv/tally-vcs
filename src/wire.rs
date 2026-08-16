@@ -37,9 +37,7 @@ pub trait ObjectStore {
 fn oserr(what: impl std::fmt::Display) -> impl FnOnce(object_store::Error) -> Error {
     let what = what.to_string();
     move |err| {
-        Error::Io(
-            handled::SError::new("object-store").with_message(&format!("{what}: {err}")),
-        )
+        Error::Io(handled::SError::new("object-store").with_message(&format!("{what}: {err}")))
     }
 }
 
@@ -64,7 +62,10 @@ impl FsStore {
 
     fn path_of(&self, name: &str) -> Result<object_store::path::Path> {
         // Object names are relative paths with no traversal.
-        if name.starts_with('/') || name.split('/').any(|c| c == ".." || c == "." || c.is_empty())
+        if name.starts_with('/')
+            || name
+                .split('/')
+                .any(|c| c == ".." || c == "." || c.is_empty())
         {
             return Err(Error::Invalid(format!("bad object name: {name:?}")));
         }
@@ -92,8 +93,10 @@ impl ObjectStore for FsStore {
     fn put_if_absent(&self, name: &str, bytes: &[u8]) -> Result<bool> {
         let path = self.path_of(name)?;
         let payload = object_store::PutPayload::from(bytes.to_vec());
-        match block_on(self.store.put_opts(&path, payload, object_store::PutMode::Create.into()))
-        {
+        match block_on(
+            self.store
+                .put_opts(&path, payload, object_store::PutMode::Create.into()),
+        ) {
             Ok(_) => Ok(true),
             Err(object_store::Error::AlreadyExists { .. }) => Ok(false),
             Err(err) => Err(oserr(format!("put-if-absent {name}"))(err)),
@@ -182,7 +185,9 @@ pub fn fetch(store: &dyn ObjectStore, cache: &std::path::Path) -> Result<Option<
         }
     }
     fs::write(
-        cache.join("manifest").join(format!("{}.json", manifest.seq)),
+        cache
+            .join("manifest")
+            .join(format!("{}.json", manifest.seq)),
         manifest.to_bytes()?,
     )
     .map_err(ioerr("writing cache manifest"))?;
@@ -216,8 +221,7 @@ pub fn push(repo: &Repository, store: &dyn ObjectStore, level: i32) -> Result<Se
     for segid in packed.segments.keys() {
         for ext in ["pk", "idx"] {
             let name = format!("seg/{segid}.{ext}");
-            let bytes =
-                fs::read(staging.join(&name)).map_err(ioerr("reading staged segment"))?;
+            let bytes = fs::read(staging.join(&name)).map_err(ioerr("reading staged segment"))?;
             store.put(&name, &bytes)?;
         }
     }
@@ -319,7 +323,10 @@ mod tests {
     }
 
     fn note() -> Annotation {
-        Annotation { author: "t".to_string(), ..Annotation::default() }
+        Annotation {
+            author: "t".to_string(),
+            ..Annotation::default()
+        }
     }
 
     #[test]
@@ -335,7 +342,10 @@ mod tests {
             repo.current_state("main").unwrap().sum,
             cloned.current_state("main").unwrap().sum,
         );
-        assert_eq!(repo.log_bytes("main").unwrap(), cloned.log_bytes("main").unwrap());
+        assert_eq!(
+            repo.log_bytes("main").unwrap(),
+            cloned.log_bytes("main").unwrap()
+        );
     }
 
     #[test]
@@ -354,7 +364,9 @@ mod tests {
     fn pushes_to_different_forks_merge_trivially() {
         let store = FsStore::open(temp_dir("merge-store")).unwrap();
         let alice = Repository::init(temp_dir("merge-alice")).unwrap();
-        alice.apply("main", create("/a.rs", b"a\n"), note()).unwrap();
+        alice
+            .apply("main", create("/a.rs", b"a\n"), note())
+            .unwrap();
         push(&alice, &store, 3).unwrap();
         // Bob clones and works on his own fork.
         let bob = clone(&store, temp_dir("merge-bob")).unwrap();
@@ -363,9 +375,14 @@ mod tests {
         push(&bob, &store, 3).unwrap();
         // Alice advances main concurrently; her push must merge bob's fork
         // forward, not lose it.
-        alice.apply("main", create("/c.rs", b"c\n"), note()).unwrap();
+        alice
+            .apply("main", create("/c.rs", b"c\n"), note())
+            .unwrap();
         let m = push(&alice, &store, 3).unwrap();
-        assert!(m.forks.contains_key("bob"), "different forks merge trivially");
+        assert!(
+            m.forks.contains_key("bob"),
+            "different forks merge trivially"
+        );
         assert!(m.forks.contains_key("main"));
         let carol = clone(&store, temp_dir("merge-carol")).unwrap();
         assert_eq!(carol.current_state("main").unwrap().manifest.len(), 2);
@@ -376,15 +393,22 @@ mod tests {
     fn same_fork_advance_refuses_to_splice() {
         let store = FsStore::open(temp_dir("splice-store")).unwrap();
         let alice = Repository::init(temp_dir("splice-alice")).unwrap();
-        alice.apply("main", create("/a.rs", b"a\n"), note()).unwrap();
+        alice
+            .apply("main", create("/a.rs", b"a\n"), note())
+            .unwrap();
         push(&alice, &store, 3).unwrap();
         let bob = clone(&store, temp_dir("splice-bob")).unwrap();
         // Both advance main.
-        alice.apply("main", create("/x.rs", b"x\n"), note()).unwrap();
+        alice
+            .apply("main", create("/x.rs", b"x\n"), note())
+            .unwrap();
         push(&alice, &store, 3).unwrap();
         bob.apply("main", create("/y.rs", b"y\n"), note()).unwrap();
         let err = push(&bob, &store, 3);
-        assert!(matches!(err, Err(Error::Invalid(_))), "loser must not silently splice");
+        assert!(
+            matches!(err, Err(Error::Invalid(_))),
+            "loser must not silently splice"
+        );
     }
 
     #[test]
@@ -422,7 +446,11 @@ mod tests {
         let m2 = push(&repo, &store, 3).unwrap();
         assert_eq!(m2.segments.len(), 1, "a full pack replaces, never unions");
         let old: Vec<&String> = m1.segments.keys().collect();
-        assert_eq!(m2.retire, vec![old[0].clone()], "the superseded segment is retired");
+        assert_eq!(
+            m2.retire,
+            vec![old[0].clone()],
+            "the superseded segment is retired"
+        );
         assert_ne!(
             crate::serve::swap_delta(&m1, &m2).unwrap(),
             crate::ident::Sum::zero(),
@@ -431,9 +459,15 @@ mod tests {
         // A push with no changes is a pure re-encoding: same segment, no
         // retire, and the swap delta is zero — §3.3's arithmetic proof.
         let m3 = push(&repo, &store, 3).unwrap();
-        assert_eq!(m3.segments.keys().collect::<Vec<_>>(), m2.segments.keys().collect::<Vec<_>>());
+        assert_eq!(
+            m3.segments.keys().collect::<Vec<_>>(),
+            m2.segments.keys().collect::<Vec<_>>()
+        );
         assert!(m3.retire.is_empty());
-        assert_eq!(crate::serve::swap_delta(&m2, &m3).unwrap(), crate::ident::Sum::zero());
+        assert_eq!(
+            crate::serve::swap_delta(&m2, &m3).unwrap(),
+            crate::ident::Sum::zero()
+        );
         // Retired segments are retained, not deleted.
         assert!(store.get(&format!("seg/{}.pk", old[0])).unwrap().is_some());
     }
@@ -442,7 +476,9 @@ mod tests {
     fn manifest_stays_bounded_at_an_absurd_limit() {
         let store = FsStore::open(temp_dir("absurd-store")).unwrap();
         let alice = Repository::init(temp_dir("absurd-alice")).unwrap();
-        alice.apply("main", create("/a.rs", b"a\n"), note()).unwrap();
+        alice
+            .apply("main", create("/a.rs", b"a\n"), note())
+            .unwrap();
         let first = push(&alice, &store, 3).unwrap();
         // Bob's fork exists only remotely: every one of alice's pushes must
         // retain the segment bob's log names while retiring her own.
@@ -460,14 +496,28 @@ mod tests {
         let mut baseline_size = 0usize;
         for i in 0..ABSURD {
             alice
-                .apply("main", create(&format!("/f{i:04}.rs"), format!("{i}\n").as_bytes()), note())
+                .apply(
+                    "main",
+                    create(&format!("/f{i:04}.rs"), format!("{i}\n").as_bytes()),
+                    note(),
+                )
                 .unwrap();
             let m = push(&alice, &store, 3).unwrap();
             // Bounded, every single time: one live segment per writer, one
             // anchor per distinct fork lineage, retire only this swap's churn.
-            assert_eq!(m.segments.len(), 2, "push {i}: alice's full pack plus bob's segment");
-            assert!(m.segments.contains_key(&bob_segid), "push {i}: bob's segment retained");
-            assert!(m.retire.len() <= 1, "push {i}: retire is per-swap, not cumulative");
+            assert_eq!(
+                m.segments.len(),
+                2,
+                "push {i}: alice's full pack plus bob's segment"
+            );
+            assert!(
+                m.segments.contains_key(&bob_segid),
+                "push {i}: bob's segment retained"
+            );
+            assert!(
+                m.retire.len() <= 1,
+                "push {i}: retire is per-swap, not cumulative"
+            );
             // Two live anchors: main's and bob's — one per live fork
             // lineage, never one per push.
             assert_eq!(m.anchors.len(), 2, "push {i}: anchors track live forks");
@@ -511,7 +561,10 @@ mod tests {
         assert_eq!(accounted, all_segids, "no segment leaks from the ledger");
         // After the marathon, a clone still restores every fork exactly.
         let carol = clone(&store, temp_dir("absurd-carol")).unwrap();
-        assert_eq!(carol.current_state("main").unwrap().manifest.len(), 1 + ABSURD);
+        assert_eq!(
+            carol.current_state("main").unwrap().manifest.len(),
+            1 + ABSURD
+        );
         assert_eq!(carol.current_state("bob").unwrap().manifest.len(), 2);
         assert_eq!(
             carol.current_state("main").unwrap().sum,
@@ -522,7 +575,9 @@ mod tests {
     #[test]
     fn hostile_manifest_is_rejected() {
         let store = FsStore::open(temp_dir("hostile-store")).unwrap();
-        store.put("manifest/1.json", br#"{"id":"lies","v":0,"seq":1}"#).unwrap();
+        store
+            .put("manifest/1.json", br#"{"id":"lies","v":0,"seq":1}"#)
+            .unwrap();
         assert!(remote_latest(&store).is_err());
     }
 }

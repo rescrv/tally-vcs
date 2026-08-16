@@ -39,7 +39,9 @@ impl BlobStore {
     /// The filesystem path a blob hash names.
     pub fn path_for(&self, blob: &str) -> Result<PathBuf> {
         if !is_hex64(blob) {
-            return Err(Error::Invalid(format!("blob names are 64 lowercase hex: {blob:?}")));
+            return Err(Error::Invalid(format!(
+                "blob names are 64 lowercase hex: {blob:?}"
+            )));
         }
         Ok(self.root.join(&blob[..2]).join(&blob[2..]))
     }
@@ -122,7 +124,8 @@ impl BlobStore {
         let tmp = tmp_dir.join(format!("{}.{}", hash, std::process::id()));
         {
             let mut f = fs::File::create(&tmp).map_err(ioerr("creating blob temp file"))?;
-            f.write_all(content).map_err(ioerr("writing blob temp file"))?;
+            f.write_all(content)
+                .map_err(ioerr("writing blob temp file"))?;
             if durability == Durability::Immediate {
                 f.sync_all().map_err(ioerr("fsyncing blob temp file"))?;
             }
@@ -168,7 +171,8 @@ enum Durability {
 /// fsync a directory so a rename into it is durable.
 pub fn fsync_dir(dir: &Path) -> Result<()> {
     let f = fs::File::open(dir).map_err(ioerr(format!("opening directory {}", dir.display())))?;
-    f.sync_all().map_err(ioerr(format!("fsyncing directory {}", dir.display())))
+    f.sync_all()
+        .map_err(ioerr(format!("fsyncing directory {}", dir.display())))
 }
 
 /// Sync the device holding `dir`, making every deferred write on that

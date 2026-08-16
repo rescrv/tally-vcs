@@ -181,7 +181,10 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         }
         let fuse = line.annotation.fuse.as_ref().map(|f| Fuse {
             name: f.name.clone(),
-            from: rekey.get(&f.from).cloned().unwrap_or_else(|| f.from.clone()),
+            from: rekey
+                .get(&f.from)
+                .cloned()
+                .unwrap_or_else(|| f.from.clone()),
             to: rekey.get(&f.to).cloned().unwrap_or_else(|| f.to.clone()),
         });
         let annotation = Annotation {
@@ -192,7 +195,10 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             session: line.annotation.session.clone(),
             prose: line.annotation.prose.clone(),
             reads: line.annotation.reads.clone(),
-            origin: Some(Origin { fork: source.to_string(), id: line.id.clone() }),
+            origin: Some(Origin {
+                fork: source.to_string(),
+                id: line.id.clone(),
+            }),
             fuse,
             import: line.annotation.import.clone(),
         };
@@ -250,7 +256,11 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         for path in write_paths(&landed)? {
             union_writers.insert(path, line.id.clone());
         }
-        staged.push(Landed { line: landed, origin_id: line.id.clone(), stratum: st });
+        staged.push(Landed {
+            line: landed,
+            origin_id: line.id.clone(),
+            stratum: st,
+        });
     }
 
     // The symmetric tripwire (§6): W_source ∩ R_target.  The reads above ask
@@ -365,7 +375,12 @@ fn stale_reads(
 /// span not uniquely locatable, a vanished path, or a read that named no
 /// spans (a whole-file read) — is treated as stale: conservative, never a
 /// missed conflict.
-fn read_is_stale(read: &serde_json::Value, path: &str, target: &Manifest, blobs: &BlobStore) -> bool {
+fn read_is_stale(
+    read: &serde_json::Value,
+    path: &str,
+    target: &Manifest,
+    blobs: &BlobStore,
+) -> bool {
     let Some(read_hash) = read.get("blob").and_then(|b| b.as_str()) else {
         return true;
     };
@@ -384,7 +399,11 @@ fn read_is_stale(read: &serde_json::Value, path: &str, target: &Manifest, blobs:
     let Some(changed) = crate::diff::changed_old_lines(&read_bytes, &now_bytes) else {
         return true; // non-UTF-8: cannot localize.
     };
-    let Some(spans) = read.get("spans").and_then(|s| s.as_array()).filter(|s| !s.is_empty()) else {
+    let Some(spans) = read
+        .get("spans")
+        .and_then(|s| s.as_array())
+        .filter(|s| !s.is_empty())
+    else {
         return true; // no named span: a whole-file read.
     };
     for span in spans {
@@ -438,7 +457,10 @@ fn note_stranded_reads(
     let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let strand_all = |by_source: &mut BTreeMap<String, BTreeSet<String>>| {
         for (path, source_id) in union_writers {
-            by_source.entry(source_id.clone()).or_default().insert(path.clone());
+            by_source
+                .entry(source_id.clone())
+                .or_default()
+                .insert(path.clone());
         }
     };
     match reads.as_array() {
@@ -521,8 +543,7 @@ mod tests {
     use crate::repo::Repository;
 
     fn temp_repo(name: &str) -> Repository {
-        let dir =
-            std::env::temp_dir().join(format!("tally-union-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-union-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Repository::init(&dir).unwrap()
@@ -550,7 +571,10 @@ mod tests {
     }
 
     fn note(author: &str) -> Annotation {
-        Annotation { author: author.to_string(), ..Annotation::default() }
+        Annotation {
+            author: author.to_string(),
+            ..Annotation::default()
+        }
     }
 
     #[test]
@@ -566,9 +590,11 @@ mod tests {
     #[test]
     fn stratum_2_realized_replay() {
         let repo = temp_repo("s2");
-        repo.apply("main", create("/a", b"hello\n"), note("t")).unwrap();
+        repo.apply("main", create("/a", b"hello\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        repo.apply("s", edit("/a", "hello", "goodbye"), note("t")).unwrap();
+        repo.apply("s", edit("/a", "hello", "goodbye"), note("t"))
+            .unwrap();
         // Target has not drifted: membership plus addition.
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(outcome.complete());
@@ -589,34 +615,46 @@ mod tests {
     #[test]
     fn stratum_3_disjoint_spans_sail_through() {
         let repo = temp_repo("s3");
-        repo.apply("main", create("/a", b"alpha\nbeta\n"), note("t")).unwrap();
+        repo.apply("main", create("/a", b"alpha\nbeta\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
         // Fork edits one span; main drifts in a disjoint span of the same file.
-        repo.apply("s", edit("/a", "beta", "BETA"), note("t")).unwrap();
-        repo.apply("main", edit("/a", "alpha", "ALPHA"), note("t")).unwrap();
+        repo.apply("s", edit("/a", "beta", "BETA"), note("t"))
+            .unwrap();
+        repo.apply("main", edit("/a", "alpha", "ALPHA"), note("t"))
+            .unwrap();
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(outcome.complete());
         assert_eq!(outcome.landed.len(), 1);
         assert_eq!(outcome.landed[0].stratum, Stratum::IntentReplay);
         let state = repo.current_state("main").unwrap();
-        let blob = repo.blobs().get(&state.manifest.get("/a").unwrap().blob).unwrap();
+        let blob = repo
+            .blobs()
+            .get(&state.manifest.get("/a").unwrap().blob)
+            .unwrap();
         assert_eq!(blob, b"ALPHA\nBETA\n");
     }
 
     #[test]
     fn stratum_4_is_gated_not_performed() {
         let repo = temp_repo("s4");
-        repo.apply("main", create("/a", b"needle\n"), note("t")).unwrap();
+        repo.apply("main", create("/a", b"needle\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        repo.apply("s", edit("/a", "needle", "thread"), note("t")).unwrap();
+        repo.apply("s", edit("/a", "needle", "thread"), note("t"))
+            .unwrap();
         // Main consumes the same span: the fork's assumptions die.
-        repo.apply("main", edit("/a", "needle", "nail"), note("t")).unwrap();
+        repo.apply("main", edit("/a", "needle", "nail"), note("t"))
+            .unwrap();
         let before = repo.current_state("main").unwrap();
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(!outcome.complete());
         assert!(outcome.landed.is_empty());
         let (_, evidence) = outcome.needs_reenactment.unwrap();
-        assert!(evidence.contains("0 times"), "conflict evidence: {evidence}");
+        assert!(
+            evidence.contains("0 times"),
+            "conflict evidence: {evidence}"
+        );
         // Nothing landed: the target is untouched.
         assert_eq!(repo.current_state("main").unwrap().sum, before.sum);
     }
@@ -627,10 +665,21 @@ mod tests {
         // fused beat must be visible on main, re-keyed to main's ids.
         let repo = temp_repo("fuses");
         repo.create_fork("session-1", "main").unwrap();
-        let l1 = repo.apply("session-1", create("/a", b"one\n"), note("t")).unwrap();
-        let l2 = repo.apply("session-1", edit("/a", "one", "two"), note("t")).unwrap();
-        repo.fuse("session-1", "beat", &l1.id, &l2.id, Some("one narrative beat".to_string()), "sid")
+        let l1 = repo
+            .apply("session-1", create("/a", b"one\n"), note("t"))
             .unwrap();
+        let l2 = repo
+            .apply("session-1", edit("/a", "one", "two"), note("t"))
+            .unwrap();
+        repo.fuse(
+            "session-1",
+            "beat",
+            &l1.id,
+            &l2.id,
+            Some("one narrative beat".to_string()),
+            "sid",
+        )
+        .unwrap();
         let outcome = union(&repo, "session-1", "main", "maintainer").unwrap();
         assert!(outcome.complete());
         assert_eq!(outcome.landed.len(), 3, "two patches plus the fuse line");
@@ -664,14 +713,20 @@ mod tests {
         let first = union(&repo, "s", "main", "maintainer").unwrap();
         assert_eq!(first.landed.len(), 1);
         // Fuse after the fact: the sums are already equal.
-        repo.fuse("s", "beat", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
+        repo.fuse("s", "beat", &l1.id, &l1.id, Some("beat".to_string()), "sid")
+            .unwrap();
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        assert!(outcome.already_identical, "stratum 1 fired on the arithmetic");
+        assert!(
+            outcome.already_identical,
+            "stratum 1 fired on the arithmetic"
+        );
         assert_eq!(outcome.landed.len(), 1, "and the fuse still landed");
-        let span =
-            outcome.landed[0].line.annotation.fuse.as_ref().unwrap();
+        let span = outcome.landed[0].line.annotation.fuse.as_ref().unwrap();
         assert_eq!(span.name, "beat");
-        assert_eq!(span.from, first.landed[0].line.id, "re-keyed to main's line");
+        assert_eq!(
+            span.from, first.landed[0].line.id,
+            "re-keyed to main's line"
+        );
         // Idempotent: a third union carries nothing new.
         let again = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(again.already_identical);
@@ -687,15 +742,19 @@ mod tests {
         // lands mechanically, but its reasoning is now stale.  Union must
         // report that, not swallow it.
         let repo = temp_repo("stale-read");
-        repo.apply("main", create("/config", b"MAX=10\n"), note("t")).unwrap();
-        repo.apply("main", create("/handler", b"limit = default\n"), note("t")).unwrap();
+        repo.apply("main", create("/config", b"MAX=10\n"), note("t"))
+            .unwrap();
+        repo.apply("main", create("/handler", b"limit = default\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
         // The fork's edit witnesses /config as a read.
         let mut n = note("t");
         n.reads = Some(serde_json::json!([{"path": "/config", "blob": "x"}]));
-        repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
+        repo.apply("s", edit("/handler", "default", "10"), n)
+            .unwrap();
         // Main concurrently rewrites the very file the fork read.
-        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t"))
+            .unwrap();
 
         let before = repo.current_state("main").unwrap().sum;
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
@@ -703,7 +762,11 @@ mod tests {
         // set was invalidated, so the whole union aborts and nothing lands.
         assert!(!outcome.complete());
         assert!(outcome.landed.is_empty());
-        assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
+        assert_eq!(
+            repo.current_state("main").unwrap().sum,
+            before,
+            "target untouched"
+        );
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         let conflict = &outcome.semantic_conflicts[0];
         assert!(conflict.paths.contains("/config"));
@@ -716,11 +779,15 @@ mod tests {
         // line is a stratum-4 gate.  Atomicity demands the first line does
         // *not* land: the target must be byte-for-byte unchanged.
         let repo = temp_repo("atomic-union");
-        repo.apply("main", create("/a", b"needle\n"), note("t")).unwrap();
+        repo.apply("main", create("/a", b"needle\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        repo.apply("s", create("/ok", b"clean\n"), note("t")).unwrap();
-        repo.apply("s", edit("/a", "needle", "thread"), note("t")).unwrap();
-        repo.apply("main", edit("/a", "needle", "nail"), note("t")).unwrap();
+        repo.apply("s", create("/ok", b"clean\n"), note("t"))
+            .unwrap();
+        repo.apply("s", edit("/a", "needle", "thread"), note("t"))
+            .unwrap();
+        repo.apply("main", edit("/a", "needle", "nail"), note("t"))
+            .unwrap();
 
         let before = repo.current_state("main").unwrap();
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
@@ -729,7 +796,11 @@ mod tests {
         assert!(outcome.needs_reenactment.is_some());
         let after = repo.current_state("main").unwrap();
         assert_eq!(after.sum, before.sum, "target untouched");
-        assert_eq!(after.lines.len(), before.lines.len(), "no /ok line leaked onto main");
+        assert_eq!(
+            after.lines.len(),
+            before.lines.len(),
+            "no /ok line leaked onto main"
+        );
     }
 
     #[test]
@@ -739,19 +810,33 @@ mod tests {
         // line of the *same* /config file.  Path granularity would cry
         // conflict; span granularity sees the read line is untouched.
         let repo = temp_repo("span-disjoint");
-        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
-        repo.apply("main", create("/handler", b"x = default\n"), note("t")).unwrap();
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t"))
+            .unwrap();
+        repo.apply("main", create("/handler", b"x = default\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let cfg = repo
+            .current_state("s")
+            .unwrap()
+            .manifest
+            .get("/config")
+            .unwrap()
+            .blob
+            .clone();
         let mut n = note("t");
         n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MIN=1"]}]));
-        repo.apply("s", edit("/handler", "default", "1"), n).unwrap();
+        repo.apply("s", edit("/handler", "default", "1"), n)
+            .unwrap();
         // Main edits a disjoint line of the same file.
-        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t"))
+            .unwrap();
 
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
         assert_eq!(outcome.landed.len(), 1);
-        assert!(outcome.complete(), "reading MIN survives a concurrent edit to MAX");
+        assert!(
+            outcome.complete(),
+            "reading MIN survives a concurrent edit to MAX"
+        );
         assert!(outcome.semantic_conflicts.is_empty());
     }
 
@@ -761,20 +846,38 @@ mod tests {
         // span granularity must still catch it, and must not be fooled by
         // "MAX=10" being a substring of the new "MAX=1000".
         let repo = temp_repo("span-conflict");
-        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
-        repo.apply("main", create("/handler", b"x = default\n"), note("t")).unwrap();
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t"))
+            .unwrap();
+        repo.apply("main", create("/handler", b"x = default\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let cfg = repo
+            .current_state("s")
+            .unwrap()
+            .manifest
+            .get("/config")
+            .unwrap()
+            .blob
+            .clone();
         let mut n = note("t");
         n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MAX=10"]}]));
-        repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
-        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+        repo.apply("s", edit("/handler", "default", "10"), n)
+            .unwrap();
+        repo.apply("main", edit("/config", "MAX=10", "MAX=1000"), note("t"))
+            .unwrap();
 
         let before = repo.current_state("main").unwrap().sum;
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
         assert!(!outcome.complete(), "reading the edited line is a conflict");
-        assert!(outcome.landed.is_empty(), "atomic: nothing lands on conflict");
-        assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
+        assert!(
+            outcome.landed.is_empty(),
+            "atomic: nothing lands on conflict"
+        );
+        assert_eq!(
+            repo.current_state("main").unwrap().sum,
+            before,
+            "target untouched"
+        );
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         assert!(outcome.semantic_conflicts[0].paths.contains("/config"));
     }
@@ -786,21 +889,38 @@ mod tests {
         // fork concurrently rewrites that MAX line.  Landing the fork would
         // strand main's reasoning: W_source ∩ R_target.
         let repo = temp_repo("strand");
-        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let cfg = repo
+            .current_state("s")
+            .unwrap()
+            .manifest
+            .get("/config")
+            .unwrap()
+            .blob
+            .clone();
         // Main reads the MAX line, writes an unrelated file on the strength of it.
         let mut n = note("t");
         n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MAX=10"]}]));
-        repo.apply("main", create("/report", b"limit is 10\n"), n).unwrap();
+        repo.apply("main", create("/report", b"limit is 10\n"), n)
+            .unwrap();
         // The fork rewrites the very line main read.
-        repo.apply("s", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+        repo.apply("s", edit("/config", "MAX=10", "MAX=1000"), note("t"))
+            .unwrap();
 
         let before = repo.current_state("main").unwrap().sum;
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        assert!(!outcome.complete(), "landing the fork strands main's read of MAX");
+        assert!(
+            !outcome.complete(),
+            "landing the fork strands main's read of MAX"
+        );
         assert!(outcome.landed.is_empty(), "atomic: nothing lands");
-        assert_eq!(repo.current_state("main").unwrap().sum, before, "target untouched");
+        assert_eq!(
+            repo.current_state("main").unwrap().sum,
+            before,
+            "target untouched"
+        );
         assert_eq!(outcome.semantic_conflicts.len(), 1);
         let c = &outcome.semantic_conflicts[0];
         assert_eq!(c.direction, ConflictDirection::IncomingWriteHitsTargetRead);
@@ -812,16 +932,29 @@ mod tests {
         // The fork rewrites the MAX line; main had read the disjoint MIN line.
         // Span granularity must not manufacture a stranded-read conflict.
         let repo = temp_repo("strand-disjoint");
-        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t")).unwrap();
+        repo.apply("main", create("/config", b"MAX=10\nMIN=1\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
-        let cfg = repo.current_state("s").unwrap().manifest.get("/config").unwrap().blob.clone();
+        let cfg = repo
+            .current_state("s")
+            .unwrap()
+            .manifest
+            .get("/config")
+            .unwrap()
+            .blob
+            .clone();
         let mut n = note("t");
         n.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg, "spans": ["MIN=1"]}]));
-        repo.apply("main", create("/report", b"min is 1\n"), n).unwrap();
-        repo.apply("s", edit("/config", "MAX=10", "MAX=1000"), note("t")).unwrap();
+        repo.apply("main", create("/report", b"min is 1\n"), n)
+            .unwrap();
+        repo.apply("s", edit("/config", "MAX=10", "MAX=1000"), note("t"))
+            .unwrap();
 
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        assert!(outcome.complete(), "the fork edited MAX; main only read MIN");
+        assert!(
+            outcome.complete(),
+            "the fork edited MAX; main only read MIN"
+        );
         assert!(outcome.semantic_conflicts.is_empty());
         assert_eq!(outcome.landed.len(), 1, "the fork's edit lands");
     }
@@ -830,17 +963,24 @@ mod tests {
     fn disjoint_writes_do_not_manufacture_a_semantic_conflict() {
         // A read of a path nobody concurrently wrote is not a conflict.
         let repo = temp_repo("no-stale");
-        repo.apply("main", create("/config", b"MAX=10\n"), note("t")).unwrap();
-        repo.apply("main", create("/handler", b"limit = default\n"), note("t")).unwrap();
+        repo.apply("main", create("/config", b"MAX=10\n"), note("t"))
+            .unwrap();
+        repo.apply("main", create("/handler", b"limit = default\n"), note("t"))
+            .unwrap();
         repo.create_fork("s", "main").unwrap();
         let mut n = note("t");
         n.reads = Some(serde_json::json!([{"path": "/config", "blob": "x"}]));
-        repo.apply("s", edit("/handler", "default", "10"), n).unwrap();
+        repo.apply("s", edit("/handler", "default", "10"), n)
+            .unwrap();
         // Main drifts a file the fork never read.
-        repo.apply("main", create("/unrelated", b"z\n"), note("t")).unwrap();
+        repo.apply("main", create("/unrelated", b"z\n"), note("t"))
+            .unwrap();
 
         let outcome = union(&repo, "s", "main", "maintainer").unwrap();
-        assert!(outcome.complete(), "reading /config while main writes /unrelated is no conflict");
+        assert!(
+            outcome.complete(),
+            "reading /config while main writes /unrelated is no conflict"
+        );
         assert!(outcome.semantic_conflicts.is_empty());
     }
 
@@ -853,7 +993,10 @@ mod tests {
         let mut n2 = note("t");
         n2.reads = Some(serde_json::json!([{"path": "/b", "blob": "x"}]));
         let l2 = repo.apply("main", create("/b", b"b\n"), n2).unwrap();
-        assert!(commutes(&l1, &l2).unwrap(), "disjoint writes and reads commute");
+        assert!(
+            commutes(&l1, &l2).unwrap(),
+            "disjoint writes and reads commute"
+        );
 
         // Reading what the other writes: conflict is W1∩R2, not text.
         let mut n3 = note("t");

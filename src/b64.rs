@@ -9,13 +9,25 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 pub fn encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         let idx = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
         out.push(ALPHABET[idx[0] as usize] as char);
         out.push(ALPHABET[idx[1] as usize] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[idx[2] as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[idx[3] as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            ALPHABET[idx[2] as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[idx[3] as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -35,7 +47,9 @@ fn value_of(c: u8) -> Result<u32> {
 pub fn decode(input: &str) -> Result<Vec<u8>> {
     let bytes = input.as_bytes();
     if !bytes.len().is_multiple_of(4) {
-        return Err(Error::Invalid("base64 length must be a multiple of 4".to_string()));
+        return Err(Error::Invalid(
+            "base64 length must be a multiple of 4".to_string(),
+        ));
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
     for (i, chunk) in bytes.chunks(4).enumerate() {
@@ -68,8 +82,16 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        for input in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar", b"\x00\xff\x7f"]
-        {
+        for input in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"foo",
+            b"foob",
+            b"fooba",
+            b"foobar",
+            b"\x00\xff\x7f",
+        ] {
             assert_eq!(decode(&encode(input)).unwrap(), input, "{input:?}");
         }
     }

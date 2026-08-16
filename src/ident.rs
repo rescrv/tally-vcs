@@ -30,7 +30,9 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// True iff `s` is exactly 64 lowercase hex characters.
 pub fn is_hex64(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /////////////////////////////////////////////// Sum ///////////////////////////////////////////////
@@ -132,7 +134,9 @@ pub const MODES: &[&str] = &["100644", "100755", "120000"];
 /// the writer's obligation; it is not checked here.
 pub fn validate_path(path: &str) -> Result<()> {
     if !path.starts_with('/') {
-        return Err(Error::Invalid(format!("path must begin with '/': {path:?}")));
+        return Err(Error::Invalid(format!(
+            "path must begin with '/': {path:?}"
+        )));
     }
     if path.contains('\0') || path.contains('\n') || path.contains('\t') {
         return Err(Error::Invalid(format!(
@@ -154,7 +158,9 @@ pub fn validate_mode(mode: &str) -> Result<()> {
     if MODES.contains(&mode) {
         Ok(())
     } else {
-        Err(Error::Invalid(format!("mode must be one of {MODES:?}: {mode:?}")))
+        Err(Error::Invalid(format!(
+            "mode must be one of {MODES:?}: {mode:?}"
+        )))
     }
 }
 
@@ -164,7 +170,9 @@ impl ElementRecord {
         validate_mode(mode)?;
         validate_path(path)?;
         if !is_hex64(blob) {
-            return Err(Error::Invalid(format!("blob must be 64 lowercase hex: {blob:?}")));
+            return Err(Error::Invalid(format!(
+                "blob must be 64 lowercase hex: {blob:?}"
+            )));
         }
         Ok(ElementRecord {
             mode: mode.to_string(),
@@ -243,7 +251,9 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) -> Result<()> {
             } else if let Some(u) = n.as_u64() {
                 out.push_str(&u.to_string());
             } else {
-                return Err(Error::Invalid(format!("canonical JSON forbids floats: {n}")));
+                return Err(Error::Invalid(format!(
+                    "canonical JSON forbids floats: {n}"
+                )));
             }
         }
         serde_json::Value::String(s) => write_canonical_string(s, out),
@@ -308,7 +318,9 @@ pub fn record_id(value: &serde_json::Value) -> Result<String> {
     if let serde_json::Value::Object(map) = &mut value {
         map.remove("id");
     } else {
-        return Err(Error::Invalid("identified records are JSON objects".to_string()));
+        return Err(Error::Invalid(
+            "identified records are JSON objects".to_string(),
+        ));
     }
     Ok(sha3_hex(canonical_json(&value)?.as_bytes()))
 }
@@ -324,7 +336,9 @@ pub fn verify_record_id(value: &serde_json::Value) -> Result<()> {
     if claimed == actual {
         Ok(())
     } else {
-        Err(Error::Corrupt(format!("id mismatch: claimed {claimed}, actual {actual}")))
+        Err(Error::Corrupt(format!(
+            "id mismatch: claimed {claimed}, actual {actual}"
+        )))
     }
 }
 
@@ -335,12 +349,7 @@ mod tests {
     use super::*;
 
     fn record() -> ElementRecord {
-        ElementRecord::new(
-            "100644",
-            "/src/main.rs",
-            &sha3_hex(b"fn main() {}\n"),
-        )
-        .unwrap()
+        ElementRecord::new("100644", "/src/main.rs", &sha3_hex(b"fn main() {}\n")).unwrap()
     }
 
     #[test]
@@ -434,7 +443,10 @@ mod tests {
     fn canonical_json_sorts_and_compacts() {
         let v: serde_json::Value =
             serde_json::from_str(r#"{"b": 1, "a": {"z": [2, 3], "y": "é"}}"#).unwrap();
-        assert_eq!(canonical_json(&v).unwrap(), r#"{"a":{"y":"é","z":[2,3]},"b":1}"#);
+        assert_eq!(
+            canonical_json(&v).unwrap(),
+            r#"{"a":{"y":"é","z":[2,3]},"b":1}"#
+        );
     }
 
     #[test]
@@ -470,7 +482,10 @@ mod tests {
     fn canonical_json_does_not_escape_del_or_non_ascii() {
         // DEL (0x7f) is not below 0x20; Python passes it through, so must we.
         let v = serde_json::Value::String("\u{7f}\u{80}\u{2028}\u{2029}".to_string());
-        assert_eq!(canonical_json(&v).unwrap(), "\"\u{7f}\u{80}\u{2028}\u{2029}\"");
+        assert_eq!(
+            canonical_json(&v).unwrap(),
+            "\"\u{7f}\u{80}\u{2028}\u{2029}\""
+        );
     }
 
     #[test]

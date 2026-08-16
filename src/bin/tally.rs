@@ -164,15 +164,17 @@ struct ApplyOptions {
 fn cmd_init(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) =
-        Options::from_arguments_relaxed("USAGE: tally init [dir]", args);
+    let (_, free) = Options::from_arguments_relaxed("USAGE: tally init [dir]", args);
     reject_extra("init", &free, 1)?;
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
         None => std::env::current_dir().map_err(tally::ioerr("getting cwd"))?,
     };
     let repo = Repository::init(&dir)?;
-    println!("initialized empty tally repository at {}", repo.root().display());
+    println!(
+        "initialized empty tally repository at {}",
+        repo.root().display()
+    );
     Ok(())
 }
 
@@ -198,7 +200,11 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
     struct Options {
         #[arrrg(optional, "The mirror fork to bind (default: main).", "FORK")]
         fork: Option<String>,
-        #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
+        #[arrrg(
+            optional,
+            "The git repository to read (default: the repository root).",
+            "DIR"
+        )]
         git: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
@@ -235,8 +241,7 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
         None => {
             let branch = free.first().map(|s| s.to_string()).ok_or_else(|| {
                 Error::Invalid(
-                    "no mirror binding yet; name the branch to bind: git pull <branch>"
-                        .to_string(),
+                    "no mirror binding yet; name the branch to bind: git pull <branch>".to_string(),
                 )
             })?;
             let fork = options.fork.as_deref().unwrap_or("main").to_string();
@@ -252,11 +257,17 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
     }
     // One commit, one line; report the binding — the read path status wants.
     if summary.imported.is_empty() {
-        println!("mirror {fork} bound to {branch}, up to date at {}", summary.commit);
+        println!(
+            "mirror {fork} bound to {branch}, up to date at {}",
+            summary.commit
+        );
         return Ok(());
     }
     match &summary.base {
-        Some(base) => println!("fast-forwarded mirror {fork} from {base} to {}", summary.commit),
+        Some(base) => println!(
+            "fast-forwarded mirror {fork} from {base} to {}",
+            summary.commit
+        ),
         None => println!(
             "bound mirror {fork} to {branch}, imported fresh history to {}",
             summary.commit
@@ -270,9 +281,17 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
 fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "The mirror fork to recover (default: the bound fork).", "FORK")]
+        #[arrrg(
+            optional,
+            "The mirror fork to recover (default: the bound fork).",
+            "FORK"
+        )]
         fork: Option<String>,
-        #[arrrg(optional, "The git repository to read (default: the repository root).", "DIR")]
+        #[arrrg(
+            optional,
+            "The git repository to read (default: the repository root).",
+            "DIR"
+        )]
         git: Option<String>,
     }
     let (options, free) = Options::from_arguments_relaxed(
@@ -369,7 +388,10 @@ fn cmd_status(args: &[&str]) -> Result<()> {
             println!("mirror  bound to git branch {}", binding.branch);
         }
         Some(binding) => {
-            println!("mirror  fork {} (bound to git branch {})", binding.fork, binding.branch);
+            println!(
+                "mirror  fork {} (bound to git branch {})",
+                binding.fork, binding.branch
+            );
         }
         None => {}
     }
@@ -388,11 +410,13 @@ fn cmd_status(args: &[&str]) -> Result<()> {
         println!("  {}  {}", change.code(), change.path);
     }
     println!();
-    let (a, d, m) = changes.iter().fold((0, 0, 0), |(a, d, m), c| match c.code() {
-        'A' => (a + 1, d, m),
-        'D' => (a, d + 1, m),
-        _ => (a, d, m + 1),
-    });
+    let (a, d, m) = changes
+        .iter()
+        .fold((0, 0, 0), |(a, d, m), c| match c.code() {
+            'A' => (a + 1, d, m),
+            'D' => (a, d + 1, m),
+            _ => (a, d, m + 1),
+        });
     println!("{a} added, {d} deleted, {m} modified");
     Ok(())
 }
@@ -431,7 +455,9 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     );
     reject_extra("materialize", &free, 2)?;
     let Some(spec) = free.first() else {
-        return Err(Error::Invalid("materialize requires a revision".to_string()));
+        return Err(Error::Invalid(
+            "materialize requires a revision".to_string(),
+        ));
     };
     let repo = repo()?;
     // Any revision resolves: HEAD, a fork, sum:S, line:ID.  materialize no
@@ -474,7 +500,10 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
         Some(i) => (
             args[..i].to_vec(),
-            args[i + 1..].iter().map(|p| normalize_path_filter(p)).collect(),
+            args[i + 1..]
+                .iter()
+                .map(|p| normalize_path_filter(p))
+                .collect(),
         ),
         None => (args.to_vec(), Vec::new()),
     };
@@ -489,12 +518,20 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     let spec = revs.first().map(String::as_str).unwrap_or("HEAD");
     let resolved = tally::revision::resolve(&repo, spec, fork)?;
     let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
-    let filters = if paths.is_empty() { None } else { Some(paths.as_slice()) };
+    let filters = if paths.is_empty() {
+        None
+    } else {
+        Some(paths.as_slice())
+    };
     let actions = repo.restore(&target, filters)?;
     for (code, path) in &actions {
         println!("{code}  {path}");
     }
-    println!("{} path(s) restored to {}", actions.len(), short(&resolved.sum));
+    println!(
+        "{} path(s) restored to {}",
+        actions.len(),
+        short(&resolved.sum)
+    );
     Ok(())
 }
 
@@ -551,7 +588,10 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
         tally::revision::resolve(&repo, spec, options.fork.as_deref().unwrap_or("main"))?;
     if options.verbose {
         println!("sum  {}", resolved.sum);
-        println!("line {}", resolved.line.as_deref().unwrap_or("(anchor: no line)"));
+        println!(
+            "line {}",
+            resolved.line.as_deref().unwrap_or("(anchor: no line)")
+        );
         println!("fork {}", resolved.fork);
     } else if options.line {
         match &resolved.line {
@@ -571,7 +611,11 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
 fn cmd_diff(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "The fork to resolve revisions against (default: main).", "FORK")]
+        #[arrrg(
+            optional,
+            "The fork to resolve revisions against (default: main).",
+            "FORK"
+        )]
         fork: Option<String>,
         #[arrrg(flag, "Summarize changes per file instead of showing hunks.")]
         stat: bool,
@@ -585,7 +629,10 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
     let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
         Some(i) => (
             args[..i].to_vec(),
-            args[i + 1..].iter().map(|p| normalize_path_filter(p)).collect(),
+            args[i + 1..]
+                .iter()
+                .map(|p| normalize_path_filter(p))
+                .collect(),
         ),
         None => (args.to_vec(), Vec::new()),
     };
@@ -601,12 +648,22 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
     let (before, after, label_a, label_b) = match revs.as_slice() {
         [] => {
             let state = repo.current_state(fork)?;
-            (state.manifest, repo.working_tree_manifest()?, "ref".to_string(), "working".to_string())
+            (
+                state.manifest,
+                repo.working_tree_manifest()?,
+                "ref".to_string(),
+                "working".to_string(),
+            )
         }
         [a] => {
             let ra = tally::revision::resolve(&repo, a, fork)?;
             let ma = repo.manifest_at_lineage(&ra.fork, &ra.sum)?;
-            (ma, repo.working_tree_manifest()?, short(&ra.sum), "working".to_string())
+            (
+                ma,
+                repo.working_tree_manifest()?,
+                short(&ra.sum),
+                "working".to_string(),
+            )
         }
         [a, b] => {
             let ra = tally::revision::resolve(&repo, a, fork)?;
@@ -616,7 +673,9 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
             (ma, mb, short(&ra.sum), short(&rb.sum))
         }
         _ => {
-            return Err(Error::Invalid("diff takes at most two revisions".to_string()));
+            return Err(Error::Invalid(
+                "diff takes at most two revisions".to_string(),
+            ));
         }
     };
     let mut changes = tally::diff::diff_manifests(&before, &after);
@@ -720,7 +779,11 @@ fn cmd_blame(args: &[&str]) -> Result<()> {
     let width = blamed.len().to_string().len();
     for (n, bl) in blamed.iter().enumerate() {
         let short_id = bl.owner.chars().take(8).collect::<String>();
-        let author = if bl.owner.is_empty() { "?".to_string() } else { author_of(&bl.owner) };
+        let author = if bl.owner.is_empty() {
+            "?".to_string()
+        } else {
+            author_of(&bl.owner)
+        };
         println!("{short_id:8}  {author:>12}  {:>width$}  {}", n + 1, bl.text);
     }
     Ok(())
@@ -767,18 +830,20 @@ fn reject_extra(command: &str, free: &[String], max: usize) -> Result<()> {
 }
 
 fn cmd_apply(args: &[&str]) -> Result<()> {
-    let (options, free) = ApplyOptions::from_arguments_relaxed(
-        "USAGE: tally apply [options] <patch.json>",
-        args,
-    );
+    let (options, free) =
+        ApplyOptions::from_arguments_relaxed("USAGE: tally apply [options] <patch.json>", args);
     reject_extra("apply", &free, 1)?;
     let Some(patch_path) = free.first() else {
-        return Err(Error::Invalid("apply requires a patch file (or - for stdin)".to_string()));
+        return Err(Error::Invalid(
+            "apply requires a patch file (or - for stdin)".to_string(),
+        ));
     };
     let bytes = if *patch_path == "-" {
         use std::io::Read;
         let mut buf = Vec::new();
-        std::io::stdin().read_to_end(&mut buf).map_err(tally::ioerr("reading stdin"))?;
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .map_err(tally::ioerr("reading stdin"))?;
         buf
     } else {
         std::fs::read(patch_path).map_err(tally::ioerr(format!("reading {patch_path}")))?
@@ -786,7 +851,11 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
     let intent: Intent = serde_json::from_slice(&bytes)?;
     let repo = repo()?;
     let annotation = annotation_from(&options, &repo)?;
-    let line = repo.apply(options.fork.as_deref().unwrap_or("main"), intent, annotation)?;
+    let line = repo.apply(
+        options.fork.as_deref().unwrap_or("main"),
+        intent,
+        annotation,
+    )?;
     println!("{} {}", line.id, line.sum_after);
     Ok(())
 }
@@ -834,14 +903,15 @@ fn cmd_commit(args: &[&str]) -> Result<()> {
     let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
         Some(i) => (
             args[..i].to_vec(),
-            args[i + 1..].iter().map(|p| normalize_path_filter(p)).collect(),
+            args[i + 1..]
+                .iter()
+                .map(|p| normalize_path_filter(p))
+                .collect(),
         ),
         None => (args.to_vec(), Vec::new()),
     };
-    let (options, free) = ApplyOptions::from_arguments_relaxed(
-        "USAGE: tally commit [options] [-- path...]",
-        &left,
-    );
+    let (options, free) =
+        ApplyOptions::from_arguments_relaxed("USAGE: tally commit [options] [-- path...]", &left);
     reject_extra("commit", &free, 0)?;
     let repo = repo()?;
     let annotation = annotation_from(&options, &repo)?;
@@ -855,8 +925,16 @@ fn cmd_commit(args: &[&str]) -> Result<()> {
                 .to_string(),
         ));
     }
-    let filters = if paths.is_empty() { None } else { Some(paths.as_slice()) };
-    let line = repo.commit(options.fork.as_deref().unwrap_or("main"), filters, annotation)?;
+    let filters = if paths.is_empty() {
+        None
+    } else {
+        Some(paths.as_slice())
+    };
+    let line = repo.commit(
+        options.fork.as_deref().unwrap_or("main"),
+        filters,
+        annotation,
+    )?;
     println!("{} {}", line.id, line.sum_after);
     println!("committed {} path(s)", line.realized.len());
     Ok(())
@@ -867,7 +945,11 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     struct Options {
         #[arrrg(optional, "The fork to operate on (default: main).", "FORK")]
         fork: Option<String>,
-        #[arrrg(optional, "Collapse only the named fuses (comma-separated; default: every fuse).", "FUSES")]
+        #[arrrg(
+            optional,
+            "Collapse only the named fuses (comma-separated; default: every fuse).",
+            "FUSES"
+        )]
         view: Option<String>,
         #[arrrg(flag, "Render the un-fused chain: every line, full.")]
         raw: bool,
@@ -880,7 +962,9 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     );
     reject_extra("log", &free, 0)?;
     if options.raw && options.view.is_some() {
-        return Err(Error::Invalid("--raw and --view are mutually exclusive".to_string()));
+        return Err(Error::Invalid(
+            "--raw and --view are mutually exclusive".to_string(),
+        ));
     }
     let palette = Palette::new(options.nocolor);
     let fork = options.fork.as_deref().unwrap_or("main");
@@ -904,12 +988,14 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     // A view is a zoom level, not a different interface: the caller declares
     // the fuse names to collapse, just in time, each time.  No --view: every
     // fuse collapses.
-    let view: Option<Vec<&str>> = options
-        .view
-        .as_deref()
-        .map(|names| names.split(',').map(str::trim).filter(|n| !n.is_empty()).collect());
-    let lines: Vec<tally::log::LogLine> =
-        history.into_iter().map(|(_, line)| line).collect();
+    let view: Option<Vec<&str>> = options.view.as_deref().map(|names| {
+        names
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .collect()
+    });
+    let lines: Vec<tally::log::LogLine> = history.into_iter().map(|(_, line)| line).collect();
     for beat in fused_beats(&lines, view.as_deref()) {
         match beat {
             Beat::Fused { fuse, lines } => {
@@ -953,7 +1039,11 @@ impl Palette {
     }
 
     fn paint(&self, code: &str, text: &str) -> String {
-        if self.enabled && !text.is_empty() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
+        if self.enabled && !text.is_empty() {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
     }
 
     /// The line id: yellow, like git's `commit <sha>`.
@@ -1082,7 +1172,9 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
     );
     reject_extra("fuse", &free, 3)?;
     let (Some(name), Some(from), Some(to)) = (free.first(), free.get(1), free.get(2)) else {
-        return Err(Error::Invalid("fuse requires <name> <from-id> <to-id>".to_string()));
+        return Err(Error::Invalid(
+            "fuse requires <name> <from-id> <to-id>".to_string(),
+        ));
     };
     let repo = repo()?;
     let line = repo.fuse(
@@ -1150,7 +1242,9 @@ fn cmd_remove_fork(args: &[&str]) -> Result<()> {
         Options::from_arguments_relaxed("USAGE: tally remove-fork [--force] <name>", args);
     reject_extra("remove-fork", &free, 1)?;
     let Some(name) = free.first() else {
-        return Err(Error::Invalid("remove-fork requires a fork name".to_string()));
+        return Err(Error::Invalid(
+            "remove-fork requires a fork name".to_string(),
+        ));
     };
     let repo = repo()?;
     repo.remove_fork(name, options.force)?;
@@ -1166,10 +1260,8 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "Author of the union lines.", "AUTHOR")]
         author: Option<String>,
     }
-    let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally union [--into FORK] <fork>",
-        args,
-    );
+    let (options, free) =
+        Options::from_arguments_relaxed("USAGE: tally union [--into FORK] <fork>", args);
     reject_extra("union", &free, 1)?;
     let Some(source) = free.first() else {
         return Err(Error::Invalid("union requires a source fork".to_string()));
@@ -1186,7 +1278,10 @@ fn cmd_union(args: &[&str]) -> Result<()> {
             Stratum::RealizedReplay => "stratum 2: realized replay",
             Stratum::IntentReplay => "stratum 3: intent replay",
         };
-        println!("landed {} <- {}  ({stratum})", landed.line.id, landed.origin_id);
+        println!(
+            "landed {} <- {}  ({stratum})",
+            landed.line.id, landed.origin_id
+        );
     }
     if let Some((line_id, evidence)) = &outcome.needs_reenactment {
         return Err(Error::NeedsReenactment(format!(
@@ -1255,7 +1350,11 @@ fn cmd_fetch(args: &[&str]) -> Result<()> {
 fn cmd_push(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "zstd level for pack-for-push (default: 3, per SPEC 5).", "LEVEL")]
+        #[arrrg(
+            optional,
+            "zstd level for pack-for-push (default: 3, per SPEC 5).",
+            "LEVEL"
+        )]
         level: Option<i32>,
     }
     let (options, free) =
@@ -1274,14 +1373,20 @@ fn cmd_push(args: &[&str]) -> Result<()> {
 fn cmd_pack(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "zstd level for pack-at-rest (default: 19, per SPEC 5).", "LEVEL")]
+        #[arrrg(
+            optional,
+            "zstd level for pack-at-rest (default: 19, per SPEC 5).",
+            "LEVEL"
+        )]
         level: Option<i32>,
     }
     let (options, free) =
         Options::from_arguments_relaxed("USAGE: tally pack [--level N] <dir>", args);
     reject_extra("pack", &free, 1)?;
     let Some(dir) = free.first() else {
-        return Err(Error::Invalid("pack requires an output directory".to_string()));
+        return Err(Error::Invalid(
+            "pack requires an output directory".to_string(),
+        ));
     };
     let repo = repo()?;
     let manifest = tally::serve::pack(
@@ -1303,8 +1408,7 @@ fn cmd_unpack(args: &[&str]) -> Result<()> {
     let (Some(dir), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("unpack requires <dir> <dest>".to_string()));
     };
-    let repo =
-        tally::serve::unpack_dir(std::path::Path::new(dir), std::path::Path::new(dest))?;
+    let repo = tally::serve::unpack_dir(std::path::Path::new(dir), std::path::Path::new(dest))?;
     println!("unpacked into {}", repo.root().display());
     Ok(())
 }

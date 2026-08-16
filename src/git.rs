@@ -51,7 +51,9 @@ fn rev_parse(git_dir: &Path, spec: &str) -> Result<String> {
         .trim()
         .to_string();
     if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(Error::Corrupt(format!("git rev-parse produced a non-hex name: {hex:?}")));
+        return Err(Error::Corrupt(format!(
+            "git rev-parse produced a non-hex name: {hex:?}"
+        )));
     }
     Ok(hex)
 }
@@ -71,7 +73,10 @@ pub fn resolve_tree(git_dir: &Path, commit: &str) -> Result<String> {
 /// root commit.  The chain is a pure function of the commit, so everyone
 /// who holds it derives the same chain.
 pub fn linear_chain(git_dir: &Path, commit: &str) -> Result<Vec<String>> {
-    let out = git(git_dir, &["rev-list", "--first-parent", "--parents", commit])?;
+    let out = git(
+        git_dir,
+        &["rev-list", "--first-parent", "--parents", commit],
+    )?;
     let text = String::from_utf8(out)
         .map_err(|_| Error::Corrupt("git rev-list produced non-UTF-8".to_string()))?;
     let mut chain = Vec::new();
@@ -122,7 +127,12 @@ pub fn first_parent_since(git_dir: &Path, base: &str, commit: &str) -> Result<Ve
     // oldest first.
     let out = git(
         git_dir,
-        &["rev-list", "--first-parent", "--reverse", &format!("{base}..{commit}")],
+        &[
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            &format!("{base}..{commit}"),
+        ],
     )?;
     let text = String::from_utf8(out)
         .map_err(|_| Error::Corrupt("git rev-list produced non-UTF-8".to_string()))?;
@@ -148,15 +158,19 @@ pub fn first_parent_since(git_dir: &Path, base: &str, commit: &str) -> Result<Ve
 /// and body).  `%B` is the raw body, so a multi-line message round-trips
 /// verbatim; only git's trailing newline is trimmed.
 fn commit_meta(git_dir: &Path, commit: &str) -> Result<(u64, String, String)> {
-    let out = git(git_dir, &["show", "-s", "--format=%ct%x00%an <%ae>%x00%B", commit])?;
+    let out = git(
+        git_dir,
+        &["show", "-s", "--format=%ct%x00%an <%ae>%x00%B", commit],
+    )?;
     let text = String::from_utf8(out)
         .map_err(|_| Error::Corrupt("git show produced non-UTF-8".to_string()))?;
     let text = text.trim_end_matches('\n');
     let mut parts = text.splitn(3, '\0');
-    let (Some(seconds), Some(author), Some(message)) =
-        (parts.next(), parts.next(), parts.next())
+    let (Some(seconds), Some(author), Some(message)) = (parts.next(), parts.next(), parts.next())
     else {
-        return Err(Error::Corrupt(format!("git show produced bad metadata: {text:?}")));
+        return Err(Error::Corrupt(format!(
+            "git show produced bad metadata: {text:?}"
+        )));
     };
     let seconds: u64 = seconds
         .parse()
@@ -172,7 +186,9 @@ pub fn object_format(git_dir: &Path) -> Result<String> {
         .trim()
         .to_string();
     if name.is_empty() {
-        return Err(Error::Corrupt("git reported an empty object format".to_string()));
+        return Err(Error::Corrupt(
+            "git reported an empty object format".to_string(),
+        ));
     }
     Ok(name)
 }
@@ -268,7 +284,11 @@ pub fn derive_records(git_dir: &Path, commit: &str) -> Result<Vec<ElementRecord>
     let mut records = Vec::with_capacity(entries.len());
     for entry in &entries {
         let content = read_git_blob(git_dir, &entry.oid)?;
-        records.push(ElementRecord::new(&entry.mode, &entry.path, &sha3_hex(&content))?);
+        records.push(ElementRecord::new(
+            &entry.mode,
+            &entry.path,
+            &sha3_hex(&content),
+        )?);
     }
     records.sort();
     Ok(records)
@@ -410,11 +430,19 @@ pub fn import_from_git(
     // the target's first-parent line).
     let new_commits = first_parent_since(&git_dir, &base, &commit)?;
     if new_commits.is_empty() {
-        return Ok(ImportSummary { base, commit, imported: Vec::new() });
+        return Ok(ImportSummary {
+            base,
+            commit,
+            imported: Vec::new(),
+        });
     }
 
     import_run(repo, &git_dir, base_manifest, &new_commits, fork)?;
-    Ok(ImportSummary { base, commit, imported: new_commits })
+    Ok(ImportSummary {
+        base,
+        commit,
+        imported: new_commits,
+    })
 }
 
 /// Ingest `new_commits` (oldest first) as one log line per commit onto
@@ -610,11 +638,7 @@ pub fn reanchor(
 /// land unsynced: the imports below write thousands per run, so they defer
 /// to one device sync before the commit that references them (see
 /// [`BlobStore::put_unsynced`]) rather than fsyncing each blob.
-fn commit_manifest(
-    blobs: &BlobStore,
-    git_dir: &Path,
-    entries: &[GitEntry],
-) -> Result<Manifest> {
+fn commit_manifest(blobs: &BlobStore, git_dir: &Path, entries: &[GitEntry]) -> Result<Manifest> {
     let mut manifest = Manifest::new();
     for entry in entries {
         let content = read_git_blob(git_dir, &entry.oid)?;
@@ -767,8 +791,7 @@ mod tests {
     }
 
     fn temp_git_repo(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("tally-git-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         run_git(&dir, &["init", "-q"]);
@@ -804,7 +827,9 @@ mod tests {
         // resolved digest and its algorithm, and the tree oid.
         let algorithm = object_format(&dir).unwrap();
         let tree = resolve_tree(&dir, &commit).unwrap();
-        let [line] = &state.lines[..] else { panic!("expected one provenance line") };
+        let [line] = &state.lines[..] else {
+            panic!("expected one provenance line")
+        };
         assert!(line.intent.ops.is_empty());
         assert!(line.realized.is_empty());
         assert_eq!(line.annotation.author, "git-import");
@@ -866,7 +891,10 @@ mod tests {
         // commit's tree.
         let state = repo.current_state("main").unwrap();
         assert_eq!(state.lines.len(), 3);
-        assert!(state.lines[0].realized.is_empty(), "the anchor carries the first commit");
+        assert!(
+            state.lines[0].realized.is_empty(),
+            "the anchor carries the first commit"
+        );
         let derived = derive_records(&dir, &commit).unwrap();
         let mut anchored: Vec<ElementRecord> = state.manifest.records().cloned().collect();
         anchored.sort();
@@ -874,10 +902,17 @@ mod tests {
         // Annotations carry the commit message verbatim, with structured
         // derivation facts alongside.
         assert_eq!(state.lines[2].annotation.prose.as_deref(), Some("edit a"));
-        let import = state.lines[2].annotation.import.as_ref().expect("import provenance");
+        let import = state.lines[2]
+            .annotation
+            .import
+            .as_ref()
+            .expect("import provenance");
         assert_eq!(import.commit, commit);
         assert_eq!(import.reference, None);
-        assert_eq!(state.lines[0].annotation.author, "tally <tally@example.com>");
+        assert_eq!(
+            state.lines[0].annotation.author,
+            "tally <tally@example.com>"
+        );
 
         // Determinism: a second import produces byte-identical log lines.
         let root_b = dir.join("import-b");
@@ -1027,7 +1062,10 @@ mod tests {
         };
         assert!(matches!(err, Error::Invalid(_)), "{err}");
         assert!(err.to_string().contains("gitlink"), "{err}");
-        assert!(!dir.join(".tally").exists(), "a failed import must write nothing");
+        assert!(
+            !dir.join(".tally").exists(),
+            "a failed import must write nothing"
+        );
     }
 
     #[test]
@@ -1040,7 +1078,12 @@ mod tests {
             .to_string();
         run_git(
             &dir,
-            &["update-index", "--add", "--cacheinfo", &format!("100644,{oid},.tally/config")],
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{oid},.tally/config"),
+            ],
         );
         commit_index(&dir, "reserved");
         let Err(err) = init_from_git(&dir, None, "HEAD") else {
@@ -1052,7 +1095,12 @@ mod tests {
         run_git(&dir, &["rm", "-q", "--cached", ".tally/config"]);
         run_git(
             &dir,
-            &["update-index", "--add", "--cacheinfo", &format!("100644,{oid},caf\u{e9}")],
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("100644,{oid},caf\u{e9}"),
+            ],
         );
         commit_index(&dir, "non-ascii");
         let Err(err) = init_from_git(&dir, None, "HEAD") else {

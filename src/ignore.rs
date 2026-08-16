@@ -98,7 +98,12 @@ fn parse_line(line: &str) -> Option<Rule> {
     if segments.iter().any(String::is_empty) {
         return None; // `a//b` and friends: not a meaningful rule.
     }
-    Some(Rule { negated, dir_only, anchored, segments })
+    Some(Rule {
+        negated,
+        dir_only,
+        anchored,
+        segments,
+    })
 }
 
 /// Match a list of pattern segments against path segments.  A trailing
@@ -118,9 +123,7 @@ fn match_segments(pats: &[&str], segs: &[&str]) -> bool {
         }
         Some((pat, rest)) => match segs.split_first() {
             None => false,
-            Some((seg, segs_rest)) => {
-                match_segment(pat, seg) && match_segments(rest, segs_rest)
-            }
+            Some((seg, segs_rest)) => match_segment(pat, seg) && match_segments(rest, segs_rest),
         },
     }
 }

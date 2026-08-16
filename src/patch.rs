@@ -143,7 +143,10 @@ pub fn apply_realized_to_sum(sum: &Sum, realized: &[RealizedEntry]) -> Result<Su
 
 /// Apply a realized delta to a manifest.  Every remove is membership-checked
 /// here — the placeholder-debt rule is enforced at application, always (I9).
-pub fn apply_realized_to_manifest(manifest: &mut Manifest, realized: &[RealizedEntry]) -> Result<()> {
+pub fn apply_realized_to_manifest(
+    manifest: &mut Manifest,
+    realized: &[RealizedEntry],
+) -> Result<()> {
     for entry in realized {
         if let Some(removed) = entry.removed()? {
             manifest.remove(&removed)?;
@@ -217,18 +220,22 @@ pub fn apply_intent(
     for op in &intent.ops {
         validate_path(op.path())?;
         match op {
-            Op::Edit { path, old_str, new_str } => {
-                let element = scratch.get(path).cloned().ok_or_else(|| {
-                    Error::Precondition(format!("edit of absent path: {path}"))
-                })?;
+            Op::Edit {
+                path,
+                old_str,
+                new_str,
+            } => {
+                let element = scratch
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| Error::Precondition(format!("edit of absent path: {path}")))?;
                 let content = read_blob(&element.blob, &realization)?;
-                let new_content =
-                    replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
-                        .map_err(|n| {
-                            Error::Precondition(format!(
-                                "old_str occurs {n} times in {path}; exactly one required"
-                            ))
-                        })?;
+                let new_content = replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
+                    .map_err(|n| {
+                        Error::Precondition(format!(
+                            "old_str occurs {n} times in {path}; exactly one required"
+                        ))
+                    })?;
                 let new_hash = sha3_hex(&new_content);
                 let new_record = ElementRecord::new(&element.mode, path, &new_hash)?;
                 scratch.remove(&element)?;
@@ -239,15 +246,21 @@ pub fn apply_intent(
                     add: Some(new_record.to_line()),
                 });
             }
-            Op::Create { path, mode, blob, content_b64 } => {
+            Op::Create {
+                path,
+                mode,
+                blob,
+                content_b64,
+            } => {
                 validate_mode(mode)?;
                 if scratch.get(path).is_some() {
-                    return Err(Error::Precondition(format!("create of present path: {path}")));
+                    return Err(Error::Precondition(format!(
+                        "create of present path: {path}"
+                    )));
                 }
                 let hash = match (blob, content_b64) {
                     (Some(hash), None) => {
-                        let known_new =
-                            realization.new_blobs.iter().any(|(h, _)| h == hash);
+                        let known_new = realization.new_blobs.iter().any(|(h, _)| h == hash);
                         if !known_new && !blobs.has(hash)? {
                             return Err(Error::Precondition(format!(
                                 "create references absent blob {hash}"
@@ -269,14 +282,16 @@ pub fn apply_intent(
                 };
                 let record = ElementRecord::new(mode, path, &hash)?;
                 scratch.insert(record.clone())?;
-                realization
-                    .realized
-                    .push(RealizedEntry { remove: None, add: Some(record.to_line()) });
+                realization.realized.push(RealizedEntry {
+                    remove: None,
+                    add: Some(record.to_line()),
+                });
             }
             Op::Delete { path, blob } => {
-                let element = scratch.get(path).cloned().ok_or_else(|| {
-                    Error::Precondition(format!("delete of absent path: {path}"))
-                })?;
+                let element = scratch
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| Error::Precondition(format!("delete of absent path: {path}")))?;
                 if &element.blob != blob {
                     return Err(Error::Precondition(format!(
                         "delete of {path}: blob {blob} does not match element {}",
@@ -284,15 +299,21 @@ pub fn apply_intent(
                     )));
                 }
                 scratch.remove(&element)?;
-                realization
-                    .realized
-                    .push(RealizedEntry { remove: Some(element.to_line()), add: None });
+                realization.realized.push(RealizedEntry {
+                    remove: Some(element.to_line()),
+                    add: None,
+                });
             }
-            Op::Chmod { path, old_mode, new_mode } => {
+            Op::Chmod {
+                path,
+                old_mode,
+                new_mode,
+            } => {
                 validate_mode(new_mode)?;
-                let element = scratch.get(path).cloned().ok_or_else(|| {
-                    Error::Precondition(format!("chmod of absent path: {path}"))
-                })?;
+                let element = scratch
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| Error::Precondition(format!("chmod of absent path: {path}")))?;
                 if &element.mode != old_mode {
                     return Err(Error::Precondition(format!(
                         "chmod of {path}: mode {old_mode} does not match element {}",
@@ -318,8 +339,7 @@ mod tests {
     use super::*;
 
     fn store(name: &str) -> BlobStore {
-        let dir =
-            std::env::temp_dir().join(format!("tally-patch-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-patch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         BlobStore::init(dir).unwrap()
     }
@@ -334,8 +354,7 @@ mod tests {
 
     #[test]
     fn edit_applies_and_realizes() {
-        let (mut manifest, blobs, old) =
-            seeded("edit", b"fn main() { println!(\"hello\"); }\n");
+        let (mut manifest, blobs, old) = seeded("edit", b"fn main() { println!(\"hello\"); }\n");
         let intent = Intent {
             ops: vec![Op::Edit {
                 path: "/src/main.rs".to_string(),
@@ -348,7 +367,11 @@ mod tests {
         assert_eq!(realization.realized.len(), 1);
         assert_eq!(realization.realized[0].remove, Some(old.to_line()));
         sum = apply_realized_to_sum(&sum, &realization.realized).unwrap();
-        assert_eq!(sum, manifest.sum(), "arithmetic must agree with the manifest");
+        assert_eq!(
+            sum,
+            manifest.sum(),
+            "arithmetic must agree with the manifest"
+        );
         let (hash, content) = &realization.new_blobs[0];
         assert_eq!(*hash, sha3_hex(content));
         assert_eq!(content, b"fn main() { println!(\"hello, tally\"); }\n");
@@ -370,8 +393,14 @@ mod tests {
                 &blobs,
             )
         };
-        assert!(matches!(hit("aaa"), Err(Error::Precondition(_))), "two matches");
-        assert!(matches!(hit("zzz"), Err(Error::Precondition(_))), "zero matches");
+        assert!(
+            matches!(hit("aaa"), Err(Error::Precondition(_))),
+            "two matches"
+        );
+        assert!(
+            matches!(hit("zzz"), Err(Error::Precondition(_))),
+            "zero matches"
+        );
         assert!(hit("bbb").is_ok(), "one match");
     }
 
@@ -394,7 +423,10 @@ mod tests {
             ],
         };
         assert!(apply_intent(&intent, &mut manifest, &blobs).is_err());
-        assert_eq!(manifest, before, "mid-intent failure must leave state untouched");
+        assert_eq!(
+            manifest, before,
+            "mid-intent failure must leave state untouched"
+        );
     }
 
     #[test]
@@ -437,7 +469,10 @@ mod tests {
         };
         assert!(apply_intent(&bad, &mut manifest, &blobs).is_err());
         let good = Intent {
-            ops: vec![Op::Delete { path: "/tools/apply".to_string(), blob: hash }],
+            ops: vec![Op::Delete {
+                path: "/tools/apply".to_string(),
+                blob: hash,
+            }],
         };
         apply_intent(&good, &mut manifest, &blobs).unwrap();
         assert!(manifest.is_empty());
@@ -474,8 +509,14 @@ mod tests {
         let inverse: Vec<RealizedEntry> = r
             .realized
             .iter()
-            .map(|e| RealizedEntry { remove: e.add.clone(), add: e.remove.clone() })
+            .map(|e| RealizedEntry {
+                remove: e.add.clone(),
+                add: e.remove.clone(),
+            })
             .collect();
-        assert_eq!(apply_realized_to_sum(&sum_after, &inverse).unwrap(), sum_before);
+        assert_eq!(
+            apply_realized_to_sum(&sum_after, &inverse).unwrap(),
+            sum_before
+        );
     }
 }

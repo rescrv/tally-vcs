@@ -20,8 +20,8 @@ use tally::ident::{
 };
 use tally::manifest::Manifest;
 use tally::patch::{
-    Intent, Op, apply_intent, apply_realized_to_manifest, apply_realized_to_sum,
-    count_occurrences, replace_unique,
+    Intent, Op, apply_intent, apply_realized_to_manifest, apply_realized_to_sum, count_occurrences,
+    replace_unique,
 };
 use tally::segment::{ImageItem, Segment, SegmentInput, build_segment, image_setsum};
 
@@ -314,7 +314,10 @@ fn naive_count(haystack: &[u8], needle: &[u8]) -> usize {
     if needle.is_empty() || needle.len() > haystack.len() {
         return 0;
     }
-    haystack.windows(needle.len()).filter(|w| *w == needle).count()
+    haystack
+        .windows(needle.len())
+        .filter(|w| *w == needle)
+        .count()
 }
 
 proptest! {
@@ -375,28 +378,47 @@ fn temp_blobs() -> (std::path::PathBuf, BlobStore) {
 /// every generated op is valid by construction.
 #[derive(Clone, Debug)]
 enum OpSeed {
-    Create { path_ix: u8, mode_ix: u8, content: Vec<u8>, inline: bool },
-    Edit { target_ix: u8, replacement: Vec<u8> },
-    Delete { target_ix: u8 },
-    Chmod { target_ix: u8, mode_ix: u8 },
+    Create {
+        path_ix: u8,
+        mode_ix: u8,
+        content: Vec<u8>,
+        inline: bool,
+    },
+    Edit {
+        target_ix: u8,
+        replacement: Vec<u8>,
+    },
+    Delete {
+        target_ix: u8,
+    },
+    Chmod {
+        target_ix: u8,
+        mode_ix: u8,
+    },
 }
 
 fn arb_op_seed() -> impl Strategy<Value = OpSeed> {
     prop_oneof![
-        (any::<u8>(), 0u8..3, prop::collection::vec(any::<u8>(), 0..48), any::<bool>())
+        (
+            any::<u8>(),
+            0u8..3,
+            prop::collection::vec(any::<u8>(), 0..48),
+            any::<bool>()
+        )
             .prop_map(|(path_ix, mode_ix, content, inline)| OpSeed::Create {
                 path_ix,
                 mode_ix,
                 content,
                 inline
             }),
-        (any::<u8>(), prop::collection::vec(any::<u8>(), 0..16))
-            .prop_map(|(target_ix, replacement)| OpSeed::Edit { target_ix, replacement }),
+        (any::<u8>(), prop::collection::vec(any::<u8>(), 0..16)).prop_map(
+            |(target_ix, replacement)| OpSeed::Edit {
+                target_ix,
+                replacement
+            }
+        ),
         any::<u8>().prop_map(|target_ix| OpSeed::Delete { target_ix }),
-        (any::<u8>(), 0u8..3).prop_map(|(target_ix, mode_ix)| OpSeed::Chmod {
-            target_ix,
-            mode_ix
-        }),
+        (any::<u8>(), 0u8..3).prop_map(|(target_ix, mode_ix)| OpSeed::Chmod { target_ix, mode_ix }),
     ]
 }
 
@@ -414,7 +436,12 @@ fn realize_seeds(
     for seed in seeds {
         let paths: Vec<String> = model.keys().cloned().collect();
         match seed {
-            OpSeed::Create { path_ix, mode_ix, content, inline } => {
+            OpSeed::Create {
+                path_ix,
+                mode_ix,
+                content,
+                inline,
+            } => {
                 let path = format!("/f{path_ix}");
                 if model.contains_key(&path) {
                     continue;
@@ -439,7 +466,10 @@ fn realize_seeds(
                 model.insert(path, (mode.to_string(), content.clone()));
                 ops.push(op);
             }
-            OpSeed::Edit { target_ix, replacement } => {
+            OpSeed::Edit {
+                target_ix,
+                replacement,
+            } => {
                 if paths.is_empty() {
                     continue;
                 }
@@ -448,11 +478,15 @@ fn realize_seeds(
                 // old_str must be non-empty, occur exactly once, and be
                 // UTF-8 (Op carries String).  The whole content is unique
                 // by definition; require it be valid UTF-8 and non-empty.
-                let Ok(old_str) = std::str::from_utf8(&content) else { continue };
+                let Ok(old_str) = std::str::from_utf8(&content) else {
+                    continue;
+                };
                 if old_str.is_empty() {
                     continue;
                 }
-                let Ok(new_str) = std::str::from_utf8(replacement) else { continue };
+                let Ok(new_str) = std::str::from_utf8(replacement) else {
+                    continue;
+                };
                 ops.push(Op::Edit {
                     path: path.clone(),
                     old_str: old_str.to_string(),
@@ -466,7 +500,10 @@ fn realize_seeds(
                 }
                 let path = paths[*target_ix as usize % paths.len()].clone();
                 let (_, content) = model.get(&path).unwrap();
-                ops.push(Op::Delete { path: path.clone(), blob: sha3_hex(content) });
+                ops.push(Op::Delete {
+                    path: path.clone(),
+                    blob: sha3_hex(content),
+                });
                 model.remove(&path);
             }
             OpSeed::Chmod { target_ix, mode_ix } => {

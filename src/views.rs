@@ -77,7 +77,10 @@ pub fn fused_beats<'a>(lines: &'a [LogLine], view: Option<&[&str]>) -> Vec<Beat<
         for j in i..a {
             single(&mut beats, j);
         }
-        beats.push(Beat::Fused { fuse: &lines[idx], lines: &lines[a..=b] });
+        beats.push(Beat::Fused {
+            fuse: &lines[idx],
+            lines: &lines[a..=b],
+        });
         i = i.max(b + 1);
     }
     for j in i..lines.len() {

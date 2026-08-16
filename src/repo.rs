@@ -13,11 +13,12 @@ use crate::blobs::{BlobStore, fsync_dir};
 use crate::fork::{ForkFile, validate_fork_name};
 use crate::ident::{ElementRecord, Sum};
 use crate::ignore::Ignore;
-use crate::log::{Annotation, Fuse, LogLine, Provenance, last_state_position,
-                 parse_log_lenient};
+use crate::log::{Annotation, Fuse, LogLine, Provenance, last_state_position, parse_log_lenient};
 use crate::manifest::Manifest;
-use crate::patch::{Intent, Realization, RealizedEntry, apply_intent,
-                   apply_realized_to_manifest, apply_realized_to_sum};
+use crate::patch::{
+    Intent, Realization, RealizedEntry, apply_intent, apply_realized_to_manifest,
+    apply_realized_to_sum,
+};
 use crate::{Error, Result, ioerr};
 
 /// The contents of `.tally/version`.
@@ -178,8 +179,7 @@ impl Repository {
     /// List fork names.
     pub fn fork_names(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
-        let entries =
-            fs::read_dir(self.dot.join("forks")).map_err(ioerr("listing forks"))?;
+        let entries = fs::read_dir(self.dot.join("forks")).map_err(ioerr("listing forks"))?;
         for entry in entries {
             let entry = entry.map_err(ioerr("listing forks"))?;
             if let Some(name) = entry.file_name().to_str() {
@@ -207,7 +207,10 @@ impl Repository {
     pub fn create_fork(&self, name: &str, from_fork: &str) -> Result<ForkFile> {
         let state = self.current_state(from_fork)?;
         let anchor_hex = self.write_anchor_manifest(&state.manifest)?;
-        let fork = ForkFile { anchor: anchor_hex.clone(), manifest: anchor_hex };
+        let fork = ForkFile {
+            anchor: anchor_hex.clone(),
+            manifest: anchor_hex,
+        };
         self.create_fork_raw(name, &fork)?;
         Ok(fork)
     }
@@ -263,7 +266,9 @@ impl Repository {
         }
         match (fork, branch) {
             (Some(fork), Some(branch)) => Ok(Some(MirrorBinding { fork, branch })),
-            _ => Err(Error::Corrupt("mirror binding missing fork or branch".to_string())),
+            _ => Err(Error::Corrupt(
+                "mirror binding missing fork or branch".to_string(),
+            )),
         }
     }
 
@@ -300,7 +305,9 @@ impl Repository {
     pub fn remove_fork(&self, name: &str, force: bool) -> Result<()> {
         validate_fork_name(name)?;
         if name == "main" {
-            return Err(Error::Invalid("refusing to remove the main fork".to_string()));
+            return Err(Error::Invalid(
+                "refusing to remove the main fork".to_string(),
+            ));
         }
         let dir = self.fork_dir(name);
         if !dir.exists() {
@@ -323,8 +330,11 @@ impl Repository {
                         carried.insert(line.id);
                     }
                 }
-                let unsubsumed =
-                    mine.lines.iter().filter(|l| !carried.contains(&l.id)).count();
+                let unsubsumed = mine
+                    .lines
+                    .iter()
+                    .filter(|l| !carried.contains(&l.id))
+                    .count();
                 if unsubsumed > 0 {
                     return Err(Error::Invalid(format!(
                         "fork {name} has {unsubsumed} line(s) not subsumed by another fork; \
@@ -366,8 +376,7 @@ impl Repository {
     /// it as never-committed (§2.7 crash recovery).
     pub fn read_log(&self, fork: &str) -> Result<Vec<LogLine>> {
         let path = self.log_path(fork);
-        let bytes =
-            fs::read(&path).map_err(ioerr(format!("reading log of fork {fork}")))?;
+        let bytes = fs::read(&path).map_err(ioerr(format!("reading log of fork {fork}")))?;
         let parsed = parse_log_lenient(&bytes)?;
         if parsed.valid_prefix != bytes.len() {
             let file = fs::OpenOptions::new()
@@ -412,8 +421,7 @@ impl Repository {
             }
             prev = line.id.clone();
             if i > 0 {
-                let expect =
-                    apply_realized_to_sum(&sums[i - 1], &line.realized)?.hexdigest();
+                let expect = apply_realized_to_sum(&sums[i - 1], &line.realized)?.hexdigest();
                 if expect != line.sum_after {
                     return Err(Error::Corrupt(format!(
                         "fork {fork} line {i} ({}): sum_after {} disagrees with \
@@ -427,10 +435,8 @@ impl Repository {
         if start == 0
             && let Some(first) = lines.first()
         {
-            let expect = apply_realized_to_sum(
-                &Sum::from_hexdigest(&fork_file.anchor)?,
-                &first.realized,
-            )?;
+            let expect =
+                apply_realized_to_sum(&Sum::from_hexdigest(&fork_file.anchor)?, &first.realized)?;
             if expect.hexdigest() != first.sum_after {
                 return Err(Error::Corrupt(format!(
                     "fork {fork} line 0 ({}): sum_after disagrees with anchor arithmetic",
@@ -453,7 +459,12 @@ impl Repository {
             )));
         }
         let head_id = lines.last().map(|l| l.id.clone()).unwrap_or_default();
-        Ok(ForkState { manifest, sum, head_id, lines })
+        Ok(ForkState {
+            manifest,
+            sum,
+            head_id,
+            lines,
+        })
     }
 
     /// The manifest at an arbitrary sum on a fork's history, found by
@@ -468,7 +479,9 @@ impl Repository {
             return self.read_anchor_manifest(&fork_file.manifest);
         }
         let pos = last_state_position(&state.lines, sum_hex).ok_or_else(|| {
-            Error::Invalid(format!("sum {sum_hex} does not name a state on fork {fork}"))
+            Error::Invalid(format!(
+                "sum {sum_hex} does not name a state on fork {fork}"
+            ))
         })?;
         // Walk backward from the current state, applying inverses.
         let mut manifest = state.manifest;
@@ -644,8 +657,7 @@ impl Repository {
         let state = self.current_state(fork)?;
         let mut manifest = state.manifest.clone();
         // 2. VALIDATE every op; any failure → write nothing.
-        let realization: Realization =
-            apply_intent(&intent, &mut manifest, &self.blobs())?;
+        let realization: Realization = apply_intent(&intent, &mut manifest, &self.blobs())?;
         // 3. WRITE new blobs (tmp+rename, unsynced); idempotent,
         //    uncommitted.  The device sync before the step-5 append makes
         //    them durable: write-ahead ordering with one sync for the whole
@@ -676,7 +688,8 @@ impl Repository {
             .append(true)
             .open(&path)
             .map_err(ioerr("opening log for append"))?;
-        file.write_all(&bytes).map_err(ioerr("appending log line"))?;
+        file.write_all(&bytes)
+            .map_err(ioerr("appending log line"))?;
         file.sync_all().map_err(ioerr("fsyncing log"))?;
         fsync_dir(self.fork_dir(fork).as_path())?;
         // 6. REFRESH working tree; best-effort, derived.
@@ -732,7 +745,8 @@ impl Repository {
             .append(true)
             .open(&path)
             .map_err(ioerr("opening log for append"))?;
-        file.write_all(&bytes).map_err(ioerr("appending log line"))?;
+        file.write_all(&bytes)
+            .map_err(ioerr("appending log line"))?;
         file.sync_all().map_err(ioerr("fsyncing log"))?;
         fsync_dir(self.fork_dir(fork).as_path())?;
         let _ = self.refresh_working_tree(&line);
@@ -803,7 +817,8 @@ impl Repository {
             .append(true)
             .open(&path)
             .map_err(ioerr("opening log for append"))?;
-        file.write_all(&bytes).map_err(ioerr("appending log batch"))?;
+        file.write_all(&bytes)
+            .map_err(ioerr("appending log batch"))?;
         file.sync_all().map_err(ioerr("fsyncing log"))?;
         fsync_dir(self.fork_dir(fork).as_path())?;
         // Refresh the working tree, best-effort, in order.
@@ -837,7 +852,8 @@ impl Repository {
             .append(true)
             .open(&path)
             .map_err(ioerr("opening log for append"))?;
-        file.write_all(bytes).map_err(ioerr("appending union batch"))?;
+        file.write_all(bytes)
+            .map_err(ioerr("appending union batch"))?;
         file.sync_all().map_err(ioerr("fsyncing log"))?;
         fsync_dir(self.fork_dir(fork).as_path())?;
         for line in lines {
@@ -873,12 +889,7 @@ impl Repository {
     /// Write one element's bytes to `dst`, honoring its mode (symlink, exec,
     /// regular).  The path is caller-chosen so materialize can target a
     /// destination outside the working tree.
-    fn write_record_to(
-        &self,
-        blobs: &BlobStore,
-        record: &ElementRecord,
-        dst: &Path,
-    ) -> Result<()> {
+    fn write_record_to(&self, blobs: &BlobStore, record: &ElementRecord, dst: &Path) -> Result<()> {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(ioerr("creating working tree directory"))?;
         }
@@ -890,8 +901,7 @@ impl Repository {
                 let target = String::from_utf8(content).map_err(|_| {
                     Error::Corrupt(format!("symlink target not UTF-8: {}", record.path))
                 })?;
-                std::os::unix::fs::symlink(target, dst)
-                    .map_err(ioerr("writing symlink"))?;
+                std::os::unix::fs::symlink(target, dst).map_err(ioerr("writing symlink"))?;
             }
             return Ok(());
         }
@@ -899,7 +909,11 @@ impl Repository {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = if record.mode == "100755" { 0o755 } else { 0o644 };
+            let mode = if record.mode == "100755" {
+                0o755
+            } else {
+                0o644
+            };
             fs::set_permissions(dst, fs::Permissions::from_mode(mode))
                 .map_err(ioerr("setting working tree mode"))?;
         }
@@ -979,7 +993,11 @@ impl Repository {
                 #[cfg(unix)]
                 let mode = {
                     use std::os::unix::fs::PermissionsExt;
-                    if meta.permissions().mode() & 0o111 != 0 { "100755" } else { "100644" }
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        "100755"
+                    } else {
+                        "100644"
+                    }
                 };
                 #[cfg(not(unix))]
                 let mode = "100644";
@@ -1068,7 +1086,10 @@ impl Repository {
         let _lock = self.lock_fork(fork)?;
         let state = self.current_state(fork)?;
         let sum_hex = self.write_anchor_manifest(&state.manifest)?;
-        let fork_file = ForkFile { anchor: sum_hex.clone(), manifest: sum_hex.clone() };
+        let fork_file = ForkFile {
+            anchor: sum_hex.clone(),
+            manifest: sum_hex.clone(),
+        };
         fs::write(self.fork_dir(fork).join("fork"), fork_file.to_bytes())
             .map_err(ioerr("repointing fork file"))?;
         Ok(sum_hex)
@@ -1101,8 +1122,7 @@ impl Repository {
         };
         // Candidate paths: target's paths, plus (when filtering) working-tree
         // paths so an explicit path absent in target can be removed.
-        let mut paths: BTreeSet<String> =
-            target.records().map(|r| r.path.clone()).collect();
+        let mut paths: BTreeSet<String> = target.records().map(|r| r.path.clone()).collect();
         if filters.is_some() {
             for record in self.records_of_working_tree()? {
                 paths.insert(record.path);
@@ -1159,9 +1179,9 @@ impl Repository {
         let annotation = Annotation {
             author: author.to_string(),
             provenance: Provenance::Agent,
-            prose: Some(prose.unwrap_or_else(|| {
-                format!("repoint to {}", target.sum().hexdigest())
-            })),
+            prose: Some(
+                prose.unwrap_or_else(|| format!("repoint to {}", target.sum().hexdigest())),
+            ),
             ..Annotation::default()
         };
         // A state move has no span intent; realized is authoritative for
@@ -1198,7 +1218,9 @@ impl Repository {
         author: &str,
     ) -> Result<LogLine> {
         if name.is_empty() {
-            return Err(Error::Invalid("a fuse requires a non-empty name".to_string()));
+            return Err(Error::Invalid(
+                "a fuse requires a non-empty name".to_string(),
+            ));
         }
         let state = self.current_state(fork)?;
         let index_of = |id: &str| state.lines.iter().position(|l| l.id == id);
@@ -1327,7 +1349,10 @@ mod tests {
     }
 
     fn note(author: &str) -> Annotation {
-        Annotation { author: author.to_string(), ..Annotation::default() }
+        Annotation {
+            author: author.to_string(),
+            ..Annotation::default()
+        }
     }
 
     #[test]
@@ -1360,10 +1385,16 @@ mod tests {
     #[test]
     fn apply_chains_and_refreshes_the_tree() {
         let repo = temp_repo("apply");
-        let l1 = repo.apply("main", create("/src/main.rs", b"fn main() {}\n"), note("t")).unwrap();
+        let l1 = repo
+            .apply("main", create("/src/main.rs", b"fn main() {}\n"), note("t"))
+            .unwrap();
         assert_eq!(l1.prev, "");
         let l2 = repo
-            .apply("main", edit("/src/main.rs", "main()", "main() /* ed */"), note("t"))
+            .apply(
+                "main",
+                edit("/src/main.rs", "main()", "main() /* ed */"),
+                note("t"),
+            )
             .unwrap();
         assert_eq!(l2.prev, l1.id);
         let state = repo.current_state("main").unwrap();
@@ -1409,7 +1440,11 @@ mod tests {
                 Op::Chmod { .. } => "chmod",
             })
             .collect();
-        assert_eq!(kinds, vec!["delete", "edit"], "bytewise path order: /doomed, /src");
+        assert_eq!(
+            kinds,
+            vec!["delete", "edit"],
+            "bytewise path order: /doomed, /src"
+        );
         // Replaying the intent against the pre-state lands on the post-state.
         let mut manifest = repo.manifest_at("main", &l1.sum_after).unwrap();
         apply_intent(&l2.intent, &mut manifest, &repo.blobs()).unwrap();
@@ -1445,9 +1480,13 @@ mod tests {
     #[test]
     fn failed_apply_writes_nothing() {
         let repo = temp_repo("atomic");
-        repo.apply("main", create("/a", b"one two\n"), note("t")).unwrap();
+        repo.apply("main", create("/a", b"one two\n"), note("t"))
+            .unwrap();
         let before = repo.current_state("main").unwrap();
-        assert!(repo.apply("main", edit("/a", "absent", "x"), note("t")).is_err());
+        assert!(
+            repo.apply("main", edit("/a", "absent", "x"), note("t"))
+                .is_err()
+        );
         let after = repo.current_state("main").unwrap();
         assert_eq!(before.sum, after.sum);
         assert_eq!(before.lines.len(), after.lines.len());
@@ -1487,7 +1526,9 @@ mod tests {
         let repo = temp_repo("lineage-manifest");
         let a = repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
         repo.create_fork("session", "main").unwrap();
-        let c = repo.apply("session", create("/c", b"c\n"), note("t")).unwrap();
+        let c = repo
+            .apply("session", create("/c", b"c\n"), note("t"))
+            .unwrap();
         // The state after a is on main, an ancestor of session; the lineage
         // materializer finds it from the session fork.
         let m_a = repo.manifest_at_lineage("session", &a.sum_after).unwrap();
@@ -1528,7 +1569,8 @@ mod tests {
         assert_eq!(state.sum, sum);
         assert!(state.lines.is_empty());
         // Work on the fork is invisible to main.
-        repo.apply("session-1", create("/b", b"b\n"), note("t")).unwrap();
+        repo.apply("session-1", create("/b", b"b\n"), note("t"))
+            .unwrap();
         assert_eq!(repo.current_state("main").unwrap().manifest.len(), 1);
         assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
     }
@@ -1546,7 +1588,8 @@ mod tests {
         assert!(repo.fork_exists("session-1").unwrap());
         assert_eq!(repo.current_state("session-1").unwrap().sum, sum);
         // The first write now succeeds where it used to fail.
-        repo.apply("session-1", create("/b", b"b\n"), note("t")).unwrap();
+        repo.apply("session-1", create("/b", b"b\n"), note("t"))
+            .unwrap();
         assert_eq!(repo.current_state("session-1").unwrap().manifest.len(), 2);
         // Ensuring again is a no-op and does not disturb the fork's work.
         assert!(!repo.ensure_fork("session-1", "main").unwrap());
@@ -1561,18 +1604,26 @@ mod tests {
         let a = repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
         let b = repo.apply("main", create("/b", b"b\n"), note("t")).unwrap();
         repo.create_fork("session-1", "main").unwrap();
-        let c = repo.apply("session-1", create("/c", b"c\n"), note("t")).unwrap();
+        let c = repo
+            .apply("session-1", create("/c", b"c\n"), note("t"))
+            .unwrap();
         // session-2 branches from session-1 at the state after C.
         repo.create_fork("session-2", "session-1").unwrap();
-        let d = repo.apply("session-1", create("/d", b"d\n"), note("t")).unwrap();
-        let e = repo.apply("session-2", create("/e", b"e\n"), note("t")).unwrap();
+        let d = repo
+            .apply("session-1", create("/d", b"d\n"), note("t"))
+            .unwrap();
+        let e = repo
+            .apply("session-2", create("/e", b"e\n"), note("t"))
+            .unwrap();
 
         // session-2's continuous history: E (session-2), then C (session-1,
         // up to the branch point — D is on session-1 past it and excluded),
         // then B, A (main).  Oldest-first.
         let history = repo.continuity_log("session-2").unwrap();
-        let got: Vec<(String, String)> =
-            history.iter().map(|(f, l)| (f.clone(), l.id.clone())).collect();
+        let got: Vec<(String, String)> = history
+            .iter()
+            .map(|(f, l)| (f.clone(), l.id.clone()))
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -1586,13 +1637,24 @@ mod tests {
         );
 
         // session-1's own continuous history includes D and stops at main.
-        let s1: Vec<String> =
-            repo.continuity_log("session-1").unwrap().into_iter().map(|(_, l)| l.id).collect();
-        assert_eq!(s1, vec![a.id.clone(), b.id.clone(), c.id.clone(), d.id.clone()]);
+        let s1: Vec<String> = repo
+            .continuity_log("session-1")
+            .unwrap()
+            .into_iter()
+            .map(|(_, l)| l.id)
+            .collect();
+        assert_eq!(
+            s1,
+            vec![a.id.clone(), b.id.clone(), c.id.clone(), d.id.clone()]
+        );
 
         // main follows nothing but itself.
-        let m: Vec<String> =
-            repo.continuity_log("main").unwrap().into_iter().map(|(_, l)| l.id).collect();
+        let m: Vec<String> = repo
+            .continuity_log("main")
+            .unwrap()
+            .into_iter()
+            .map(|(_, l)| l.id)
+            .collect();
         assert_eq!(m, vec![a.id, b.id]);
     }
 
@@ -1606,13 +1668,20 @@ mod tests {
         let target = repo.manifest_at_lineage("main", &l1.sum_after).unwrap();
         let repoint_line = repo.repoint("main", &target, "t", None).unwrap();
         let after = repo.current_state("main").unwrap();
-        assert_eq!(after.sum.hexdigest(), l1.sum_after, "state moved to the target");
+        assert_eq!(
+            after.sum.hexdigest(),
+            l1.sum_after,
+            "state moved to the target"
+        );
         assert!(after.manifest.get("/b").is_none());
         // Non-destructive: the log grew, nothing was rewritten, and the
         // pre-repoint state is still reachable by its sum.
         assert_eq!(after.lines.len(), 3, "repoint appended a line");
         let recovered = repo.manifest_at_lineage("main", &head_before).unwrap();
-        assert!(recovered.get("/b").is_some(), "the prior state remains reachable");
+        assert!(
+            recovered.get("/b").is_some(),
+            "the prior state remains reachable"
+        );
         // The repoint line is a real, chained line.
         assert_eq!(after.head_id, repoint_line.id);
     }
@@ -1620,7 +1689,8 @@ mod tests {
     #[test]
     fn restore_rewrites_the_working_tree_only() {
         let repo = temp_repo("restore");
-        repo.apply("main", create("/f.txt", b"committed\n"), note("t")).unwrap();
+        repo.apply("main", create("/f.txt", b"committed\n"), note("t"))
+            .unwrap();
         // Corrupt the working copy, as a failed edit would.
         fs::write(repo.root().join("f.txt"), b"botched\n").unwrap();
         let target = repo.current_state("main").unwrap().manifest;
@@ -1634,7 +1704,8 @@ mod tests {
     #[test]
     fn restore_removes_a_path_absent_in_the_target() {
         let repo = temp_repo("restore-rm");
-        repo.apply("main", create("/keep.txt", b"k\n"), note("t")).unwrap();
+        repo.apply("main", create("/keep.txt", b"k\n"), note("t"))
+            .unwrap();
         let target = repo.current_state("main").unwrap().manifest;
         // A working-tree-only addition; restoring it to a target without it
         // removes it, because the path was named explicitly.
@@ -1650,7 +1721,8 @@ mod tests {
         let repo = temp_repo("rm-fork");
         repo.apply("main", create("/a", b"a\n"), note("t")).unwrap();
         repo.create_fork("scratch", "main").unwrap();
-        repo.apply("scratch", create("/b", b"b\n"), note("t")).unwrap();
+        repo.apply("scratch", create("/b", b"b\n"), note("t"))
+            .unwrap();
         // Unsubsumed work: -d equivalent refuses.
         assert!(repo.remove_fork("scratch", false).is_err());
         assert!(repo.fork_names().unwrap().contains(&"scratch".to_string()));
@@ -1683,8 +1755,12 @@ mod tests {
         let l1 = repo.apply("s", create("/a", b"a\n"), note("t")).unwrap();
         crate::union::union(&repo, "s", "main", "maintainer").unwrap();
         // Fuse after the fact: the fork now holds the only copy of the fuse.
-        repo.fuse("s", "beat", &l1.id, &l1.id, Some("beat".to_string()), "sid").unwrap();
-        assert!(repo.remove_fork("s", false).is_err(), "the fuse is unsubsumed work");
+        repo.fuse("s", "beat", &l1.id, &l1.id, Some("beat".to_string()), "sid")
+            .unwrap();
+        assert!(
+            repo.remove_fork("s", false).is_err(),
+            "the fuse is unsubsumed work"
+        );
         // Union carries the fuse; then removal is safe.
         crate::union::union(&repo, "s", "main", "maintainer").unwrap();
         repo.remove_fork("s", false).unwrap();
@@ -1702,13 +1778,15 @@ mod tests {
     fn gc_blobs_collects_only_unreachable() {
         let repo = temp_repo("gc-blobs");
         // Committed content: reachable through main's log.
-        repo.apply("main", create("/lib.rs", b"committed\n"), note("t")).unwrap();
+        repo.apply("main", create("/lib.rs", b"committed\n"), note("t"))
+            .unwrap();
         let committed = sha3_hex(b"committed\n");
         // A spilled read set is a root.
         let spilled = repo.blobs().put(b"[]").unwrap();
         let mut annotation = note("t");
         annotation.reads = Some(serde_json::json!({"reads_blob": spilled}));
-        repo.apply("main", create("/read.rs", b"r\n"), annotation).unwrap();
+        repo.apply("main", create("/read.rs", b"r\n"), annotation)
+            .unwrap();
         // Exhaust: bytes ingested into the pool but reachable from nowhere,
         // as `tally sum` leaves for a working-tree file no fork committed.
         let orphan = repo.blobs().put(b"never committed\n").unwrap();

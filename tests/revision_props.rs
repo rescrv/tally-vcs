@@ -77,48 +77,89 @@ fn create(path: &str, content: &[u8]) -> Intent {
 }
 
 fn note() -> Annotation {
-    Annotation { author: "rev-props".to_string(), ..Annotation::default() }
+    Annotation {
+        author: "rev-props".to_string(),
+        ..Annotation::default()
+    }
 }
 
 fn fixture() -> &'static Fixture {
     static FIXTURE: OnceLock<Fixture> = OnceLock::new();
     FIXTURE.get_or_init(|| {
-        let dir = std::env::temp_dir()
-            .join(format!("tally-revision-props-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-revision-props-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let repo = Repository::init(&dir).unwrap();
 
         let zero = "0".repeat(64);
-        let mut main = vec![Point { sum: zero.clone(), line: None }];
+        let mut main = vec![Point {
+            sum: zero.clone(),
+            line: None,
+        }];
         for i in 1..=3 {
             let line = repo
-                .apply("main", create(&format!("/m{i}"), format!("m{i}\n").as_bytes()), note())
+                .apply(
+                    "main",
+                    create(&format!("/m{i}"), format!("m{i}\n").as_bytes()),
+                    note(),
+                )
                 .unwrap();
-            main.push(Point { sum: line.sum_after, line: Some(line.id) });
+            main.push(Point {
+                sum: line.sum_after,
+                line: Some(line.id),
+            });
         }
         // Fork at three commits; session inherits main's first three lines.
         repo.create_fork("session", "main").unwrap();
         let mut session = main.clone();
         for i in 4..=6 {
             let line = repo
-                .apply("main", create(&format!("/m{i}"), format!("m{i}\n").as_bytes()), note())
+                .apply(
+                    "main",
+                    create(&format!("/m{i}"), format!("m{i}\n").as_bytes()),
+                    note(),
+                )
                 .unwrap();
-            main.push(Point { sum: line.sum_after, line: Some(line.id) });
+            main.push(Point {
+                sum: line.sum_after,
+                line: Some(line.id),
+            });
         }
         for i in 1..=2 {
             let line = repo
-                .apply("session", create(&format!("/s{i}"), format!("s{i}\n").as_bytes()), note())
+                .apply(
+                    "session",
+                    create(&format!("/s{i}"), format!("s{i}\n").as_bytes()),
+                    note(),
+                )
                 .unwrap();
-            session.push(Point { sum: line.sum_after, line: Some(line.id) });
+            session.push(Point {
+                sum: line.sum_after,
+                line: Some(line.id),
+            });
         }
 
         // Every base spelling the resolver documents, with the model answer.
         // The default fork is always "main" in these tests.
         let mut bases = vec![
-            Base { spec: "HEAD".into(), lineage: Lineage::Main, start: main.len() - 1, fork: "main" },
-            Base { spec: "@".into(), lineage: Lineage::Main, start: main.len() - 1, fork: "main" },
-            Base { spec: "main".into(), lineage: Lineage::Main, start: main.len() - 1, fork: "main" },
+            Base {
+                spec: "HEAD".into(),
+                lineage: Lineage::Main,
+                start: main.len() - 1,
+                fork: "main",
+            },
+            Base {
+                spec: "@".into(),
+                lineage: Lineage::Main,
+                start: main.len() - 1,
+                fork: "main",
+            },
+            Base {
+                spec: "main".into(),
+                lineage: Lineage::Main,
+                start: main.len() - 1,
+                fork: "main",
+            },
             Base {
                 spec: "session".into(),
                 lineage: Lineage::Session,
@@ -126,20 +167,40 @@ fn fixture() -> &'static Fixture {
                 fork: "session",
             },
             // The base anchor's sum (all zeros) is a state on the lineage.
-            Base { spec: zero.clone(), lineage: Lineage::Main, start: 0, fork: "main" },
-            Base { spec: format!("sum:{zero}"), lineage: Lineage::Main, start: 0, fork: "main" },
+            Base {
+                spec: zero.clone(),
+                lineage: Lineage::Main,
+                start: 0,
+                fork: "main",
+            },
+            Base {
+                spec: format!("sum:{zero}"),
+                lineage: Lineage::Main,
+                start: 0,
+                fork: "main",
+            },
         ];
         for (i, p) in main.iter().enumerate().skip(1) {
             let id = p.line.as_ref().unwrap();
             // Bare sum, sum:, bare full id, line: — all on the default fork.
-            bases.push(Base { spec: p.sum.clone(), lineage: Lineage::Main, start: i, fork: "main" });
+            bases.push(Base {
+                spec: p.sum.clone(),
+                lineage: Lineage::Main,
+                start: i,
+                fork: "main",
+            });
             bases.push(Base {
                 spec: format!("sum:{}", p.sum),
                 lineage: Lineage::Main,
                 start: i,
                 fork: "main",
             });
-            bases.push(Base { spec: id.clone(), lineage: Lineage::Main, start: i, fork: "main" });
+            bases.push(Base {
+                spec: id.clone(),
+                lineage: Lineage::Main,
+                start: i,
+                fork: "main",
+            });
             bases.push(Base {
                 spec: format!("line:{id}"),
                 lineage: Lineage::Main,
@@ -172,7 +233,12 @@ fn fixture() -> &'static Fixture {
                 fork: "session",
             });
         }
-        Fixture { repo, main, session, bases }
+        Fixture {
+            repo,
+            main,
+            session,
+            bases,
+        }
     })
 }
 
@@ -350,8 +416,10 @@ fn id_prefixes_resolve_per_the_algorithm() {
                 .iter()
                 .filter(|(i, l, _)| *l == Lineage::Main && i.starts_with(prefix))
                 .collect();
-            let anywhere: Vec<&(&str, Lineage, usize)> =
-                all.iter().filter(|(i, _, _)| i.starts_with(prefix)).collect();
+            let anywhere: Vec<&(&str, Lineage, usize)> = all
+                .iter()
+                .filter(|(i, _, _)| i.starts_with(prefix))
+                .collect();
             // A 64-hex prefix is the whole id; shorter prefixes could in
             // principle collide with a sum, but the resolver only prefers
             // sums for exact 64-hex matches on the lineage, which our
@@ -360,9 +428,8 @@ fn id_prefixes_resolve_per_the_algorithm() {
             match (on_main.len(), anywhere.len()) {
                 (1, _) => {
                     let (full, lineage, idx) = on_main[0];
-                    let r = result.unwrap_or_else(|e| {
-                        panic!("unique-on-main prefix {prefix:?} failed: {e}")
-                    });
+                    let r = result
+                        .unwrap_or_else(|e| panic!("unique-on-main prefix {prefix:?} failed: {e}"));
                     assert_eq!(r.line.as_deref(), Some(*full));
                     assert_eq!(r.sum, fx.points(*lineage)[*idx].sum);
                 }
@@ -414,23 +481,30 @@ fn domain_prefixes_are_strict() {
 fn malformed_suffixes_are_rejected() {
     let fx = fixture();
     for spec in [
-        "",          // empty revision
-        "HEAD~",     // ~ without a count
-        "HEAD~x",    // ~ with a non-count
-        "HEAD@{}",   // @{} without a count
-        "HEAD@{x}",  // only numeric @{N} is supported
-        "HEAD@{1",   // unclosed brace
-        "HEAD$",     // stray character
-        "HEAD^~",    // valid then invalid
+        "",         // empty revision
+        "HEAD~",    // ~ without a count
+        "HEAD~x",   // ~ with a non-count
+        "HEAD@{}",  // @{} without a count
+        "HEAD@{x}", // only numeric @{N} is supported
+        "HEAD@{1",  // unclosed brace
+        "HEAD$",    // stray character
+        "HEAD^~",   // valid then invalid
     ] {
-        assert!(resolve(&fx.repo, spec, "main").is_err(), "accepted {spec:?}");
+        assert!(
+            resolve(&fx.repo, spec, "main").is_err(),
+            "accepted {spec:?}"
+        );
     }
     // Suffixes on domain-prefixed bases walk the same lineage.
     let head = resolve(&fx.repo, "HEAD", "main").unwrap();
     let back = resolve(&fx.repo, "HEAD^", "main").unwrap();
     let by_sum = resolve(&fx.repo, &format!("sum:{}^", head.sum), "main").unwrap();
     assert_eq!(by_sum.sum, back.sum);
-    let by_line = resolve(&fx.repo, &format!("line:{}^", head.line.as_deref().unwrap()), "main")
-        .unwrap();
+    let by_line = resolve(
+        &fx.repo,
+        &format!("line:{}^", head.line.as_deref().unwrap()),
+        "main",
+    )
+    .unwrap();
     assert_eq!(by_line.sum, back.sum);
 }

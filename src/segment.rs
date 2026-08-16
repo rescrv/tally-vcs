@@ -73,7 +73,10 @@ impl IdxEntry {
             Enc::Construct { base, line_id } => ("construct", Some(base), Some(line_id)),
             Enc::Lines { fork, span } => ("lines", Some(fork), Some(span)),
         };
-        let mut line = format!("{} {} {} {} {enc}", self.sha3, self.frame, self.offset, self.len);
+        let mut line = format!(
+            "{} {} {} {} {enc}",
+            self.sha3, self.frame, self.offset, self.len
+        );
         if let Some(a) = aux1 {
             line.push(' ');
             line.push_str(a);
@@ -96,7 +99,8 @@ impl IdxEntry {
             return Err(Error::Corrupt(format!("bad idx entry hash: {sha3:?}")));
         }
         let parse_num = |s: &str| -> Result<usize> {
-            s.parse().map_err(|_| Error::Corrupt(format!("bad idx number: {s:?}")))
+            s.parse()
+                .map_err(|_| Error::Corrupt(format!("bad idx number: {s:?}")))
         };
         let frame = parse_num(fields[1])?;
         let offset = parse_num(fields[2])?;
@@ -110,10 +114,18 @@ impl IdxEntry {
             ("construct", Some(base), Some(line_id)) => Enc::Construct { base, line_id },
             ("lines", Some(fork), Some(span)) => Enc::Lines { fork, span },
             (enc, _, _) => {
-                return Err(Error::Corrupt(format!("bad idx enc/aux for {enc:?}: {line:?}")));
+                return Err(Error::Corrupt(format!(
+                    "bad idx enc/aux for {enc:?}: {line:?}"
+                )));
             }
         };
-        Ok(IdxEntry { sha3, frame, offset, len, enc })
+        Ok(IdxEntry {
+            sha3,
+            frame,
+            offset,
+            len,
+            enc,
+        })
     }
 }
 
@@ -226,7 +238,11 @@ pub fn build_segment(inputs: &[SegmentInput], level: i32) -> Result<BuiltSegment
                 });
                 items.push(ImageItem::Dict(sha3_hex(content)));
             }
-            SegmentInput::LogSpan { fork, bytes, line_ids } => {
+            SegmentInput::LogSpan {
+                fork,
+                bytes,
+                line_ids,
+            } => {
                 if line_ids.is_empty() {
                     continue;
                 }
@@ -241,7 +257,10 @@ pub fn build_segment(inputs: &[SegmentInput], level: i32) -> Result<BuiltSegment
                     frame: 0,
                     offset,
                     len: bytes.len(),
-                    enc: Enc::Lines { fork: fork.clone(), span },
+                    enc: Enc::Lines {
+                        fork: fork.clone(),
+                        span,
+                    },
                 });
                 for id in line_ids {
                     items.push(ImageItem::Line(id.clone()));
@@ -287,7 +306,12 @@ impl Segment {
     /// `.idx` before parsing it; decompress with hard output budgets taken
     /// from the authenticated idx lengths, so amplification is rejected by
     /// arithmetic, not by running out of memory.
-    pub fn open(pk: &[u8], idx: &[u8], expect_pk_sha3: &str, expect_idx_sha3: &str) -> Result<Self> {
+    pub fn open(
+        pk: &[u8],
+        idx: &[u8],
+        expect_pk_sha3: &str,
+        expect_idx_sha3: &str,
+    ) -> Result<Self> {
         if sha3_hex(pk) != expect_pk_sha3 {
             return Err(Error::Corrupt("segment .pk hash mismatch".to_string()));
         }
@@ -309,9 +333,10 @@ impl Segment {
                     "v0 reads single-frame segments only".to_string(),
                 ));
             }
-            let end = entry.offset.checked_add(entry.len).ok_or_else(|| {
-                Error::Corrupt("idx entry extent overflows".to_string())
-            })?;
+            let end = entry
+                .offset
+                .checked_add(entry.len)
+                .ok_or_else(|| Error::Corrupt("idx entry extent overflows".to_string()))?;
             let budget = budgets.entry(entry.frame).or_insert(0);
             *budget = (*budget).max(end);
         }
@@ -329,7 +354,10 @@ impl Segment {
                 "frame decompresses past its authenticated budget of {budget} bytes"
             )));
         }
-        Ok(Segment { entries, frames: vec![plain] })
+        Ok(Segment {
+            entries,
+            frames: vec![plain],
+        })
     }
 
     /// The stored bytes of an entry (pre-item-decoding).
@@ -338,14 +366,16 @@ impl Segment {
             .frames
             .get(entry.frame)
             .ok_or_else(|| Error::Corrupt(format!("no frame {}", entry.frame)))?;
-        frame.get(entry.offset..entry.offset + entry.len).ok_or_else(|| {
-            Error::Corrupt(format!(
-                "entry extent {}+{} exceeds frame of {} bytes",
-                entry.offset,
-                entry.len,
-                frame.len()
-            ))
-        })
+        frame
+            .get(entry.offset..entry.offset + entry.len)
+            .ok_or_else(|| {
+                Error::Corrupt(format!(
+                    "entry extent {}+{} exceeds frame of {} bytes",
+                    entry.offset,
+                    entry.len,
+                    frame.len()
+                ))
+            })
     }
 
     /// Materialize an entry's item bytes and verify their identity
@@ -374,14 +404,18 @@ impl Segment {
                 )
                 .map_err(crate::ioerr("initializing dictionary decoder"))?;
                 let mut out = Vec::new();
-                decoder.read_to_end(&mut out).map_err(crate::ioerr("zstdd-decoding entry"))?;
+                decoder
+                    .read_to_end(&mut out)
+                    .map_err(crate::ioerr("zstdd-decoding entry"))?;
                 out
             }
             Enc::Construct { base, line_id } => {
                 // construct applies only verified inputs (§4 step 7).
                 let base_bytes = fetch_blob(base)?;
                 if sha3_hex(&base_bytes) != *base {
-                    return Err(Error::Corrupt(format!("construct base {base} fails its hash")));
+                    return Err(Error::Corrupt(format!(
+                        "construct base {base} fails its hash"
+                    )));
                 }
                 let line = fetch_line(line_id)?;
                 construct_blob(&base_bytes, &line, &entry.sha3)?
@@ -412,9 +446,8 @@ impl Segment {
                 }
                 Enc::Lines { .. } => {
                     let bytes = self.materialize(entry, fetch_blob, fetch_line)?;
-                    let text = std::str::from_utf8(&bytes).map_err(|_| {
-                        Error::Corrupt("log span is not UTF-8".to_string())
-                    })?;
+                    let text = std::str::from_utf8(&bytes)
+                        .map_err(|_| Error::Corrupt("log span is not UTF-8".to_string()))?;
                     for line in text.lines() {
                         let parsed = LogLine::parse(line)?;
                         items.push(ImageItem::Line(parsed.id));
@@ -446,7 +479,11 @@ pub fn construct_blob(base: &[u8], line: &LogLine, target_sha3: &str) -> Result<
     let mut content = base.to_vec();
     for op in &line.intent.ops {
         match op {
-            Op::Edit { path, old_str, new_str } if *path == target_path => {
+            Op::Edit {
+                path,
+                old_str,
+                new_str,
+            } if *path == target_path => {
                 content = replace_unique(&content, old_str.as_bytes(), new_str.as_bytes())
                     .map_err(|n| {
                         Error::Corrupt(format!(
@@ -458,20 +495,23 @@ pub fn construct_blob(base: &[u8], line: &LogLine, target_sha3: &str) -> Result<
             // A create for the target path restarts its content: whatever
             // base the entry named, the bytes from here on derive from the
             // create (a delete-then-recreate line), never from the base.
-            Op::Create { path, content_b64, blob, .. } if *path == target_path => {
-                match (content_b64, blob) {
-                    (Some(b64_content), None) => {
-                        content = crate::b64::decode(b64_content)?;
-                    }
-                    _ => {
-                        return Err(Error::Corrupt(format!(
-                            "construct: line {} creates {target_path} by blob \
-                             reference; the blob is a keyframe, not a construct",
-                            line.id
-                        )));
-                    }
+            Op::Create {
+                path,
+                content_b64,
+                blob,
+                ..
+            } if *path == target_path => match (content_b64, blob) {
+                (Some(b64_content), None) => {
+                    content = crate::b64::decode(b64_content)?;
                 }
-            }
+                _ => {
+                    return Err(Error::Corrupt(format!(
+                        "construct: line {} creates {target_path} by blob \
+                             reference; the blob is a keyframe, not a construct",
+                        line.id
+                    )));
+                }
+            },
             _ => {}
         }
     }
@@ -506,9 +546,13 @@ mod tests {
         .unwrap();
         assert_eq!(built.entries, 2);
         let seg = Segment::open(&built.pk, &built.idx, &built.segid, &built.idx_sha3).unwrap();
-        let a = seg.materialize(&seg.entries[0], &no_blob, &no_line).unwrap();
+        let a = seg
+            .materialize(&seg.entries[0], &no_blob, &no_line)
+            .unwrap();
         assert_eq!(a, b"hello");
-        let b = seg.materialize(&seg.entries[1], &no_blob, &no_line).unwrap();
+        let b = seg
+            .materialize(&seg.entries[1], &no_blob, &no_line)
+            .unwrap();
         assert_eq!(b, b"world, longer");
         // The image is logical: recomputing it matches the built setsum.
         let items = seg.image_items(&no_blob, &no_line).unwrap();
@@ -522,13 +566,19 @@ mod tests {
         evil[0] ^= 1;
         match Segment::open(&evil, &built.idx, &built.segid, &built.idx_sha3) {
             Err(Error::Corrupt(msg)) => assert_eq!(msg, "segment .pk hash mismatch"),
-            other => panic!("tampered .pk must fail its hash check, got {:?}", other.err()),
+            other => panic!(
+                "tampered .pk must fail its hash check, got {:?}",
+                other.err()
+            ),
         }
         let mut evil_idx = built.idx.clone();
         evil_idx[0] = b'f';
         match Segment::open(&built.pk, &evil_idx, &built.segid, &built.idx_sha3) {
             Err(Error::Corrupt(msg)) => assert_eq!(msg, "segment .idx hash mismatch"),
-            other => panic!("tampered .idx must fail its hash check, got {:?}", other.err()),
+            other => panic!(
+                "tampered .idx must fail its hash check, got {:?}",
+                other.err()
+            ),
         }
     }
 
@@ -541,13 +591,17 @@ mod tests {
         let lying_idx_text = {
             let entry = &honest.idx;
             let text = std::str::from_utf8(entry).unwrap();
-            let mut fields: Vec<String> =
-                text.trim_end().split(' ').map(String::from).collect();
+            let mut fields: Vec<String> = text.trim_end().split(' ').map(String::from).collect();
             fields[3] = "8".to_string();
             format!("{}\n", fields.join(" "))
         };
         let idx_sha3 = sha3_hex(lying_idx_text.as_bytes());
-        match Segment::open(&honest.pk, lying_idx_text.as_bytes(), &honest.segid, &idx_sha3) {
+        match Segment::open(
+            &honest.pk,
+            lying_idx_text.as_bytes(),
+            &honest.segid,
+            &idx_sha3,
+        ) {
             Err(Error::Corrupt(msg)) => assert_eq!(
                 msg, "frame decompresses past its authenticated budget of 8 bytes",
                 "budget from the idx must reject the oversized frame",
@@ -559,28 +613,48 @@ mod tests {
     #[test]
     fn idx_round_trips_all_encs() {
         for entry in [
-            IdxEntry { sha3: "ab".repeat(32), frame: 0, offset: 4, len: 9, enc: Enc::Raw },
-            IdxEntry { sha3: "ab".repeat(32), frame: 0, offset: 0, len: 1, enc: Enc::Zstd },
+            IdxEntry {
+                sha3: "ab".repeat(32),
+                frame: 0,
+                offset: 4,
+                len: 9,
+                enc: Enc::Raw,
+            },
             IdxEntry {
                 sha3: "ab".repeat(32),
                 frame: 0,
                 offset: 0,
                 len: 1,
-                enc: Enc::Zstdd { dict: "cd".repeat(32) },
+                enc: Enc::Zstd,
+            },
+            IdxEntry {
+                sha3: "ab".repeat(32),
+                frame: 0,
+                offset: 0,
+                len: 1,
+                enc: Enc::Zstdd {
+                    dict: "cd".repeat(32),
+                },
             },
             IdxEntry {
                 sha3: "ab".repeat(32),
                 frame: 0,
                 offset: 0,
                 len: 0,
-                enc: Enc::Construct { base: "cd".repeat(32), line_id: "ef".repeat(32) },
+                enc: Enc::Construct {
+                    base: "cd".repeat(32),
+                    line_id: "ef".repeat(32),
+                },
             },
             IdxEntry {
                 sha3: "ab".repeat(32),
                 frame: 0,
                 offset: 0,
                 len: 5,
-                enc: Enc::Lines { fork: "main".to_string(), span: "a..b".to_string() },
+                enc: Enc::Lines {
+                    fork: "main".to_string(),
+                    span: "a..b".to_string(),
+                },
             },
         ] {
             let line = entry.to_line();
@@ -631,7 +705,10 @@ mod tests {
         let target = sha3_hex(&new_content);
         let intent_with_create = |blob: Option<String>, content_b64: Option<String>| Intent {
             ops: vec![
-                Op::Delete { path: "/f".to_string(), blob: sha3_hex(&base) },
+                Op::Delete {
+                    path: "/f".to_string(),
+                    blob: sha3_hex(&base),
+                },
                 Op::Create {
                     path: "/f".to_string(),
                     mode: "100644".to_string(),
@@ -659,7 +736,10 @@ mod tests {
         };
         // Create by inline content: the construct restarts from it.
         let inline = line(intent_with_create(None, Some(crate::b64::encode(created))));
-        assert_eq!(construct_blob(&base, &inline, &target).unwrap(), new_content);
+        assert_eq!(
+            construct_blob(&base, &inline, &target).unwrap(),
+            new_content
+        );
         // Create by blob reference: not constructible from this entry.
         let by_ref = line(intent_with_create(Some(sha3_hex(created)), None));
         assert!(matches!(
@@ -690,8 +770,13 @@ mod tests {
         )
         .unwrap();
         let seg = Segment::open(&built.pk, &built.idx, &built.segid, &built.idx_sha3).unwrap();
-        let out = seg.materialize(&seg.entries[0], &no_blob, &no_line).unwrap();
+        let out = seg
+            .materialize(&seg.entries[0], &no_blob, &no_line)
+            .unwrap();
         assert_eq!(out, span_bytes, "exact bytes, never transcoded");
-        assert_eq!(built.log_span, Some(("id-1".to_string(), "id-1".to_string())));
+        assert_eq!(
+            built.log_span,
+            Some(("id-1".to_string(), "id-1".to_string()))
+        );
     }
 }

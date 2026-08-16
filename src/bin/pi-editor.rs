@@ -230,7 +230,10 @@ fn run_write() -> Result<()> {
         }
         Some(record) => {
             let ops = vec![
-                Op::Delete { path: path.clone(), blob: record.blob.clone() },
+                Op::Delete {
+                    path: path.clone(),
+                    blob: record.blob.clone(),
+                },
                 Op::Create {
                     path: path.clone(),
                     mode: record.mode.clone(),

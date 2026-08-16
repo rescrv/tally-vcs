@@ -84,8 +84,10 @@ pub struct Rename {
 /// bytewise order, so the result is deterministic; unmatched adds and
 /// deletes (and all modifications) stay in the change list untouched.
 pub fn detect_renames(changes: &[PathChange]) -> (Vec<Rename>, Vec<PathChange>) {
-    let mut adds: Vec<&PathChange> =
-        changes.iter().filter(|c| c.before.is_none() && c.after.is_some()).collect();
+    let mut adds: Vec<&PathChange> = changes
+        .iter()
+        .filter(|c| c.before.is_none() && c.after.is_some())
+        .collect();
     let mut renames = Vec::new();
     let mut consumed_adds: BTreeSet<String> = BTreeSet::new();
     let mut consumed_dels: BTreeSet<String> = BTreeSet::new();
@@ -102,7 +104,10 @@ pub fn detect_renames(changes: &[PathChange]) -> (Vec<Rename>, Vec<PathChange>) 
             let to = add.after.clone().expect("add carries an after record");
             consumed_adds.insert(add.path.clone());
             consumed_dels.insert(change.path.clone());
-            renames.push(Rename { from: from.clone(), to });
+            renames.push(Rename {
+                from: from.clone(),
+                to,
+            });
         }
     }
     let remaining: Vec<PathChange> = changes
@@ -165,7 +170,10 @@ pub fn line_stat(old: &[u8], new: &[u8]) -> (usize, usize) {
 /// the caller can fall back to a conservative whole-file conflict rather than
 /// silently under-reporting on binary blobs.
 pub fn changed_old_lines(old: &[u8], new: &[u8]) -> Option<BTreeSet<usize>> {
-    let (old_s, new_s) = (std::str::from_utf8(old).ok()?, std::str::from_utf8(new).ok()?);
+    let (old_s, new_s) = (
+        std::str::from_utf8(old).ok()?,
+        std::str::from_utf8(new).ok()?,
+    );
     let old_lines = split_keep_lines(old_s);
     let new_lines = split_keep_lines(new_s);
     let mut changed = BTreeSet::new();
@@ -383,7 +391,10 @@ pub fn synthesize_intent(
         blob: Some(r.blob.clone()),
         content_b64: None,
     };
-    let delete = |r: &ElementRecord| Op::Delete { path: r.path.clone(), blob: r.blob.clone() };
+    let delete = |r: &ElementRecord| Op::Delete {
+        path: r.path.clone(),
+        blob: r.blob.clone(),
+    };
     let mut ops = Vec::new();
     for change in changes {
         match (&change.before, &change.after) {
@@ -469,9 +480,7 @@ pub fn synthesize_edit(old: &[u8], new: &[u8]) -> Option<(String, String)> {
     // terminates.
     loop {
         let old_span = &old_s[p..old.len() - s];
-        if !old_span.is_empty()
-            && crate::patch::count_occurrences(old, old_span.as_bytes()) == 1
-        {
+        if !old_span.is_empty() && crate::patch::count_occurrences(old, old_span.as_bytes()) == 1 {
             return Some((old_span.to_string(), new_s[p..new.len() - s].to_string()));
         }
         debug_assert!(p > 0 || s > 0, "the whole file occurs exactly once");
@@ -514,8 +523,10 @@ mod tests {
         ])
         .unwrap();
         let changes = diff_manifests(&before, &after);
-        let codes: Vec<(char, &str)> =
-            changes.iter().map(|c| (c.code(), c.path.as_str())).collect();
+        let codes: Vec<(char, &str)> = changes
+            .iter()
+            .map(|c| (c.code(), c.path.as_str()))
+            .collect();
         // Bytewise path order: /edit, /gone, /new.  /keep is unchanged.
         assert_eq!(codes, vec![('M', "/edit"), ('D', "/gone"), ('A', "/new")]);
     }
@@ -537,8 +548,16 @@ mod tests {
         let old_rec = ElementRecord::new("100644", "/old", &blob).unwrap();
         let new_rec = ElementRecord::new("100644", "/new", &blob).unwrap();
         let changes = vec![
-            PathChange { path: "/new".into(), before: None, after: Some(new_rec.clone()) },
-            PathChange { path: "/old".into(), before: Some(old_rec.clone()), after: None },
+            PathChange {
+                path: "/new".into(),
+                before: None,
+                after: Some(new_rec.clone()),
+            },
+            PathChange {
+                path: "/old".into(),
+                before: Some(old_rec.clone()),
+                after: None,
+            },
         ];
         let (renames, remaining) = detect_renames(&changes);
         assert_eq!(renames.len(), 1);
@@ -552,8 +571,16 @@ mod tests {
         let a = rec("100644", "/a", b"alpha");
         let b = rec("100644", "/b", b"beta");
         let changes = vec![
-            PathChange { path: "/a".into(), before: Some(a), after: None },
-            PathChange { path: "/b".into(), before: None, after: Some(b) },
+            PathChange {
+                path: "/a".into(),
+                before: Some(a),
+                after: None,
+            },
+            PathChange {
+                path: "/b".into(),
+                before: None,
+                after: Some(b),
+            },
         ];
         let (renames, remaining) = detect_renames(&changes);
         assert!(renames.is_empty());
@@ -603,7 +630,10 @@ mod tests {
         let new = b"MAX=1000\nEXTRA=9\nMIN=1\n";
         let changed = changed_old_lines(old, new).unwrap();
         assert!(changed.contains(&0), "the MAX line was modified");
-        assert!(!changed.contains(&1), "the MIN line is untouched by the edit and the insert");
+        assert!(
+            !changed.contains(&1),
+            "the MIN line is untouched by the edit and the insert"
+        );
     }
 
     #[test]
@@ -635,7 +665,10 @@ mod tests {
             new.to_vec(),
             "applying the edit must reproduce the new content"
         );
-        assert!(old_str.len() < old.len(), "a small change must not widen to the whole file");
+        assert!(
+            old_str.len() < old.len(),
+            "a small change must not widen to the whole file"
+        );
     }
 
     #[test]
@@ -655,7 +688,11 @@ mod tests {
     #[test]
     fn synthesize_edit_declines_binary_and_empty() {
         assert_eq!(synthesize_edit(&[0xff, 0xfe], b"text"), None, "not UTF-8");
-        assert_eq!(synthesize_edit(b"", b"text"), None, "empty old never matches");
+        assert_eq!(
+            synthesize_edit(b"", b"text"),
+            None,
+            "empty old never matches"
+        );
     }
 
     #[test]
@@ -718,8 +755,7 @@ mod tests {
             .collect();
         assert_eq!(kinds, vec!["edit", "delete", "chmod", "create"]);
         // Replay: the intent against the before-manifest reproduces after.
-        let dir = std::env::temp_dir()
-            .join(format!("tally-synth-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tally-synth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let blobs = crate::blobs::BlobStore::init(&dir).unwrap();

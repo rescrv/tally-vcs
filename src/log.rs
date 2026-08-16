@@ -146,9 +146,7 @@ impl LogLine {
             Provenance::Agent => Ok(()),
             Provenance::Fuse => {
                 let Some(fuse) = &self.annotation.fuse else {
-                    return Err(Error::Invalid(
-                        "fuse lines require a fuse span".to_string(),
-                    ));
+                    return Err(Error::Invalid("fuse lines require a fuse span".to_string()));
                 };
                 if fuse.name.is_empty() {
                     return Err(Error::Invalid(
@@ -156,9 +154,7 @@ impl LogLine {
                     ));
                 }
                 if !self.intent.ops.is_empty() {
-                    return Err(Error::Invalid(
-                        "fuse lines carry no intent ops".to_string(),
-                    ));
+                    return Err(Error::Invalid("fuse lines carry no intent ops".to_string()));
                 }
                 Ok(())
             }
@@ -293,7 +289,10 @@ pub fn parse_log_lenient(bytes: &[u8]) -> Result<ParsedLog> {
             )));
         }
     }
-    Ok(ParsedLog { lines, valid_prefix })
+    Ok(ParsedLog {
+        lines,
+        valid_prefix,
+    })
 }
 
 /// Strictly parse a log: any torn or trailing garbage is corruption.
@@ -365,10 +364,16 @@ mod tests {
             id: String::new(),
             prev: prev.to_string(),
             intent: Intent::default(),
-            realized: vec![RealizedEntry { remove: None, add: Some(record.to_line()) }],
+            realized: vec![RealizedEntry {
+                remove: None,
+                add: Some(record.to_line()),
+            }],
             sum_after: sum.hexdigest(),
             committed_ms: 0,
-            annotation: Annotation { author: "test".to_string(), ..Annotation::default() },
+            annotation: Annotation {
+                author: "test".to_string(),
+                ..Annotation::default()
+            },
         }
     }
 
@@ -380,7 +385,8 @@ mod tests {
         let bytes = line.seal(&store).unwrap();
         assert!(bytes.ends_with(b"\n"));
         assert!(line.committed_ms > 0, "seal stamps the commit time");
-        let parsed = LogLine::parse(std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap()).unwrap();
+        let parsed =
+            LogLine::parse(std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap()).unwrap();
         assert_eq!(parsed, line);
         assert_eq!(parsed.committed_ms, line.committed_ms);
         let final_sum = verify_chain(&Sum::zero(), &[parsed]).unwrap();
@@ -456,7 +462,10 @@ mod tests {
         let mut sum = Sum::zero();
         let mut line = line_adding("/a", b"a", "", &mut sum);
         line.annotation.provenance = Provenance::Andon;
-        assert!(line.clone().seal(&store).is_err(), "andon requires reason and sig");
+        assert!(
+            line.clone().seal(&store).is_err(),
+            "andon requires reason and sig"
+        );
         line.annotation.reason = Some("CVE-2026-0001".to_string());
         line.annotation.sig = Some("00".repeat(32));
         line.seal(&store).unwrap();
@@ -464,8 +473,10 @@ mod tests {
         let mut line = line_adding("/b", b"b", "", &mut sum);
         line.annotation.provenance = Provenance::Union;
         assert!(line.clone().seal(&store).is_err(), "union requires origin");
-        line.annotation.origin =
-            Some(Origin { fork: "session-1".to_string(), id: "ab".repeat(32) });
+        line.annotation.origin = Some(Origin {
+            fork: "session-1".to_string(),
+            id: "ab".repeat(32),
+        });
         line.seal(&store).unwrap();
     }
 
