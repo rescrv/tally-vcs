@@ -67,7 +67,7 @@ pub fn fused_beats<'a>(lines: &'a [LogLine], view: Option<&[&str]>) -> Vec<Beat<
     let beat_lines: BTreeSet<usize> = spans.iter().map(|&(_, _, idx)| idx).collect();
     let mut beats = Vec::new();
     let mut i = 0;
-    let mut single = |beats: &mut Vec<Beat<'a>>, j: usize| {
+    let single = |beats: &mut Vec<Beat<'a>>, j: usize| {
         if !beat_lines.contains(&j) {
             beats.push(Beat::Single(&lines[j]));
         }

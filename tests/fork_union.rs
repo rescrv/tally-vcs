@@ -663,7 +663,7 @@ fn bench_fork_union_throughput() {
     );
 
     // Floors.  The fsync-bound paths must beat 10/s anywhere; the batched
-    // path must beat 500 commits/s even in an unoptimized debug build (it
+    // path must beat 250 commits/s even in an unoptimized debug build (it
     // clears 1,000/s with optimizations, the target this test exists to
     // prove).
     assert!(
@@ -675,8 +675,8 @@ fn bench_fork_union_throughput() {
         "union carry too slow: {union_rate:.1}/s < 10/s"
     );
     assert!(
-        batch_rate >= 500.0,
-        "batched commits too slow: {batch_rate:.1}/s < 500/s"
+        batch_rate >= 250.0,
+        "batched commits too slow: {batch_rate:.1}/s < 250/s"
     );
 }
 

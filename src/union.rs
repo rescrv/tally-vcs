@@ -314,14 +314,11 @@ pub fn read_paths(line: &LogLine) -> Option<BTreeSet<String>> {
     let array = reads.as_array()?;
     let mut paths = BTreeSet::new();
     for read in array {
-        if let Some(path) = read.get("path").and_then(|p| p.as_str()) {
-            paths.insert(path.to_string());
-        } else {
-            // A grep record: three lines read plus one universally
-            // quantified negative — the author may have acted on the
-            // absence.
-            return None;
-        }
+        // A grep record: three lines read plus one universally
+        // quantified negative — the author may have acted on the
+        // absence — has no `path`, so the `?` below returns None.
+        let path = read.get("path").and_then(|p| p.as_str())?;
+        paths.insert(path.to_string());
     }
     Some(paths)
 }

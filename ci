@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# ci — the local mirror of the CI gate (.github/workflows/ci.yml).
+#
+# A pull request must pass these three before merge:
+#
+#   1. clippy        cargo clippy, warnings denied
+#   2. fmt --check   cargo fmt --check (verify, never rewrite)
+#   3. test          cargo test
+#
+# Run it the same way CI does:
+#
+#   ./ci
+#
+set -euo pipefail
+
+step() { printf '\n== %s\n' "$*"; }
+
+step "clippy"
+cargo clippy --all-targets --locked -- -D warnings -D clippy::all
+
+step "fmt --check"
+cargo fmt --check
+
+step "test"
+cargo test --locked
+
+step "ok"

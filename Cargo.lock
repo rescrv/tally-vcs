@@ -3,27 +3,6 @@
 version = 4
 
 [[package]]
-name = "tally-vcs"
-version = "0.1.0"
-dependencies = [
- "arrrg",
- "arrrg_derive",
- "chrono",
- "futures-executor",
- "getopts",
- "guacamole",
- "handled",
- "libc",
- "object_store",
- "proptest",
- "serde",
- "serde_json",
- "setsum",
- "sha3",
- "zstd",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1014,6 +993,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tally-vcs"
+version = "0.1.0"
+dependencies = [
+ "arrrg",
+ "arrrg_derive",
+ "chrono",
+ "futures-executor",
+ "getopts",
+ "guacamole",
+ "handled",
+ "libc",
+ "object_store",
+ "proptest",
+ "serde",
+ "serde_json",
+ "setsum",
+ "sha3",
+ "zstd",
 ]
 
 [[package]]
