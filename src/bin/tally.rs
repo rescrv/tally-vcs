@@ -57,8 +57,9 @@ patches:
   commit --prose P [-- path...]    append the pending working-tree patch to the log
                                    (status previews it; a pathspec commits part of it)
   apply [file|-]                   validate and apply an intent; append to the log
-  log [--view FUSES | --raw]       render history (default: collapse every fuse;
-                                   --view a,b collapses only the named fuses)
+  log [rev | from..to] [options]   render history: a rev from that state backwards,
+                                   from..to forward exclusive of from (options:
+                                   --view FUSES | --raw; default collapses every fuse)
   show <id>                        render one log line
   fuse <name> <from> <to>          name a span under one interpretation (lossless)
 
@@ -957,10 +958,10 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         nocolor: bool,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--nocolor]",
+        "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--nocolor] [rev | from..to]",
         args,
     );
-    reject_extra("log", &free, 0)?;
+    reject_extra("log", &free, 1)?;
     if options.raw && options.view.is_some() {
         return Err(Error::Invalid(
             "--raw and --view are mutually exclusive".to_string(),
@@ -969,14 +970,20 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     let palette = Palette::new(options.nocolor);
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
+    // An optional revision or `from..to` range bounds the slice rendered: a
+    // bare ref logs from that state backwards; a range shows the lines after
+    // `from`, exclusive of `from` itself.
+    let bounds = tally::revision::log_range(&repo, free.first().map(String::as_str), fork)?;
     // Follow the fork across its lineage: its own log, then—when exhausted—
     // the log of the fork it was forked from, and so on to the root.
-    let history = repo.continuity_log(fork)?;
+    let history = repo.continuity_log(&bounds.fork)?;
+    let end = bounds.end.min(history.len());
+    let history = &history[bounds.start.min(end)..end];
     if options.raw {
         // The un-fused chain: every line, full.  Like the fused view, lines
         // print oldest first — the log reads in ascending time.
-        let mut shown = fork.to_string();
-        for (fork, line) in &history {
+        let mut shown = bounds.fork.clone();
+        for (fork, line) in history {
             if fork != &shown {
                 println!("{}", palette.bold(&format!("--- {fork} ---")));
                 shown = fork.clone();
@@ -995,7 +1002,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
             .filter(|n| !n.is_empty())
             .collect()
     });
-    let lines: Vec<tally::log::LogLine> = history.into_iter().map(|(_, line)| line).collect();
+    let lines: Vec<tally::log::LogLine> = history.iter().map(|(_, line)| line.clone()).collect();
     for beat in fused_beats(&lines, view.as_deref()) {
         match beat {
             Beat::Fused { fuse, lines } => {

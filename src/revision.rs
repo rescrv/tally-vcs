@@ -262,6 +262,84 @@ pub fn resolve(repo: &Repository, spec: &str, default_fork: &str) -> Result<Reso
     apply_suffixes(spec, &fork, index, &points, suffixes)
 }
 
+/// A slice of one fork's continuity log, resolved from a `log` argument.
+///
+/// The bounds index into `Repository::continuity_log(fork)`: `start` is the
+/// first line to show, `end` one past the last.  A range's left endpoint is
+/// exclusive — its own line is the first one dropped — so `A..B` is exactly
+/// the lines that took the state from A to B.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogBounds {
+    /// The fork whose continuity log the bounds index into.
+    pub fork: String,
+    /// First line to show, 0-based.
+    pub start: usize,
+    /// One past the last line to show.
+    pub end: usize,
+}
+
+/// Resolve a `log` argument to bounds on a fork's continuity log.
+///
+/// `None` selects the whole lineage of `default_fork`.  A bare revision
+/// selects the lineage up to and including the state it names — the log read
+/// backwards from that point.  `A..B` selects the lines after A through B: A
+/// exclusive, B inclusive; an empty side defaults to `HEAD`, as in git.  The
+/// right endpoint names the lineage to read, and the left must name a state
+/// on it, else the range is an error.  A three-dot range asks for the
+/// symmetric difference of two lineages, which a linear chain cannot have.
+pub fn log_range(repo: &Repository, spec: Option<&str>, default_fork: &str) -> Result<LogBounds> {
+    let or_head: fn(&str) -> &str = |s| if s.is_empty() { "HEAD" } else { s };
+    let (left, right) = match spec {
+        None => (None, "HEAD"),
+        Some(s) if s.contains("...") => {
+            return Err(Error::Invalid(format!(
+                "revision range {s:?}: the three-dot form needs a graph; a lineage is linear"
+            )));
+        }
+        Some(s) => match s.split_once("..") {
+            None => (None, s),
+            Some((_, b)) if b.contains("..") => {
+                return Err(Error::Invalid(format!(
+                    "revision range {s:?}: only one \"..\" is allowed"
+                )));
+            }
+            Some((a, b)) => (Some(a), b),
+        },
+    };
+    // The right endpoint names the lineage to read.  Point 0 of the lineage
+    // is the base anchor; point i is the state after log line i-1, so a
+    // point's index is the count of lines at or before it — the log bound.
+    let right_r = resolve(repo, or_head(right), default_fork)?;
+    let points = lineage_states(repo, &right_r.fork)?;
+    let position = |r: &Resolved, side: &str| -> Result<usize> {
+        let idx = match &r.line {
+            Some(id) => points.iter().rposition(|p| p.line.as_deref() == Some(id)),
+            // A revision that names no line names the base of whatever
+            // lineage it resolved on; it bounds this lineage only if it is
+            // this lineage's base.
+            None if r.sum == points[0].sum => Some(0),
+            None => None,
+        };
+        idx.ok_or_else(|| {
+            Error::Invalid(format!(
+                "{side} does not name a state on fork {}'s lineage",
+                right_r.fork
+            ))
+        })
+    };
+    let end = position(&right_r, right)?;
+    let start = match left {
+        None => 0,
+        Some(a) => position(&resolve(repo, or_head(a), &right_r.fork)?, a)?,
+    };
+    Ok(LogBounds {
+        fork: right_r.fork,
+        start,
+        // A range whose left endpoint is the newer state is empty, as in git.
+        end: end.max(start),
+    })
+}
+
 /// `sum:S` — resolve `s` strictly as a state sum, `default_fork` first then
 /// the whole repository.  Unlike the bare-hex heuristic, this never falls
 /// back to a line id: a `sum:` prefix asserts the setsum domain, so a non-hex
@@ -569,6 +647,117 @@ mod tests {
         assert_eq!(
             resolve(&repo, &d.id, "main").unwrap().line.as_deref(),
             Some(d.id.as_str())
+        );
+    }
+
+    fn bounds(fork: &str, start: usize, end: usize) -> LogBounds {
+        LogBounds {
+            fork: fork.to_string(),
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn log_range_bare_ref_logs_backwards() {
+        let repo = temp_repo("range-ref");
+        let a = repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        repo.apply("main", create("/b", b"b\n"), note()).unwrap();
+        // No spec: the whole lineage of the default fork.
+        assert_eq!(
+            log_range(&repo, None, "main").unwrap(),
+            bounds("main", 0, 2)
+        );
+        // A bare ref: the lines at or before the state it names.
+        assert_eq!(
+            log_range(&repo, Some("HEAD~1"), "main").unwrap(),
+            bounds("main", 0, 1)
+        );
+        assert_eq!(
+            log_range(&repo, Some(&a.id), "main").unwrap(),
+            bounds("main", 0, 1)
+        );
+        // The base anchor precedes every line: nothing is at or before it.
+        assert_eq!(
+            log_range(&repo, Some("HEAD~2"), "main").unwrap(),
+            bounds("main", 0, 0)
+        );
+    }
+
+    #[test]
+    fn log_range_range_is_left_exclusive() {
+        let repo = temp_repo("range-excl");
+        let a = repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        let b = repo.apply("main", create("/b", b"b\n"), note()).unwrap();
+        let c = repo.apply("main", create("/c", b"c\n"), note()).unwrap();
+        // a..HEAD: the lines that took the state from a to HEAD — b and c,
+        // a itself excluded.
+        let spec = format!("{}..HEAD", a.id);
+        let r = log_range(&repo, Some(&spec), "main").unwrap();
+        assert_eq!(r, bounds("main", 1, 3));
+        let history = repo.continuity_log(&r.fork).unwrap();
+        let ids: Vec<&str> = history[r.start..r.end]
+            .iter()
+            .map(|(_, l)| l.id.as_str())
+            .collect();
+        assert_eq!(ids, [b.id.as_str(), c.id.as_str()]);
+        // An empty side defaults to HEAD: a.. is a..HEAD.
+        assert_eq!(
+            log_range(&repo, Some(&format!("{}..", a.id)), "main").unwrap(),
+            r
+        );
+        // Both endpoints resolve as revisions, suffixes included.
+        assert_eq!(
+            log_range(&repo, Some("HEAD~2..HEAD~1"), "main").unwrap(),
+            bounds("main", 1, 2)
+        );
+        // A range whose left is the right's own state (or newer) is empty.
+        assert_eq!(
+            log_range(&repo, Some("HEAD~1..HEAD~1"), "main").unwrap(),
+            bounds("main", 2, 2)
+        );
+        assert_eq!(
+            log_range(&repo, Some("HEAD..HEAD~1"), "main").unwrap(),
+            bounds("main", 3, 3)
+        );
+        // The left endpoint must name a state on the right's lineage.
+        assert!(log_range(&repo, Some("zz..HEAD"), "main").is_err());
+        // The three-dot form needs a graph; a lineage is linear.
+        assert!(log_range(&repo, Some("a...b"), "main").is_err());
+        assert!(log_range(&repo, Some("a..b..c"), "main").is_err());
+    }
+
+    #[test]
+    fn log_range_right_endpoint_names_the_lineage() {
+        let repo = temp_repo("range-forks");
+        let a = repo.apply("main", create("/a", b"a\n"), note()).unwrap();
+        repo.create_fork("session", "main").unwrap();
+        let c = repo.apply("session", create("/c", b"c\n"), note()).unwrap();
+        // A bare fork name: that fork's whole lineage, inherited lines too.
+        assert_eq!(
+            log_range(&repo, Some("session"), "main").unwrap(),
+            bounds("session", 0, 2)
+        );
+        // A range may cross the fork boundary: the shared prefix is one
+        // lineage, so main's head is a valid left endpoint on it.
+        assert_eq!(
+            log_range(&repo, Some(&format!("{}..session", a.id)), "main").unwrap(),
+            bounds("session", 1, 2)
+        );
+        // But the reverse direction is an error: c never touched main.
+        assert!(log_range(&repo, Some(&format!("{}..HEAD", c.id)), "main").is_err());
+    }
+
+    #[test]
+    fn log_range_empty_repo_is_empty() {
+        let repo = temp_repo("range-empty");
+        assert_eq!(
+            log_range(&repo, None, "main").unwrap(),
+            bounds("main", 0, 0)
+        );
+        assert_eq!(
+            log_range(&repo, Some("HEAD"), "main").unwrap(),
+            bounds("main", 0, 0)
         );
     }
 }
