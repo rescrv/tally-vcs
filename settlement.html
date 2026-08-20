@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tally — settlement</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --case:#0e1211; --case-2:#141a18; --rule:#232c28; --rule-2:#33403b;
+  --bone:#e6dcc4; --steel:#7fb8c9; --andon:#e2a03f; --mute:#78857f;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+  --disp: "Archivo", "Helvetica Neue", Arial, sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--case); color:var(--bone); font-family:var(--mono);
+  font-size:13px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  padding:18px;
+}
+.fig{max-width:900px;margin:0 auto}
+
+/* ---- header ---------------------------------------------------------- */
+.eyebrow{
+  display:flex;justify-content:space-between;align-items:baseline;gap:12px;
+  font-family:var(--disp);font-variation-settings:'wdth' 76,'wght' 600;
+  text-transform:uppercase;letter-spacing:.16em;font-size:10px;color:var(--mute);
+  border-bottom:1px solid var(--rule);padding-bottom:7px;
+}
+.eyebrow b{color:var(--bone);font-variation-settings:'wdth' 76,'wght' 700}
+h1{
+  font-family:var(--disp);font-variation-settings:'wdth' 70,'wght' 700;
+  font-size:clamp(26px,5.2vw,42px);line-height:.98;letter-spacing:-.005em;
+  margin:16px 0 6px;text-transform:uppercase;
+}
+h1 .thin{font-variation-settings:'wdth' 70,'wght' 300;color:var(--mute)}
+.dek{color:var(--mute);max-width:62ch;margin:0 0 18px;font-size:12.5px}
+
+/* ---- the square ------------------------------------------------------ */
+.square{border:1px solid var(--rule);border-radius:2px;background:var(--case-2);padding:14px 12px 10px}
+.square svg{display:block;width:100%;height:auto}
+.sq-node rect{fill:none;stroke:var(--rule-2);stroke-width:1}
+.sq-node text{font-family:var(--mono);font-size:9.5px;fill:var(--mute)}
+.sq-node.lit rect{stroke:var(--bone)}
+.sq-node.lit text{fill:var(--bone)}
+.sq-node.lit.foil rect{stroke:var(--steel)}
+.sq-node.lit.foil text{fill:var(--steel)}
+.sq-edge path{fill:none;stroke:var(--rule-2);stroke-width:1}
+.sq-edge text{font-family:var(--mono);font-size:9px;fill:var(--mute);letter-spacing:.04em}
+.sq-edge.lit path{stroke:var(--bone)}
+.sq-edge.lit text{fill:var(--bone)}
+.sq-edge.lit.foil path{stroke:var(--steel)}
+.sq-edge.lit.foil text{fill:var(--steel)}
+.sq-edge.lit.bad path{stroke:var(--andon);stroke-dasharray:3 3}
+.sq-edge.lit.bad text{fill:var(--andon)}
+
+/* ---- stage ----------------------------------------------------------- */
+.stage{
+  border:1px solid var(--rule);border-top:0;background:var(--case-2);
+  padding:14px 12px;min-height:216px;
+}
+.lede{font-size:12.5px;margin:0 0 12px;max-width:70ch}
+.lede em{color:var(--steel);font-style:normal}
+.lede b{color:var(--bone);font-weight:400;border-bottom:1px solid var(--rule-2)}
+
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:640px){
+  .cols{grid-template-columns:1fr}
+  .sq-node text{font-size:15px}
+  .sq-edge text{font-size:14px}
+  .priml{font-size:0}
+}
+
+.card{border:1px solid var(--rule);padding:9px 10px;background:rgba(0,0,0,.22)}
+.card .hd{
+  display:flex;justify-content:space-between;gap:8px;align-items:baseline;
+  font-family:var(--disp);font-variation-settings:'wdth' 78,'wght' 700;
+  text-transform:uppercase;letter-spacing:.13em;font-size:9.5px;color:var(--mute);
+  margin-bottom:7px;
+}
+.card .hd .fork{color:var(--bone)}
+.card.foil .hd .fork{color:var(--steel)}
+.prose{color:var(--mute);font-size:11.5px;margin:-3px 0 8px}
+
+.op{font-size:11.5px;white-space:pre-wrap;word-break:break-all}
+.op .path{color:var(--steel)}
+.op .minus{color:var(--mute)}
+.op .plus{color:var(--bone)}
+.op .k{color:var(--mute)}
+
+.badge{
+  display:inline-block;font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  border:1px solid var(--rule-2);padding:1px 6px;color:var(--mute);margin-top:8px;
+  font-family:var(--disp);font-variation-settings:'wdth' 80,'wght' 600;
+}
+.badge.ok{border-color:var(--steel);color:var(--steel)}
+.badge.bad{border-color:var(--andon);color:var(--andon)}
+
+.records{font-size:10.5px;line-height:1.65;max-height:190px;overflow:auto;color:var(--mute)}
+.records div{white-space:nowrap;transition:color .18s,opacity .18s}
+.records div.in{color:var(--bone)}
+.records .m{color:var(--rule-2)}
+.records .p{color:var(--steel)}
+
+.blobview{
+  font-size:10.5px;line-height:1.6;max-height:150px;overflow:auto;
+  white-space:pre;color:var(--mute);border-left:1px solid var(--rule);padding-left:9px;
+}
+.blobview mark{background:none;color:var(--andon);border-bottom:1px solid var(--andon)}
+.blobview mark.one{color:var(--steel);border-color:var(--steel)}
+.ln{color:var(--rule-2);user-select:none}
+
+.colmath{font-size:11px;color:var(--mute);line-height:1.8}
+.colmath b{color:var(--bone);font-weight:400}
+.colmath i{color:var(--steel);font-style:normal}
+
+/* ---- the stick ------------------------------------------------------- */
+.stick{border:1px solid var(--rule);border-top:0;background:var(--case);padding:13px 12px 11px}
+.stick svg{display:block;width:100%;height:auto}
+.notch-stock{fill:var(--bone);fill-opacity:.85}
+.notch-foil{fill:var(--steel);fill-opacity:.85}
+.notch-bad{fill:var(--andon);fill-opacity:.9}
+.kerf-join{stroke:var(--bone);stroke-width:1.5}
+.kerf-gap{stroke:var(--andon);stroke-width:1;stroke-dasharray:2 2}
+.railbox{fill:none;stroke:var(--rule);stroke-width:1}
+.celldiv{stroke:var(--rule);stroke-width:1}
+.priml{font-family:var(--mono);font-size:7.5px;fill:var(--rule-2);letter-spacing:-.02em}
+
+.hexrow{display:flex;gap:9px;align-items:baseline;margin-top:9px;flex-wrap:wrap}
+.hexlab{
+  font-family:var(--disp);font-variation-settings:'wdth' 78,'wght' 700;
+  text-transform:uppercase;letter-spacing:.13em;font-size:9px;color:var(--mute);
+  width:52px;flex:none;
+}
+.hex{font-size:11.5px;letter-spacing:.02em;word-break:break-all;flex:1;min-width:220px;color:var(--rule-2)}
+.hex.on{color:var(--bone)}
+.hex.foil.on{color:var(--steel)}
+.hex .d{color:var(--andon);border-bottom:1px solid var(--andon)}
+.verdict{
+  margin-top:10px;font-family:var(--disp);
+  font-variation-settings:'wdth' 74,'wght' 700;text-transform:uppercase;
+  letter-spacing:.1em;font-size:11px;color:var(--mute);
+}
+.verdict.ok{color:var(--bone)}
+.verdict.bad{color:var(--andon)}
+.verdict .sub{
+  display:block;font-family:var(--mono);font-variation-settings:normal;
+  text-transform:none;letter-spacing:0;font-size:11px;color:var(--mute);
+  font-weight:400;margin-top:3px;
+}
+
+/* ---- controls -------------------------------------------------------- */
+.controls{border:1px solid var(--rule);border-top:0;padding:9px 12px 11px;background:var(--case-2)}
+.beats{display:flex;gap:0;flex-wrap:wrap;border-bottom:1px solid var(--rule);margin-bottom:9px}
+.beat{
+  appearance:none;background:none;border:0;border-bottom:2px solid transparent;
+  color:var(--mute);font-family:var(--disp);font-variation-settings:'wdth' 78,'wght' 600;
+  text-transform:uppercase;letter-spacing:.11em;font-size:9.5px;
+  padding:6px 10px 6px 0;margin-right:14px;cursor:pointer;
+}
+.beat:hover{color:var(--bone)}
+.beat[aria-current="true"]{color:var(--bone);border-bottom-color:var(--bone)}
+.beat:focus-visible{outline:1px solid var(--steel);outline-offset:2px}
+.beat .n{color:var(--rule-2);margin-right:6px}
+.beat[aria-current="true"] .n{color:var(--steel)}
+
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.opt{
+  appearance:none;background:none;border:1px solid var(--rule-2);color:var(--mute);
+  font-family:var(--mono);font-size:11px;padding:3px 9px;cursor:pointer;border-radius:1px;
+}
+.opt:hover{border-color:var(--bone);color:var(--bone)}
+.opt[aria-pressed="true"]{border-color:var(--bone);color:var(--case);background:var(--bone)}
+.opt:focus-visible{outline:1px solid var(--steel);outline-offset:2px}
+.opt.danger[aria-pressed="true"]{border-color:var(--andon);background:var(--andon);color:var(--case)}
+.optlab{
+  font-family:var(--disp);font-variation-settings:'wdth' 78,'wght' 700;
+  text-transform:uppercase;letter-spacing:.13em;font-size:9px;color:var(--mute);
+  margin-right:2px;
+}
+.foot{
+  margin-top:11px;padding-top:9px;border-top:1px solid var(--rule);
+  color:var(--mute);font-size:10.5px;line-height:1.6;
+}
+.foot a{color:var(--steel);text-decoration:none;border-bottom:1px solid var(--rule-2)}
+.foot a:hover{border-bottom-color:var(--steel)}
+.foot code{color:var(--bone)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="fig">
+  <div class="eyebrow">
+    <span>tally &nbsp;/&nbsp; the split stick</span>
+    <span>anchor <b id="ey-commit"></b> &nbsp;·&nbsp; <b id="ey-n"></b> elements</span>
+  </div>
+
+  <h1>Settlement<span class="thin"> — two paths,<br>one 64-character answer</span></h1>
+  <p class="dek">
+    Real commits from this repository, replayed as concurrent forks off a common anchor.
+    Every setsum column here is folded in your browser from these records, and the two
+    edited files are hashed from their full bytes on this page — including after the edit.
+  </p>
+
+  <div class="square"><svg id="sq" viewBox="0 0 620 132" role="img" aria-label="commuting square"></svg></div>
+
+  <div class="stage" id="stage"></div>
+
+  <div class="stick">
+    <svg id="stickvis" viewBox="0 0 620 80" role="img" aria-label="tally stick: eight setsum columns"></svg>
+    <div class="hexrow">
+      <span class="hexlab">Stock</span><span class="hex" id="hex-stock">—</span>
+    </div>
+    <div class="hexrow">
+      <span class="hexlab">Foil</span><span class="hex foil" id="hex-foil">—</span>
+    </div>
+    <div class="verdict" id="verdict"></div>
+  </div>
+
+  <div class="controls">
+    <div class="beats" id="beats"></div>
+    <div class="row" id="opts"></div>
+    <div class="foot">
+      The eight notches are a picture of the sum; the 64 hex characters are the sum.
+      Blob hashes for the eighteen untouched files were computed once from the repo and are
+      printed as given; everything else on this page is computed here. Check any of it —
+      <code>ANDON.md §2</code> is eleven lines of Python, and <code>git show 8a815a6:&lt;path&gt;</code>
+      gives you the same bytes.
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="corpus">{"anchor":{"commit":"8a815a6","subject":"feat: serve-manifest, pack, and unpack (SPEC 3.2-3.3)","date":"2026-07-30","sum":"f12ff6cb65b85c1e794dc7e927fbe9810b96368bd94c2024f8599a4c3d637f9b","tree":[{"mode":"100644","path":"/.gitignore","blob":"2f4601a0207ecbb94205f72f8413ab129bf6b0ee7e773d126966e384c018d698","bytes":8},{"mode":"100644","path":"/Cargo.lock","blob":"4d8c7816faaf20e9a9c51d152f57e580ea3bff2eb70ce88194eb7b94a6764865","bytes":9010},{"mode":"100644","path":"/Cargo.toml","blob":"38eedca94af2d2af17548c210106849e57d427f65b9d81c1c7677ca4285446e3","bytes":452},{"mode":"100644","path":"/README.md","blob":"a3f9f3a8fcdfccb834f2f8d3837dfd055fead4f6b5973ecb1030cce22ed9f1a8","bytes":20020},{"mode":"100644","path":"/SPEC.md","blob":"32a5a5b5537b6d3203eeee28e68dc4248045764a20823610aa3047378e4b7397","bytes":22410},{"mode":"100644","path":"/src/b64.rs","blob":"777525cc603bd5c90f49baa7948ae16de819fbec3298d1ea235377d6cbf48783","bytes":3118},{"mode":"100644","path":"/src/blobs.rs","blob":"97230d1a76367256e72eeb16073889f2276345fdf02b0eed5cab767eba0d1654","bytes":5941},{"mode":"100644","path":"/src/claims.rs","blob":"437c8a3854c1588679d6ce96101eec4dea07814f8c966905cbf7f909ef010b7d","bytes":5640},{"mode":"100644","path":"/src/fork.rs","blob":"40c2f386d3293d986bbaf859f089c2380f93679f9af9e1737318ce822fe50db4","bytes":3701},{"mode":"100644","path":"/src/ident.rs","blob":"a4e1ddc983caf3b9e10aa0d5a92f3d2c42ff5123a2a1aead2329f3f20f49c8ef","bytes":13240},{"mode":"100644","path":"/src/lib.rs","blob":"47bde485239fc595856cd7b398af171065989988ffaae44ad91ddd645d6d9a41","bytes":2488},{"mode":"100644","path":"/src/log.rs","blob":"1b297e41ddca22acfa597c69df2845207edca243b7cc431f5560b71e8b34ed54","bytes":14179},{"mode":"100644","path":"/src/main.rs","blob":"a22911211426c3e5efddd6bcf9c13c461e1501914911bd6075016d75afacbf96","bytes":45},{"mode":"100644","path":"/src/manifest.rs","blob":"a833d19d6603a13993720bdd6465444e4a95437b051c4b5169924038b1ab3c84","bytes":7032},{"mode":"100644","path":"/src/patch.rs","blob":"877172652a69adae7a65f087205dd58d2a93005c2d8e97faced119a94c9ecf04","bytes":18615},{"mode":"100644","path":"/src/repo.rs","blob":"b510041ce397b4bd3e9f8246246f30791dd6297373a0558d1df81cf26fc731c9","bytes":33281},{"mode":"100644","path":"/src/segment.rs","blob":"6fe0e1e4d8ec9a84bfde06e61458078ba10d24a4e0cfff86b23ccfaa9c4cad45","bytes":25682},{"mode":"100644","path":"/src/serve.rs","blob":"b216e5d85f2001a41dd33802437bf742f4efd5c78d0271ff43e2f40eaa619eaa","bytes":23966},{"mode":"100644","path":"/src/union.rs","blob":"b8203d023c0684b7aefa483793dee4737e26332dbe3e655b047f8805fcf0be13","bytes":14397},{"mode":"100644","path":"/src/views.rs","blob":"a0e08335fd09d3a97485de397c35618247e0d739a0ee21e407a16177d23e86fb","bytes":5500}]},"blobs":{"/src/serve.rs":"//! \u00a73.2\u2013\u00a73.3 The serve-manifest, packing, and unpacking.\n//!\n//! The packed repository is described by a chained sequence of manifests.\n//! Loose is truth; pack is an encoding; unpack is total, deterministic,\n//! model-free, and equivalence-preserving (I2).  Compaction correctness is\n//! an arithmetic proof: across any manifest swap, the image-setsum delta\n//! equals the setsum of items genuinely added \u2014 zero for a pure compaction.\n\nuse std::collections::BTreeMap;\nuse std::fs;\nuse std::path::Path;\n\nuse serde::{Deserialize, Serialize};\n\nuse crate::fork::ForkFile;\nuse crate::ident::{Sum, canonical_json, record_id, verify_record_id};\nuse crate::log::{LogLine, parse_log_strict};\nuse crate::manifest::Manifest;\nuse crate::patch::apply_realized_to_manifest;\nuse crate::repo::Repository;\nuse crate::segment::{BuiltSegment, Segment, SegmentInput, build_segment, image_setsum};\nuse crate::{Error, Result, ioerr};\n\n/// Root-of-trust parse bound for a serve-manifest (\u00a75): 16 MiB.\npub const MANIFEST_SIZE_BOUND: usize = 16 \u003c\u003c 20;\n\n/// A fork's head as the serve-manifest records it.\n#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct ForkHead {\n    /// The fork's anchor sum.\n    pub anchor: String,\n    /// The id of the last log line; `\"\"` for an empty log.\n    pub head_id: String,\n    /// The fork's current state sum.\n    pub head_sum: String,\n    /// The segments holding this fork's log, in log order.\n    pub log_segments: Vec\u003cString>,\n}\n\n/// A segment's metadata: two integrity values answering different\n/// questions.  `pk_sha3` authenticates the particular encoded artifact and\n/// MUST be checked before any byte reaches a decompressor; `image_setsum`\n/// identifies the logical content regardless of encoding.  Equal image,\n/// unequal pk: a re-encoding.  Unequal image: content forgery.\n#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct SegmentMeta {\n    /// SHA3-256 of the compressed `.pk` bytes; equals the segid.\n    pub pk_sha3: String,\n    /// SHA3-256 of the `.idx` bytes.\n    pub idx_sha3: String,\n    /// Size of the `.pk` in bytes.\n    pub bytes: u64,\n    /// Number of idx entries.\n    pub entries: u64,\n    /// Setsum over the segment's image items.\n    pub image_setsum: String,\n    /// First and last log line ids in the segment, if it holds log spans.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub log_span: Option\u003c(String, String)>,\n}\n\n/// `manifest/\u003cseq>.json`, canonical JSON, id per \u00a71.3, put-if-absent.\n#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct ServeManifest {\n    /// Record id per \u00a71.3.\n    pub id: String,\n    /// Format version.\n    pub v: u64,\n    /// Sequence number; the put-if-absent on seq N+1 is the wire\n    /// linearization point (I8).\n    pub seq: u64,\n    /// Id of the manifest at seq\u22121; `\"\"` for the first.  The history of\n    /// swaps is itself an auditable log.\n    pub prev: String,\n    /// Fork heads.\n    pub forks: BTreeMap\u003cString, ForkHead>,\n    /// Segment metadata by segid.\n    pub segments: BTreeMap\u003cString, SegmentMeta>,\n    /// Anchor sums the forks reference.\n    pub anchors: Vec\u003cString>,\n    /// Segments retired by this swap; retained until the retention window\n    /// ages them out (\u00a73.3) \u2014 the only thing abelian ever deletes, and they\n    /// are re-encodings, not information.\n    pub retire: Vec\u003cString>,\n}\n\nimpl ServeManifest {\n    /// Canonical bytes as stored.\n    pub fn to_bytes(&self) -> Result\u003cVec\u003cu8>> {\n        Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())\n    }\n\n    /// Size-bounded parse plus id verification (\u00a74 step 1): the manifest is\n    /// the residual root-of-trust surface, so the bound is a security\n    /// parameter, not a convenience.\n    pub fn parse(bytes: &[u8]) -> Result\u003cSelf> {\n        if bytes.len() > MANIFEST_SIZE_BOUND {\n            return Err(Error::Corrupt(format!(\n                \"serve-manifest of {} bytes exceeds the {MANIFEST_SIZE_BOUND}-byte parse bound\",\n                bytes.len()\n            )));\n        }\n        let value: serde_json::Value = serde_json::from_slice(bytes)?;\n        verify_record_id(&value)?;\n        let manifest: ServeManifest = serde_json::from_value(value)?;\n        if manifest.v != 0 {\n            return Err(Error::Corrupt(format!(\"unsupported manifest version {}\", manifest.v)));\n        }\n        Ok(manifest)\n    }\n\n    /// The sum of all segments' image setsums: the manifest's logical\n    /// content, one addition per segment.\n    pub fn total_image(&self) -> Result\u003cSum> {\n        let mut total = Sum::zero();\n        for meta in self.segments.values() {\n            total = total + Sum::from_hexdigest(&meta.image_setsum)?;\n        }\n        Ok(total)\n    }\n}\n\n/// \u00a73.3: across a swap from `prev` to `next`, the image delta equals the\n/// setsum of items genuinely added.  Returns that delta; a pure compaction\n/// yields zero.  A re-encoding that lost or invented so much as one entry\n/// fails this group equation, checkable without touching a single `.pk`.\npub fn swap_delta(prev: &ServeManifest, next: &ServeManifest) -> Result\u003cSum> {\n    Ok(next.total_image()? - prev.total_image()?)\n}\n\n////////////////////////////////////////////// pack ///////////////////////////////////////////////\n\n/// Pack a loose repository into `out_dir` as segments plus a\n/// serve-manifest at `seq` chaining to `prev_id`.  `level` is packing\n/// policy (\u00a75).\npub fn pack(\n    repo: &Repository,\n    out_dir: &Path,\n    seq: u64,\n    prev_id: &str,\n    level: i32,\n) -> Result\u003cServeManifest> {\n    fs::create_dir_all(out_dir.join(\"seg\")).map_err(ioerr(\"creating seg/\"))?;\n    fs::create_dir_all(out_dir.join(\"manifest\")).map_err(ioerr(\"creating manifest/\"))?;\n\n    let blobs = repo.blobs();\n    let mut inputs = Vec::new();\n    for hash in blobs.list()? {\n        inputs.push(SegmentInput::Blob(blobs.get(&hash)?));\n    }\n    for id in repo.claim_ids()? {\n        inputs.push(SegmentInput::Claim { bytes: repo.claim_bytes(&id)?, id });\n    }\n    let mut forks = BTreeMap::new();\n    let mut anchors = Vec::new();\n    for fork in repo.fork_names()? {\n        let fork_file = repo.read_fork(&fork)?;\n        let state = repo.current_state(&fork)?;\n        let log_bytes = repo.log_bytes(&fork)?;\n        let line_ids: Vec\u003cString> = state.lines.iter().map(|l| l.id.clone()).collect();\n        if !line_ids.is_empty() {\n            inputs.push(SegmentInput::LogSpan {\n                fork: fork.clone(),\n                bytes: log_bytes,\n                line_ids,\n            });\n        }\n        if !anchors.contains(&fork_file.anchor) {\n            anchors.push(fork_file.anchor.clone());\n        }\n        forks.insert(\n            fork.clone(),\n            ForkHead {\n                anchor: fork_file.anchor,\n                head_id: state.head_id,\n                head_sum: state.sum.hexdigest(),\n                log_segments: Vec::new(), // filled once the segid is known\n            },\n        );\n    }\n\n    let built: BuiltSegment = build_segment(&inputs, level)?;\n    for head in forks.values_mut() {\n        head.log_segments = vec![built.segid.clone()];\n    }\n    fs::write(out_dir.join(\"seg\").join(format!(\"{}.pk\", built.segid)), &built.pk)\n        .map_err(ioerr(\"writing .pk\"))?;\n    fs::write(out_dir.join(\"seg\").join(format!(\"{}.idx\", built.segid)), &built.idx)\n        .map_err(ioerr(\"writing .idx\"))?;\n\n    let mut segments = BTreeMap::new();\n    segments.insert(\n        built.segid.clone(),\n        SegmentMeta {\n            pk_sha3: built.segid.clone(),\n            idx_sha3: built.idx_sha3.clone(),\n            bytes: built.pk.len() as u64,\n            entries: built.entries as u64,\n            image_setsum: built.image_setsum.hexdigest(),\n            log_span: built.log_span.clone(),\n        },\n    );\n    let mut manifest = ServeManifest {\n        id: String::new(),\n        v: 0,\n        seq,\n        prev: prev_id.to_string(),\n        forks,\n        segments,\n        anchors,\n        retire: Vec::new(),\n    };\n    manifest.id = record_id(&serde_json::to_value(&manifest)?)?;\n    fs::write(out_dir.join(\"manifest\").join(format!(\"{seq}.json\")), manifest.to_bytes()?)\n        .map_err(ioerr(\"writing serve-manifest\"))?;\n    Ok(manifest)\n}\n\n///////////////////////////////////////////// unpack //////////////////////////////////////////////\n\n/// Everything a verified pack yields, in memory, before it touches a loose\n/// repository.\npub struct Unpacked {\n    /// The manifest that described the pack.\n    pub manifest: ServeManifest,\n    /// Blob contents by hash (dictionaries included).\n    pub blobs: BTreeMap\u003cString, Vec\u003cu8>>,\n    /// Exact log bytes per fork.\n    pub logs: BTreeMap\u003cString, Vec\u003cu8>>,\n    /// Exact claim bytes by id.\n    pub claims: BTreeMap\u003cString, Vec\u003cu8>>,\n}\n\n/// Verify and unpack segments named by `manifest`, reading `.pk`/`.idx`\n/// via `fetch`.  The order of proof is mandated (\u00a74, I11); entries verify\n/// their logical identity post-decode, and each segment's image_setsum is\n/// recomputed and compared.\npub fn unpack_segments(\n    manifest: &ServeManifest,\n    fetch: &dyn Fn(&str) -> Result\u003cVec\u003cu8>>,\n) -> Result\u003cUnpacked> {\n    let mut blobs: BTreeMap\u003cString, Vec\u003cu8>> = BTreeMap::new();\n    let mut logs: BTreeMap\u003cString, Vec\u003cu8>> = BTreeMap::new();\n    let mut claims: BTreeMap\u003cString, Vec\u003cu8>> = BTreeMap::new();\n    let mut lines_by_id: BTreeMap\u003cString, LogLine> = BTreeMap::new();\n\n    // Two passes so construct entries can reference bases and lines packed\n    // in any segment: first everything with stored bytes, then constructs.\n    let mut opened = Vec::new();\n    for (segid, meta) in &manifest.segments {\n        if meta.pk_sha3 != *segid {\n            return Err(Error::Corrupt(format!(\"segment {segid}: pk_sha3 differs from segid\")));\n        }\n        let pk = fetch(&format!(\"seg/{segid}.pk\"))?;\n        let idx = fetch(&format!(\"seg/{segid}.idx\"))?;\n        let segment = Segment::open(&pk, &idx, &meta.pk_sha3, &meta.idx_sha3)?;\n        opened.push((segid.clone(), segment));\n    }\n    let no_blob = |h: &str| -> Result\u003cVec\u003cu8>> {\n        Err(Error::Corrupt(format!(\"first pass cannot fetch blob {h}\")))\n    };\n    let no_line = |id: &str| -> Result\u003cLogLine> {\n        Err(Error::Corrupt(format!(\"first pass cannot fetch line {id}\")))\n    };\n    let mut constructs = Vec::new();\n    for (segid, segment) in &opened {\n        for entry in &segment.entries {\n            match &entry.enc {\n                crate::segment::Enc::Construct { .. } => {\n                    constructs.push((segid.clone(), entry.clone()));\n                }\n                crate::segment::Enc::Lines { fork, .. } => {\n                    let bytes = segment.materialize(entry, &no_blob, &no_line)?;\n                    for line in parse_log_strict(&bytes)? {\n                        lines_by_id.insert(line.id.clone(), line);\n                    }\n                    logs.entry(fork.clone())\n                        .or_default()\n                        .extend_from_slice(&bytes);\n                }\n                crate::segment::Enc::Claim => {\n                    let bytes = segment.materialize(entry, &no_blob, &no_line)?;\n                    let claim = crate::claims::Claim::parse(&bytes)?;\n                    claims.insert(claim.id, bytes);\n                }\n                _ => {\n                    let bytes = segment.materialize(entry, &no_blob, &no_line)?;\n                    blobs.insert(entry.sha3.clone(), bytes);\n                }\n            }\n        }\n    }\n    // Second pass: constructs apply only verified inputs.\n    let fetch_blob = |h: &str| -> Result\u003cVec\u003cu8>> {\n        blobs\n            .get(h)\n            .cloned()\n            .ok_or_else(|| Error::Corrupt(format!(\"construct references absent blob {h}\")))\n    };\n    let fetch_line = |id: &str| -> Result\u003cLogLine> {\n        lines_by_id\n            .get(id)\n            .cloned()\n            .ok_or_else(|| Error::Corrupt(format!(\"construct references absent line {id}\")))\n    };\n    let mut constructed = Vec::new();\n    for (segid, entry) in &constructs {\n        let segment = &opened.iter().find(|(s, _)| s == segid).expect(\"opened above\").1;\n        let bytes = segment.materialize(entry, &fetch_blob, &fetch_line)?;\n        constructed.push((entry.sha3.clone(), bytes));\n    }\n    for (hash, bytes) in constructed {\n        blobs.insert(hash, bytes);\n    }\n    // Verify each segment's image against the manifest's claim.\n    let fetch_blob = |h: &str| -> Result\u003cVec\u003cu8>> {\n        blobs\n            .get(h)\n            .cloned()\n            .ok_or_else(|| Error::Corrupt(format!(\"image pass: absent blob {h}\")))\n    };\n    for (segid, segment) in &opened {\n        let items = segment.image_items(&fetch_blob, &fetch_line)?;\n        let actual = image_setsum(&items).hexdigest();\n        let claimed = &manifest.segments[segid].image_setsum;\n        if actual != *claimed {\n            return Err(Error::Corrupt(format!(\n                \"segment {segid}: image setsum {actual} disagrees with manifest {claimed} \\\n                 \u2014 content forgery\"\n            )));\n        }\n    }\n    Ok(Unpacked { manifest: manifest.clone(), blobs, logs, claims })\n}\n\n/// Materialize an unpacked repository as a loose one at `dest`.  Anchor\n/// manifests are derived by replaying each fork's log from the empty state\n/// to the anchor sum \u2014 snapshots are compactions, so this is total.\npub fn restore(unpacked: &Unpacked, dest: &Path) -> Result\u003cRepository> {\n    let repo = Repository::init_bare(dest)?;\n    let blobs = repo.blobs();\n    for content in unpacked.blobs.values() {\n        blobs.put(content)?;\n    }\n    for bytes in unpacked.claims.values() {\n        repo.put_claim_bytes(bytes)?;\n    }\n    // Anchors are derived, never primary: every anchor sum is a state on\n    // some fork's history, so derive manifests to a fixpoint.  Start from\n    // the empty state; a fork whose anchor is known contributes every state\n    // its log passes through.\n    let empty: Vec\u003cu8> = Vec::new();\n    let mut known: BTreeMap\u003cString, Manifest> = BTreeMap::new();\n    known.insert(Sum::zero().hexdigest(), Manifest::new());\n    let mut parsed: BTreeMap\u003c&String, Vec\u003cLogLine>> = BTreeMap::new();\n    for (fork, _) in &unpacked.manifest.forks {\n        parsed.insert(fork, parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty))?);\n    }\n    let mut unresolved: Vec\u003c&String> = unpacked.manifest.forks.keys().collect();\n    while !unresolved.is_empty() {\n        let mut progressed = false;\n        unresolved.retain(|fork| {\n            let head = &unpacked.manifest.forks[*fork];\n            let Some(anchor_manifest) = known.get(&head.anchor) else {\n                return true; // keep: anchor not yet derivable\n            };\n            let lines = &parsed[fork];\n            // Replay starts after the last line whose sum_after equals the\n            // anchor (a snapshot repointed it), or at the beginning.\n            let start = lines\n                .iter()\n                .rposition(|l| l.sum_after == head.anchor)\n                .map(|i| i + 1)\n                .unwrap_or(0);\n            let mut manifest = anchor_manifest.clone();\n            for line in &lines[start..] {\n                if apply_realized_to_manifest(&mut manifest, &line.realized).is_err() {\n                    return true; // corrupt replay: surface below as unresolved\n                }\n                known.entry(line.sum_after.clone()).or_insert_with(|| manifest.clone());\n            }\n            progressed = true;\n            false\n        });\n        if !unresolved.is_empty() && !progressed {\n            return Err(Error::Corrupt(format!(\n                \"anchors not derivable from any packed log: {:?}\",\n                unresolved\n                    .iter()\n                    .map(|f| unpacked.manifest.forks[*f].anchor.clone())\n                    .collect::\u003cVec\u003c_>>()\n            )));\n        }\n    }\n    for (fork, head) in &unpacked.manifest.forks {\n        let anchor_manifest = known\n            .get(&head.anchor)\n            .expect(\"fixpoint resolved every fork\");\n        repo.write_anchor_manifest(anchor_manifest)?;\n        let fork_file = ForkFile { anchor: head.anchor.clone(), manifest: head.anchor.clone() };\n        repo.restore_fork(fork, &fork_file, unpacked.logs.get(fork).unwrap_or(&empty))?;\n        let state = repo.current_state(fork)?;\n        if state.sum.hexdigest() != head.head_sum || state.head_id != head.head_id {\n            return Err(Error::Corrupt(format!(\n                \"fork {fork}: restored head disagrees with the manifest\"\n            )));\n        }\n        repo.materialize(&state.manifest)?;\n    }\n    Ok(repo)\n}\n\n/// Unpack a packed directory (as `pack` lays it out) into a loose\n/// repository at `dest`, choosing the highest-`seq` manifest.\npub fn unpack_dir(packed: &Path, dest: &Path) -> Result\u003cRepository> {\n    let manifest = latest_manifest(packed)?;\n    let fetch = |name: &str| -> Result\u003cVec\u003cu8>> {\n        fs::read(packed.join(name)).map_err(ioerr(format!(\"reading {name}\")))\n    };\n    let unpacked = unpack_segments(&manifest, &fetch)?;\n    restore(&unpacked, dest)\n}\n\n/// The highest-`seq` manifest in a packed directory.\npub fn latest_manifest(packed: &Path) -> Result\u003cServeManifest> {\n    let dir = packed.join(\"manifest\");\n    let entries = fs::read_dir(&dir).map_err(ioerr(format!(\"listing {}\", dir.display())))?;\n    let mut best: Option\u003c(u64, std::path::PathBuf)> = None;\n    for entry in entries {\n        let entry = entry.map_err(ioerr(\"listing manifests\"))?;\n        let name = entry.file_name();\n        let Some(seq) = name\n            .to_str()\n            .and_then(|n| n.strip_suffix(\".json\"))\n            .and_then(|n| n.parse::\u003cu64>().ok())\n        else {\n            continue;\n        };\n        if best.as_ref().is_none_or(|(b, _)| seq > *b) {\n            best = Some((seq, entry.path()));\n        }\n    }\n    let (_, path) = best.ok_or_else(|| Error::Corrupt(\"no serve-manifest found\".to_string()))?;\n    let bytes = fs::read(&path).map_err(ioerr(\"reading serve-manifest\"))?;\n    ServeManifest::parse(&bytes)\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use crate::log::Annotation;\n    use crate::patch::{Intent, Op};\n\n    fn temp_dir(name: &str) -> std::path::PathBuf {\n        let dir = std::env::temp_dir().join(format!(\"abelian-serve-{name}-{}\", std::process::id()));\n        let _ = fs::remove_dir_all(&dir);\n        fs::create_dir_all(&dir).unwrap();\n        dir\n    }\n\n    fn create(path: &str, content: &[u8]) -> Intent {\n        Intent {\n            ops: vec![Op::Create {\n                path: path.to_string(),\n                mode: \"100644\".to_string(),\n                blob: None,\n                content_b64: Some(crate::b64::encode(content)),\n            }],\n        }\n    }\n\n    fn note() -> Annotation {\n        Annotation { author: \"t\".to_string(), ..Annotation::default() }\n    }\n\n    fn populated(name: &str) -> Repository {\n        let repo = Repository::init(temp_dir(&format!(\"{name}-loose\"))).unwrap();\n        repo.apply(\"main\", create(\"/src/main.rs\", b\"fn main() {}\\n\"), note()).unwrap();\n        repo.apply(\n            \"main\",\n            Intent {\n                ops: vec![Op::Edit {\n                    path: \"/src/main.rs\".to_string(),\n                    old_str: \"main()\".to_string(),\n                    new_str: \"main() /* v2 */\".to_string(),\n                }],\n            },\n            note(),\n        )\n        .unwrap();\n        repo.create_fork(\"session-1\", \"main\").unwrap();\n        repo.apply(\"session-1\", create(\"/notes.md\", b\"# notes\\n\"), note()).unwrap();\n        let state = repo.current_state(\"main\").unwrap();\n        let inputs: Vec\u003c_> = state.manifest.records().cloned().collect();\n        let claim = crate::claims::Claim::new(\n            &state.sum,\n            \"cargo test\",\n            inputs,\n            0,\n            &crate::ident::sha3_hex(b\"ok\"),\n        )\n        .unwrap();\n        repo.put_claim(&claim).unwrap();\n        repo\n    }\n\n    #[test]\n    fn pack_unpack_equivalence() {\n        // I2: unpack-before equals unpack-after, bit for bit at the loose\n        // level.\n        let repo = populated(\"equiv\");\n        let packed = temp_dir(\"equiv-packed\");\n        let manifest = pack(&repo, &packed, 1, \"\", 3).unwrap();\n        assert_eq!(manifest.seq, 1);\n        let restored = unpack_dir(&packed, &temp_dir(\"equiv-restored\")).unwrap();\n\n        // Logs are byte-preserved.\n        for fork in [\"main\", \"session-1\"] {\n            assert_eq!(\n                repo.log_bytes(fork).unwrap(),\n                restored.log_bytes(fork).unwrap(),\n                \"log bytes of {fork}\"\n            );\n        }\n        // Claims are byte-preserved.\n        assert_eq!(repo.claim_ids().unwrap(), restored.claim_ids().unwrap());\n        for id in repo.claim_ids().unwrap() {\n            assert_eq!(repo.claim_bytes(&id).unwrap(), restored.claim_bytes(&id).unwrap());\n        }\n        // The blob pool survives.\n        assert_eq!(repo.blobs().list().unwrap(), restored.blobs().list().unwrap());\n        // States agree.\n        for fork in [\"main\", \"session-1\"] {\n            assert_eq!(\n                repo.current_state(fork).unwrap().sum,\n                restored.current_state(fork).unwrap().sum,\n            );\n        }\n        // And re-packing the restored repo yields the same logical image.\n        let repacked_dir = temp_dir(\"equiv-repacked\");\n        let repacked = pack(&restored, &repacked_dir, 1, \"\", 19).unwrap();\n        assert_eq!(\n            manifest.total_image().unwrap(),\n            repacked.total_image().unwrap(),\n            \"re-encoding preserves the image\"\n        );\n    }\n\n    #[test]\n    fn manifest_ids_verify_and_bound() {\n        let repo = populated(\"ids\");\n        let packed = temp_dir(\"ids-packed\");\n        let manifest = pack(&repo, &packed, 1, \"\", 3).unwrap();\n        let bytes = manifest.to_bytes().unwrap();\n        let parsed = ServeManifest::parse(&bytes).unwrap();\n        assert_eq!(parsed, manifest);\n        // Tampering breaks the id.\n        let tampered = String::from_utf8(bytes).unwrap().replace(\"\\\"seq\\\":1\", \"\\\"seq\\\":2\");\n        assert!(ServeManifest::parse(tampered.as_bytes()).is_err());\n    }\n\n    #[test]\n    fn compaction_correctness_is_arithmetic() {\n        let repo = populated(\"compact\");\n        let packed_a = temp_dir(\"compact-a\");\n        let packed_b = temp_dir(\"compact-b\");\n        // The same content packed at different levels: a pure re-encoding.\n        let a = pack(&repo, &packed_a, 1, \"\", 3).unwrap();\n        let b = pack(&repo, &packed_b, 2, &a.id, 19).unwrap();\n        let delta = swap_delta(&a, &b).unwrap();\n        assert_eq!(delta, Sum::zero(), \"pure compaction: image delta is zero\");\n        // Different pk bytes, same image: a re-encoding, not forgery.\n        if a.segments.keys().next() != b.segments.keys().next() {\n            let ia = &a.segments.values().next().unwrap().image_setsum;\n            let ib = &b.segments.values().next().unwrap().image_setsum;\n            assert_eq!(ia, ib);\n        }\n        // New content moves the delta off zero.\n        repo.apply(\"main\", create(\"/new.rs\", b\"n\\n\"), note()).unwrap();\n        let packed_c = temp_dir(\"compact-c\");\n        let c = pack(&repo, &packed_c, 3, &b.id, 3).unwrap();\n        assert_ne!(swap_delta(&b, &c).unwrap(), Sum::zero());\n    }\n\n    #[test]\n    fn forged_segment_is_rejected() {\n        let repo = populated(\"forge\");\n        let packed = temp_dir(\"forge-packed\");\n        let manifest = pack(&repo, &packed, 1, \"\", 3).unwrap();\n        let segid = manifest.segments.keys().next().unwrap().clone();\n        // Truncate the .pk: fetch-time hash check must reject before decode.\n        let pk_path = packed.join(\"seg\").join(format!(\"{segid}.pk\"));\n        let mut pk = fs::read(&pk_path).unwrap();\n        pk.pop();\n        fs::write(&pk_path, &pk).unwrap();\n        assert!(unpack_dir(&packed, &temp_dir(\"forge-dest\")).is_err());\n    }\n}\n","/src/patch.rs":"//! \u00a74 Patches: intent form and applied form, and the distinction matters.\n//!\n//! Intent is span operations with content-addressed, position-independent\n//! preconditions; it commutes and travels.  Realization is the concrete\n//! element delta an application produced against the state it met; it is a\n//! fact about one application.  The log records both, so the sum can be\n//! replayed and inverted by pure arithmetic without re-running span logic.\n\nuse serde::{Deserialize, Serialize};\n\nuse crate::blobs::BlobStore;\nuse crate::ident::{ElementRecord, Sum, sha3_hex, validate_mode, validate_path};\nuse crate::manifest::Manifest;\nuse crate::{Error, Result, b64};\n\n/////////////////////////////////////////////// ops ///////////////////////////////////////////////\n\n/// One span operation.  Serialized externally tagged, matching the README:\n/// `{\"edit\": {...}}`, `{\"create\": {...}}`, `{\"delete\": {...}}`,\n/// `{\"chmod\": {...}}`.\n#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\n#[serde(rename_all = \"lowercase\")]\npub enum Op {\n    /// Replace `old_str` with `new_str` in the blob at `path`.  The\n    /// precondition is that `old_str` occurs in the current blob exactly\n    /// once; widening `old_str` with context until unique makes the span\n    /// content-addressed within the file and position-independent.\n    Edit {\n        /// The element to edit.\n        path: String,\n        /// The span consumed; must occur exactly once.\n        old_str: String,\n        /// The replacement.\n        new_str: String,\n    },\n    /// Create a new element.  The precondition is the path's absence.\n    Create {\n        /// The path to create.\n        path: String,\n        /// The new element's mode.\n        mode: String,\n        /// Content by blob-store reference (SPEC \u00a72.5).  A portable patch\n        /// bundle is the intent JSON plus its referenced blobs.\n        #[serde(skip_serializing_if = \"Option::is_none\")]\n        blob: Option\u003cString>,\n        /// Content inline, base64 (README \u00a74); the Andon path needs no blob\n        /// store to be populated in advance.\n        #[serde(skip_serializing_if = \"Option::is_none\")]\n        content_b64: Option\u003cString>,\n    },\n    /// Delete an element.  The precondition is the full blob hash \u2014 you\n    /// consume the whole element.\n    Delete {\n        /// The path to delete.\n        path: String,\n        /// The blob hash the element must carry.\n        blob: String,\n    },\n    /// Change an element's mode.\n    Chmod {\n        /// The element to chmod.\n        path: String,\n        /// The mode the element must carry.\n        old_mode: String,\n        /// The mode to set.\n        new_mode: String,\n    },\n}\n\nimpl Op {\n    /// The path this op writes.\n    pub fn path(&self) -> &str {\n        match self {\n            Op::Edit { path, .. }\n            | Op::Create { path, .. }\n            | Op::Delete { path, .. }\n            | Op::Chmod { path, .. } => path,\n        }\n    }\n}\n\n/// Intent form: what an author writes.\n#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]\npub struct Intent {\n    /// The span operations, applied in sequence.\n    pub ops: Vec\u003cOp>,\n}\n\n///////////////////////////////////////////// realized ////////////////////////////////////////////\n\n/// One realized delta entry: the concrete element records removed and added.\n/// Either side may be null (create, delete).  Records are stored sans\n/// trailing LF, as JSON strings.\n#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]\npub struct RealizedEntry {\n    /// The element record consumed, if any.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub remove: Option\u003cString>,\n    /// The element record produced, if any.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub add: Option\u003cString>,\n}\n\nimpl RealizedEntry {\n    /// Parse the removed record, if present.\n    pub fn removed(&self) -> Result\u003cOption\u003cElementRecord>> {\n        self.remove.as_deref().map(ElementRecord::parse).transpose()\n    }\n\n    /// Parse the added record, if present.\n    pub fn added(&self) -> Result\u003cOption\u003cElementRecord>> {\n        self.add.as_deref().map(ElementRecord::parse).transpose()\n    }\n}\n\n/// The product of applying an intent: realized deltas plus the new blobs the\n/// application produced.  Blobs must be durable before any log line\n/// referencing them is appended (I8 write-ahead ordering), so they travel\n/// with the realization until the caller commits them.\n#[derive(Clone, Debug, Default, PartialEq, Eq)]\npub struct Realization {\n    /// The concrete element deltas, in op order.\n    pub realized: Vec\u003cRealizedEntry>,\n    /// New blob contents produced by the application, keyed by hash.\n    pub new_blobs: Vec\u003c(String, Vec\u003cu8>)>,\n}\n\n/// Fold a realized delta into a sum: new = old + \u03a3 neg(removes) + \u03a3 adds.\n/// This is pure arithmetic; adjudication (I9) happens in\n/// [`apply_realized_to_manifest`], never here.\npub fn apply_realized_to_sum(sum: &Sum, realized: &[RealizedEntry]) -> Result\u003cSum> {\n    let mut sum = sum.clone();\n    for entry in realized {\n        if let Some(removed) = entry.removed()? {\n            sum.remove(&removed.to_bytes());\n        }\n        if let Some(added) = entry.added()? {\n            sum.insert(&added.to_bytes());\n        }\n    }\n    Ok(sum)\n}\n\n/// Apply a realized delta to a manifest.  Every remove is membership-checked\n/// here \u2014 the placeholder-debt rule is enforced at application, always (I9).\npub fn apply_realized_to_manifest(manifest: &mut Manifest, realized: &[RealizedEntry]) -> Result\u003c()> {\n    for entry in realized {\n        if let Some(removed) = entry.removed()? {\n            manifest.remove(&removed)?;\n        }\n        if let Some(added) = entry.added()? {\n            manifest.insert(added)?;\n        }\n    }\n    Ok(())\n}\n\n////////////////////////////////////////////// apply //////////////////////////////////////////////\n\n/// Count the starting positions at which `needle` occurs in `haystack`,\n/// overlapping occurrences included.  Uniqueness means exactly one.\npub fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {\n    if needle.is_empty() || needle.len() > haystack.len() {\n        return 0;\n    }\n    (0..=haystack.len() - needle.len())\n        .filter(|&i| &haystack[i..i + needle.len()] == needle)\n        .count()\n}\n\n/// Validate and apply an intent against a manifest and blob store.  On any\n/// failure, nothing is written anywhere (\u00a72.8 step 2: any failure \u2192 write\n/// nothing).  On success the manifest reflects the new state and the\n/// returned realization carries the deltas and new blob contents.\npub fn apply_intent(\n    intent: &Intent,\n    manifest: &mut Manifest,\n    blobs: &BlobStore,\n) -> Result\u003cRealization> {\n    // Validate-then-mutate: work on a scratch manifest so a mid-intent\n    // failure leaves the caller's state untouched.\n    let mut scratch = manifest.clone();\n    let mut realization = Realization::default();\n    let read_blob = |hash: &str, realization: &Realization| -> Result\u003cVec\u003cu8>> {\n        for (new_hash, content) in &realization.new_blobs {\n            if new_hash == hash {\n                return Ok(content.clone());\n            }\n        }\n        blobs.get(hash)\n    };\n    for op in &intent.ops {\n        validate_path(op.path())?;\n        match op {\n            Op::Edit { path, old_str, new_str } => {\n                let element = scratch.get(path).cloned().ok_or_else(|| {\n                    Error::Precondition(format!(\"edit of absent path: {path}\"))\n                })?;\n                let content = read_blob(&element.blob, &realization)?;\n                let n = count_occurrences(&content, old_str.as_bytes());\n                if n != 1 {\n                    return Err(Error::Precondition(format!(\n                        \"old_str occurs {n} times in {path}; exactly one required\"\n                    )));\n                }\n                let at = content\n                    .windows(old_str.len())\n                    .position(|w| w == old_str.as_bytes())\n                    .expect(\"counted exactly one occurrence\");\n                let mut new_content = Vec::with_capacity(\n                    content.len() - old_str.len() + new_str.len(),\n                );\n                new_content.extend_from_slice(&content[..at]);\n                new_content.extend_from_slice(new_str.as_bytes());\n                new_content.extend_from_slice(&content[at + old_str.len()..]);\n                let new_hash = sha3_hex(&new_content);\n                let new_record = ElementRecord::new(&element.mode, path, &new_hash)?;\n                scratch.remove(&element)?;\n                scratch.insert(new_record.clone())?;\n                realization.new_blobs.push((new_hash, new_content));\n                realization.realized.push(RealizedEntry {\n                    remove: Some(element.to_line()),\n                    add: Some(new_record.to_line()),\n                });\n            }\n            Op::Create { path, mode, blob, content_b64 } => {\n                validate_mode(mode)?;\n                if scratch.get(path).is_some() {\n                    return Err(Error::Precondition(format!(\"create of present path: {path}\")));\n                }\n                let hash = match (blob, content_b64) {\n                    (Some(hash), None) => {\n                        let known_new =\n                            realization.new_blobs.iter().any(|(h, _)| h == hash);\n                        if !known_new && !blobs.has(hash)? {\n                            return Err(Error::Precondition(format!(\n                                \"create references absent blob {hash}\"\n                            )));\n                        }\n                        hash.clone()\n                    }\n                    (None, Some(b64_content)) => {\n                        let content = b64::decode(b64_content)?;\n                        let hash = sha3_hex(&content);\n                        realization.new_blobs.push((hash.clone(), content));\n                        hash\n                    }\n                    _ => {\n                        return Err(Error::Invalid(\n                            \"create carries exactly one of blob, content_b64\".to_string(),\n                        ));\n                    }\n                };\n                let record = ElementRecord::new(mode, path, &hash)?;\n                scratch.insert(record.clone())?;\n                realization\n                    .realized\n                    .push(RealizedEntry { remove: None, add: Some(record.to_line()) });\n            }\n            Op::Delete { path, blob } => {\n                let element = scratch.get(path).cloned().ok_or_else(|| {\n                    Error::Precondition(format!(\"delete of absent path: {path}\"))\n                })?;\n                if &element.blob != blob {\n                    return Err(Error::Precondition(format!(\n                        \"delete of {path}: blob {blob} does not match element {}\",\n                        element.blob\n                    )));\n                }\n                scratch.remove(&element)?;\n                realization\n                    .realized\n                    .push(RealizedEntry { remove: Some(element.to_line()), add: None });\n            }\n            Op::Chmod { path, old_mode, new_mode } => {\n                validate_mode(new_mode)?;\n                let element = scratch.get(path).cloned().ok_or_else(|| {\n                    Error::Precondition(format!(\"chmod of absent path: {path}\"))\n                })?;\n                if &element.mode != old_mode {\n                    return Err(Error::Precondition(format!(\n                        \"chmod of {path}: mode {old_mode} does not match element {}\",\n                        element.mode\n                    )));\n                }\n                let new_record = ElementRecord::new(new_mode, path, &element.blob)?;\n                scratch.remove(&element)?;\n                scratch.insert(new_record.clone())?;\n                realization.realized.push(RealizedEntry {\n                    remove: Some(element.to_line()),\n                    add: Some(new_record.to_line()),\n                });\n            }\n        }\n    }\n    *manifest = scratch;\n    Ok(realization)\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    fn store(name: &str) -> BlobStore {\n        let dir =\n            std::env::temp_dir().join(format!(\"abelian-patch-{name}-{}\", std::process::id()));\n        let _ = std::fs::remove_dir_all(&dir);\n        BlobStore::init(dir).unwrap()\n    }\n\n    fn seeded(name: &str, content: &[u8]) -> (Manifest, BlobStore, ElementRecord) {\n        let blobs = store(name);\n        let hash = blobs.put(content).unwrap();\n        let record = ElementRecord::new(\"100644\", \"/src/main.rs\", &hash).unwrap();\n        let manifest = Manifest::from_records([record.clone()]).unwrap();\n        (manifest, blobs, record)\n    }\n\n    #[test]\n    fn edit_applies_and_realizes() {\n        let (mut manifest, blobs, old) =\n            seeded(\"edit\", b\"fn main() { println!(\\\"hello\\\"); }\\n\");\n        let intent = Intent {\n            ops: vec![Op::Edit {\n                path: \"/src/main.rs\".to_string(),\n                old_str: \"hello\".to_string(),\n                new_str: \"hello, abelian\".to_string(),\n            }],\n        };\n        let mut sum = manifest.sum();\n        let realization = apply_intent(&intent, &mut manifest, &blobs).unwrap();\n        assert_eq!(realization.realized.len(), 1);\n        assert_eq!(realization.realized[0].remove, Some(old.to_line()));\n        sum = apply_realized_to_sum(&sum, &realization.realized).unwrap();\n        assert_eq!(sum, manifest.sum(), \"arithmetic must agree with the manifest\");\n        let (hash, content) = &realization.new_blobs[0];\n        assert_eq!(*hash, sha3_hex(content));\n        assert!(content.windows(7).any(|w| w == b\"abelian\"));\n    }\n\n    #[test]\n    fn edit_requires_unique_span() {\n        let (mut manifest, blobs, _) = seeded(\"unique\", b\"aaa bbb aaa\\n\");\n        let mut hit = |old: &str| {\n            apply_intent(\n                &Intent {\n                    ops: vec![Op::Edit {\n                        path: \"/src/main.rs\".to_string(),\n                        old_str: old.to_string(),\n                        new_str: \"x\".to_string(),\n                    }],\n                },\n                &mut manifest,\n                &blobs,\n            )\n        };\n        assert!(matches!(hit(\"aaa\"), Err(Error::Precondition(_))), \"two matches\");\n        assert!(matches!(hit(\"zzz\"), Err(Error::Precondition(_))), \"zero matches\");\n        assert!(hit(\"bbb\").is_ok(), \"one match\");\n    }\n\n    #[test]\n    fn failure_writes_nothing() {\n        let (mut manifest, blobs, _) = seeded(\"atomic\", b\"one two\\n\");\n        let before = manifest.clone();\n        let intent = Intent {\n            ops: vec![\n                Op::Edit {\n                    path: \"/src/main.rs\".to_string(),\n                    old_str: \"one\".to_string(),\n                    new_str: \"1\".to_string(),\n                },\n                Op::Edit {\n                    path: \"/src/main.rs\".to_string(),\n                    old_str: \"absent\".to_string(),\n                    new_str: \"x\".to_string(),\n                },\n            ],\n        };\n        assert!(apply_intent(&intent, &mut manifest, &blobs).is_err());\n        assert_eq!(manifest, before, \"mid-intent failure must leave state untouched\");\n    }\n\n    #[test]\n    fn create_delete_chmod() {\n        let blobs = store(\"cdc\");\n        let mut manifest = Manifest::new();\n        let content = b\"#!/bin/sh\\necho hi\\n\";\n        let intent = Intent {\n            ops: vec![Op::Create {\n                path: \"/tools/apply\".to_string(),\n                mode: \"100644\".to_string(),\n                blob: None,\n                content_b64: Some(b64::encode(content)),\n            }],\n        };\n        let r = apply_intent(&intent, &mut manifest, &blobs).unwrap();\n        let hash = sha3_hex(content);\n        assert_eq!(r.new_blobs[0].0, hash);\n        assert!(manifest.get(\"/tools/apply\").is_some());\n\n        // Creating again violates the absence precondition.\n        assert!(apply_intent(&intent, &mut manifest.clone(), &blobs).is_err());\n\n        let chmod = Intent {\n            ops: vec![Op::Chmod {\n                path: \"/tools/apply\".to_string(),\n                old_mode: \"100644\".to_string(),\n                new_mode: \"100755\".to_string(),\n            }],\n        };\n        apply_intent(&chmod, &mut manifest, &blobs).unwrap();\n        assert_eq!(manifest.get(\"/tools/apply\").unwrap().mode, \"100755\");\n\n        // Delete consumes the whole element: wrong blob hash refuses.\n        let bad = Intent {\n            ops: vec![Op::Delete {\n                path: \"/tools/apply\".to_string(),\n                blob: \"0\".repeat(64),\n            }],\n        };\n        assert!(apply_intent(&bad, &mut manifest, &blobs).is_err());\n        let good = Intent {\n            ops: vec![Op::Delete { path: \"/tools/apply\".to_string(), blob: hash }],\n        };\n        apply_intent(&good, &mut manifest, &blobs).unwrap();\n        assert!(manifest.is_empty());\n    }\n\n    #[test]\n    fn intent_json_matches_readme_shape() {\n        let json = r#\"{\"ops\": [\n            {\"edit\": {\"path\": \"/src/main.rs\", \"old_str\": \"a\", \"new_str\": \"b\"}},\n            {\"delete\": {\"path\": \"/old.rs\", \"blob\": \"ab12\"}},\n            {\"chmod\": {\"path\": \"/tools/apply\", \"old_mode\": \"100644\", \"new_mode\": \"100755\"}}\n        ]}\"#;\n        let intent: Intent = serde_json::from_str(json).unwrap();\n        assert_eq!(intent.ops.len(), 3);\n        let round = serde_json::to_string(&intent).unwrap();\n        let again: Intent = serde_json::from_str(&round).unwrap();\n        assert_eq!(intent, again);\n    }\n\n    #[test]\n    fn realized_arithmetic_inverts() {\n        let (mut manifest, blobs, _) = seeded(\"invert\", b\"before\\n\");\n        let sum_before = manifest.sum();\n        let intent = Intent {\n            ops: vec![Op::Edit {\n                path: \"/src/main.rs\".to_string(),\n                old_str: \"before\".to_string(),\n                new_str: \"after\".to_string(),\n            }],\n        };\n        let r = apply_intent(&intent, &mut manifest, &blobs).unwrap();\n        let sum_after = apply_realized_to_sum(&sum_before, &r.realized).unwrap();\n        // Undo is the inverse: swap removes and adds.\n        let inverse: Vec\u003cRealizedEntry> = r\n            .realized\n            .iter()\n            .map(|e| RealizedEntry { remove: e.add.clone(), add: e.remove.clone() })\n            .collect();\n        assert_eq!(apply_realized_to_sum(&sum_after, &inverse).unwrap(), sum_before);\n    }\n}\n"},"patches":{"a":{"commit":"ff3f39b","fork":"serve","prose":"iterate map keys directly in restore","path":"/src/serve.rs","old":"    for (fork, _) in &unpacked.manifest.forks {","new":"    for fork in unpacked.manifest.forks.keys() {"},"b":{"commit":"41ce09a","fork":"patch","prose":"assert the complete realized blob content","path":"/src/patch.rs","old":"        assert!(content.windows(7).any(|w| w == b\"abelian\"));","new":"        assert_eq!(content, b\"fn main() { println!(\\\"hello, abelian\\\"); }\\n\");"},"c":{"commit":"0ae70f5","fork":"rename","prose":"rename the project from abelian to tally","path":"/src/patch.rs","old":"hello, abelian","new":"hello, tally","old_widened":"                new_str: \"hello, abelian\".to_string(),","new_widened":"                new_str: \"hello, tally\".to_string(),"}},"expect":{"stock":"215faa41c9b38c2133ee5d13f18608ef780b210bc9d716064a1ec5a0abe25658","foil":"215faa41c9b38c2133ee5d13f18608ef780b210bc9d716064a1ec5a0abe25658","after_a":"4728514e2e62ab6ee75934b4db424a6c19595fd2cadafe8fd2465f1aa2f7642b"}}</script>
+<script>
+// SHA3-256 (Keccak-f[1600], 0x06 domain padding) over 32-bit lane halves.
+// Round constants derived from the LFSR rather than tabled by hand.
+const RC_LO = new Int32Array(24), RC_HI = new Int32Array(24);
+(function () {
+  let lfsr = 1;
+  for (let r = 0; r < 24; r++) {
+    let lo = 0, hi = 0;
+    for (let j = 0; j <= 6; j++) {
+      const bit = (lfsr & 1) !== 0;
+      lfsr = (lfsr & 0x80) ? ((lfsr << 1) ^ 0x71) & 0xff : (lfsr << 1) & 0xff;
+      if (bit) {
+        const pos = (1 << j) - 1;            // 0,1,3,7,15,31,63
+        if (pos < 32) lo ^= (1 << pos);
+        else hi ^= (1 << (pos - 32));
+      }
+    }
+    RC_LO[r] = lo; RC_HI[r] = hi;
+  }
+})();
+
+const ROT = [0,1,62,28,27,36,44,6,55,20,3,10,43,25,39,41,45,15,21,8,18,2,61,56,14];
+
+function keccakf(s) { // s: Int32Array(50), lane i at [2i]=lo, [2i+1]=hi
+  const bcLo = new Int32Array(5), bcHi = new Int32Array(5);
+  const tLo = new Int32Array(25), tHi = new Int32Array(25);
+  for (let round = 0; round < 24; round++) {
+    // theta
+    for (let x = 0; x < 5; x++) {
+      let lo = 0, hi = 0;
+      for (let y = 0; y < 5; y++) { lo ^= s[2*(x+5*y)]; hi ^= s[2*(x+5*y)+1]; }
+      bcLo[x] = lo; bcHi[x] = hi;
+    }
+    for (let x = 0; x < 5; x++) {
+      const p = (x + 4) % 5, n = (x + 1) % 5;
+      const rLo = (bcLo[n] << 1) | (bcHi[n] >>> 31);
+      const rHi = (bcHi[n] << 1) | (bcLo[n] >>> 31);
+      const dLo = bcLo[p] ^ rLo, dHi = bcHi[p] ^ rHi;
+      for (let y = 0; y < 5; y++) { s[2*(x+5*y)] ^= dLo; s[2*(x+5*y)+1] ^= dHi; }
+    }
+    // rho + pi
+    for (let i = 0; i < 25; i++) {
+      const n = ROT[i], lo = s[2*i], hi = s[2*i+1];
+      let rl, rh;
+      if (n === 0) { rl = lo; rh = hi; }
+      else if (n < 32) { rl = (lo << n) | (hi >>> (32 - n)); rh = (hi << n) | (lo >>> (32 - n)); }
+      else if (n === 32) { rl = hi; rh = lo; }
+      else { const m = n - 32; rl = (hi << m) | (lo >>> (32 - m)); rh = (lo << m) | (hi >>> (32 - m)); }
+      const x = i % 5, y = (i / 5) | 0;
+      const j = y + 5 * ((2 * x + 3 * y) % 5);   // pi: A'[y, 2x+3y] = A[x, y]
+      tLo[j] = rl; tHi[j] = rh;
+    }
+    // chi
+    for (let y = 0; y < 5; y++) {
+      for (let x = 0; x < 5; x++) {
+        const i = x + 5*y;
+        s[2*i]   = tLo[i] ^ ((~tLo[(x+1)%5 + 5*y]) & tLo[(x+2)%5 + 5*y]);
+        s[2*i+1] = tHi[i] ^ ((~tHi[(x+1)%5 + 5*y]) & tHi[(x+2)%5 + 5*y]);
+      }
+    }
+    // iota
+    s[0] ^= RC_LO[round]; s[1] ^= RC_HI[round];
+  }
+}
+
+function sha3_256(bytes) {
+  const RATE = 136;
+  const s = new Int32Array(50);
+  const block = new Uint8Array(RATE);
+  let off = 0;
+  const absorb = () => {
+    for (let i = 0; i < RATE / 8; i++) {
+      let lo = 0, hi = 0;
+      for (let b = 0; b < 4; b++) lo |= block[8*i+b] << (8*b);
+      for (let b = 0; b < 4; b++) hi |= block[8*i+4+b] << (8*b);
+      s[2*i] ^= lo; s[2*i+1] ^= hi;
+    }
+    keccakf(s);
+  };
+  while (off + RATE <= bytes.length) { block.set(bytes.subarray(off, off + RATE)); absorb(); off += RATE; }
+  const rem = bytes.length - off;
+  block.fill(0);
+  block.set(bytes.subarray(off));
+  block[rem] ^= 0x06;
+  block[RATE - 1] ^= 0x80;
+  absorb();
+  let hex = '';
+  for (let i = 0; i < 4; i++) {
+    for (const w of [s[2*i], s[2*i+1]]) {
+      for (let b = 0; b < 4; b++) hex += ((w >>> (8*b)) & 0xff).toString(16).padStart(2, '0');
+    }
+  }
+  return hex;
+}
+
+// ---- setsum: eight u32 columns, one prime each (ANDON.md §2) --------------
+const PRIMES = [4294967291, 4294967279, 4294967231, 4294967197,
+                4294967189, 4294967161, 4294967143, 4294967111];
+
+const zero = () => [0,0,0,0,0,0,0,0];
+
+function stateOf(bytes) {                 // sha3, read as 8 LE u32, reduce
+  const h = sha3_256(bytes);
+  const cols = [];
+  for (let i = 0; i < 8; i++) {
+    let v = 0;
+    for (let b = 3; b >= 0; b--) v = v * 256 + parseInt(h.slice(8*i + 2*b, 8*i + 2*b + 2), 16);
+    cols.push(v % PRIMES[i]);
+  }
+  return cols;
+}
+const addS = (a, b) => a.map((x, i) => (x + b[i]) % PRIMES[i]);
+const negS = (a) => a.map((x, i) => (PRIMES[i] - x) % PRIMES[i]);
+const sumHex = (s) => s.map(x => {
+  let h = '';
+  for (let b = 0; b < 4; b++) h += (Math.floor(x / 2**(8*b)) & 0xff).toString(16).padStart(2, '0');
+  return h;
+}).join('');
+
+
+
+
+/* ===================================================================== */
+const C = JSON.parse(document.getElementById('corpus').textContent);
+const enc = new TextEncoder();
+const $ = (id) => document.getElementById(id);
+const el = (t, c, txt) => { const n = document.createElement(t); if (c) n.className = c; if (txt != null) n.textContent = txt; return n; };
+const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+const recBytes = (m, p, h) => enc.encode(m + '\t' + p + '\t' + h + '\n');
+const hashCache = new Map();
+function sha3cached(text) {
+  let v = hashCache.get(text);
+  if (v === undefined) { v = sha3_256(enc.encode(text)); hashCache.set(text, v); }
+  return v;
+}
+
+/* ---- the model: everything derived, nothing stored ------------------- */
+
+function foldTree(tree) {
+  let s = zero();
+  for (const e of tree) s = addS(s, stateOf(recBytes(e.mode, e.path, e.blob)));
+  return s;
+}
+
+function applyPatch(tree, sum, texts, p, opts) {
+  const old = (opts && opts.widened) ? p.old_widened : p.old;
+  const neu = (opts && opts.widened) ? p.new_widened : p.new;
+  const text = texts[p.path];
+  const matches = text.split(old).length - 1;
+  if (matches !== 1) return { ok: false, matches, old };
+  let after = text.replace(old, neu);
+  if (opts && opts.corrupt) after = after + '\u0000';       // one byte, appended
+  const e = tree.find(x => x.path === p.path);
+  const oldRec = recBytes(e.mode, e.path, e.blob);
+  const newHash = sha3cached(after);
+  const newRec = recBytes(e.mode, e.path, newHash);
+  return {
+    ok: true, matches: 1, old,
+    tree: tree.map(x => x.path === p.path ? Object.assign({}, x, { blob: newHash }) : x),
+    texts: Object.assign({}, texts, { [p.path]: after }),
+    sum: addS(addS(sum, negS(stateOf(oldRec))), stateOf(newRec)),
+    delta: addS(negS(stateOf(oldRec)), stateOf(newRec)),
+    removeRec: new TextDecoder().decode(oldRec).replace(/\n$/, ''),
+    addRec: new TextDecoder().decode(newRec).replace(/\n$/, ''),
+    oldBlob: e.blob, newBlob: newHash, bytesIn: text.length, bytesOut: after.length,
+  };
+}
+
+const anchorTree = C.anchor.tree;
+const anchorTexts = C.blobs;
+const anchorSum = foldTree(anchorTree);
+
+/* ---- ui state -------------------------------------------------------- */
+const S = { beat: 0, order: 'ab', corrupt: false, widened: false, rename: false };
+
+function run() {
+  // Which patches land, in which order.
+  const seq = S.beat >= 5 && S.rename
+    ? [C.patches.b, C.patches.c]
+    : (S.order === 'ba' ? [C.patches.b, C.patches.a] : [C.patches.a, C.patches.b]);
+
+  let tree = anchorTree, sum = anchorSum, texts = anchorTexts;
+  let foil = anchorSum;
+  const steps = [];
+  for (let i = 0; i < seq.length; i++) {
+    const p = seq[i];
+    const isRename = p === C.patches.c;
+    const r = applyPatch(tree, sum, texts, p, {
+      widened: isRename && S.widened,
+      corrupt: S.corrupt && !isRename && i === 0,
+    });
+    steps.push({ patch: p, r });
+    if (!r.ok) break;
+    tree = r.tree; sum = r.sum; texts = r.texts;
+    // The foil never touches the tree: it adds the patch's own sum. A corrupt
+    // realization is *not* what the foil predicted, so predict from clean intent.
+    foil = addS(foil, i === 0 && S.corrupt && !isRename ? cleanDelta(p) : r.delta);
+  }
+  const halted = steps.some(s => !s.r.ok);
+  return { seq, steps, stockSum: sum, foilSum: foil, halted, tree, texts };
+}
+
+// What the foil predicts for a patch, from intent alone, against the anchor.
+const cleanDeltaCache = new Map();
+function cleanDelta(p) {
+  if (cleanDeltaCache.has(p.commit)) return cleanDeltaCache.get(p.commit);
+  const r = applyPatch(anchorTree, anchorSum, anchorTexts, p, {});
+  cleanDeltaCache.set(p.commit, r.delta);
+  return r.delta;
+}
+
+/* ---- the square ------------------------------------------------------ */
+const SQ = [
+  { id:'S',  x:70,  y:16, w:150, h:34, l1:'S  the tree', l2:'20 elements, no directories' },
+  { id:'S2', x:400, y:16, w:150, h:34, l1:"S′  the tree", l2:'after both patches land' },
+  { id:'Sg', x:70,  y:82, w:150, h:34, l1:'Σ  the sum',  l2:'setsum over 20 records', foil:true },
+  { id:'Sg2',x:400, y:82, w:150, h:34, l1:"Σ′  the sum", l2:'predicted, no files read', foil:true },
+];
+function drawSquare(lit) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = $('sq'); svg.textContent = '';
+  const mk = (t, a) => { const n = document.createElementNS(ns, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
+  const edges = [
+    { id:'top',  d:'M228 33 H392', tx:310, ty:26, label:'apply  a, b' },
+    { id:'bot',  d:'M228 99 H392', tx:310, ty:92, label:'add  Δa + Δb', foil:true },
+    { id:'left', d:'M145 54 V78',  tx:150, ty:70, label:'digest', anchor:'start' },
+    { id:'right',d:'M475 54 V78',  tx:480, ty:70, label:'digest', anchor:'start' },
+  ];
+  for (const e of edges) {
+    const g = mk('g', { class: 'sq-edge' + (lit.edges.includes(e.id) ? ' lit' : '') + (e.foil ? ' foil' : '') + (lit.bad && e.id === 'top' ? ' bad' : '') });
+    g.appendChild(mk('path', { d: e.d, 'marker-end': 'url(#ar)' }));
+    const t = mk('text', { x: e.tx, y: e.ty, 'text-anchor': e.anchor || 'middle' });
+    t.textContent = e.label; g.appendChild(t); svg.appendChild(g);
+  }
+  for (const n of SQ) {
+    const g = mk('g', { class: 'sq-node' + (lit.nodes.includes(n.id) ? ' lit' : '') + (n.foil ? ' foil' : '') });
+    g.appendChild(mk('rect', { x: n.x, y: n.y, width: n.w, height: n.h }));
+    const a = mk('text', { x: n.x + 9, y: n.y + 15 }); a.textContent = n.l1;
+    const b = mk('text', { x: n.x + 9, y: n.y + 27, opacity: .62 }); b.textContent = n.l2;
+    g.appendChild(a); g.appendChild(b); svg.appendChild(g);
+  }
+  const defs = mk('defs', {});
+  const m = mk('marker', { id:'ar', viewBox:'0 0 8 8', refX:7, refY:4, markerWidth:6, markerHeight:6, orient:'auto' });
+  m.appendChild(mk('path', { d:'M0 0 L8 4 L0 8 z', fill:'currentColor' }));
+  defs.appendChild(m); svg.appendChild(defs);
+}
+
+/* ---- the stick ------------------------------------------------------- */
+function drawStick(stock, foil, showStock, showFoil) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = $('stickvis'); svg.textContent = '';
+  const mk = (t, a) => { const n = document.createElementNS(ns, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
+  const X0 = 8, X1 = 612, W = X1 - X0, CW = W / 8;
+  const TOP = 4, KT = 32, KB = 40, BOT = 66, HW = 6;   // rails, kerf, wedge half-width
+  svg.appendChild(mk('rect', { class:'railbox', x:X0, y:TOP,  width:W, height:KT - TOP }));
+  svg.appendChild(mk('rect', { class:'railbox', x:X0, y:KB,   width:W, height:BOT - KB }));
+  for (let i = 1; i < 8; i++) {
+    svg.appendChild(mk('line', { class:'celldiv', x1:X0+i*CW, y1:TOP, x2:X0+i*CW, y2:KT }));
+    svg.appendChild(mk('line', { class:'celldiv', x1:X0+i*CW, y1:KB,  x2:X0+i*CW, y2:BOT }));
+  }
+  for (let i = 0; i < 8; i++) {
+    const left = X0 + i * CW, p = PRIMES[i];
+    const at = (v) => left + HW + 2 + (v / p) * (CW - 2*HW - 4);
+    const t = mk('text', { class:'priml', x:left + CW/2, y:BOT + 8, 'text-anchor':'middle' });
+    t.textContent = p; svg.appendChild(t);
+    if (!showStock && !showFoil) continue;
+    const xs = at(stock[i]), xf = at(foil[i]);
+    const same = showStock && showFoil && stock[i] === foil[i];
+    const cls = (showStock && showFoil && !same) ? 'notch-bad' : null;
+    if (showStock) svg.appendChild(mk('polygon', {
+      class: cls || 'notch-stock',
+      points: (xs-HW)+','+TOP+' '+(xs+HW)+','+TOP+' '+xs+','+KT }));
+    if (showFoil) svg.appendChild(mk('polygon', {
+      class: cls || 'notch-foil',
+      points: (xf-HW)+','+BOT+' '+(xf+HW)+','+BOT+' '+xf+','+KB }));
+    if (same) svg.appendChild(mk('line', { class:'kerf-join', x1:xs, y1:KT, x2:xs, y2:KB }));
+    else if (showStock && showFoil) svg.appendChild(mk('line', { class:'kerf-gap', x1:xs, y1:(KT+KB)/2, x2:xf, y2:(KT+KB)/2 }));
+  }
+}
+
+function hexOut(node, hex, other, on) {
+  node.className = node.className.replace(/\s*on\b/, '') + (on ? ' on' : '');
+  if (!on) { node.textContent = '—'; return; }
+  if (!other) { node.textContent = hex; return; }
+  node.textContent = '';
+  for (let i = 0; i < hex.length; i++) {
+    if (hex[i] === other[i]) node.appendChild(document.createTextNode(hex[i]));
+    else node.appendChild(el('span', 'd', hex[i]));
+  }
+}
+
+/* ---- stage renderers ------------------------------------------------- */
+function patchCard(p, r, foilStyle) {
+  const c = el('div', 'card' + (foilStyle ? ' foil' : ''));
+  const hd = el('div', 'hd');
+  hd.appendChild(el('span', 'fork', 'fork/' + p.fork));
+  hd.appendChild(el('span', null, p.commit));
+  c.appendChild(hd);
+  c.appendChild(el('div', 'prose', p.prose));
+  const op = el('div', 'op');
+  const old = r && r.old ? r.old : p.old;
+  const neu = (old === p.old_widened) ? p.new_widened : p.new;
+  op.innerHTML =
+    '<span class="k">edit </span><span class="path">' + esc(p.path) + '</span>\n' +
+    '<span class="minus">− ' + esc(old) + '</span>\n' +
+    '<span class="plus">+ ' + esc(neu) + '</span>';
+  c.appendChild(op);
+  if (r) {
+    const b = el('span', 'badge ' + (r.ok ? 'ok' : 'bad'),
+      r.ok ? 'old_str occurs 1×  ·  precondition met'
+           : 'old_str occurs ' + r.matches + '×  ·  refused');
+    c.appendChild(b);
+  }
+  return c;
+}
+
+function deltaCard(p, r) {
+  const c = el('div', 'card');
+  const hd = el('div', 'hd');
+  hd.appendChild(el('span', 'fork', 'realized  ' + p.fork));
+  hd.appendChild(el('span', null, r.bytesIn.toLocaleString() + ' B hashed'));
+  c.appendChild(hd);
+  const op = el('div', 'op');
+  op.innerHTML =
+    '<span class="minus">remove ' + esc(r.removeRec.replace(/\t/g, '  ')) + '</span>\n' +
+    '<span class="plus">add    ' + esc(r.addRec.replace(/\t/g, '  ')) + '</span>';
+  c.appendChild(op);
+  return c;
+}
+
+function matchView(text, needle) {
+  // Show every line containing needle, with the needle marked.
+  const lines = text.split('\n');
+  const hits = [];
+  lines.forEach((ln, i) => { if (ln.includes(needle)) hits.push([i + 1, ln]); });
+  const v = el('div', 'blobview');
+  v.innerHTML = hits.map(([n, ln]) =>
+    '<span class="ln">' + String(n).padStart(4) + '  </span>' +
+    esc(ln).split(esc(needle)).join('</span><mark' + (hits.length === 1 ? ' class="one"' : '') + '>' + esc(needle) + '</mark><span>')
+  ).join('\n');
+  return v;
+}
+
+const BEATS = [
+  {
+    name: 'Anchor',
+    lit: { nodes: ['S', 'Sg'], edges: ['left'] },
+    render(st, stage) {
+      stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+        'A state is a flat set of elements — <b>mode ⇥ path ⇥ sha3(blob)</b>. No trees, no directory objects: ' +
+        'hierarchy is a prefix query. Fold all twenty records through the setsum in <em>any order</em> and you get ' +
+        'the same 256 bits, because addition in an abelian group does not care.' }));
+      const g = el('div', 'cols');
+      const c = el('div', 'card');
+      const hd = el('div', 'hd');
+      hd.appendChild(el('span', 'fork', C.anchor.commit));
+      hd.appendChild(el('span', null, C.anchor.date));
+      c.appendChild(hd);
+      c.appendChild(el('div', 'prose', C.anchor.subject));
+      const recs = el('div', 'records');
+      for (const e of anchorTree) {
+        const d = el('div', 'in');
+        d.innerHTML = '<span class="m">' + e.mode + '</span> <span class="p">' + esc(e.path) + '</span> ' + e.blob.slice(0, 16) + '…';
+        recs.appendChild(d);
+      }
+      c.appendChild(recs);
+      g.appendChild(c);
+      const c2 = el('div', 'card');
+      const h2 = el('div', 'hd'); h2.appendChild(el('span', 'fork', 'the fold'));
+      h2.appendChild(el('span', null, '8 columns'));
+      c2.appendChild(h2);
+      const m = el('div', 'colmath');
+      m.innerHTML = anchorSum.map((v, i) =>
+        'col ' + i + '  <b>' + String(v).padStart(10) + '</b>  <span style="opacity:.5">mod</span> <i>' + PRIMES[i] + '</i>').join('<br>');
+      c2.appendChild(m);
+      g.appendChild(c2);
+      stage.appendChild(g);
+    },
+    stick: (st) => ({ stock: anchorSum, foil: anchorSum, showStock: true, showFoil: false }),
+    hex: (st) => ({ stock: sumHex(anchorSum), foil: null }),
+    verdict: () => ({ cls: '', text: 'Anchor sum computed from ' + anchorTree.length + ' element records.',
+                      sub: 'Reordering the fold changes nothing. That sentence is the whole design.' }),
+  },
+  {
+    name: 'Two forks',
+    lit: { nodes: ['S'], edges: [] },
+    render(st, stage) {
+      stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+        'Two agents fork from that anchor. Each emits a span operation — the same <b>old_str / new_str</b> pair ' +
+        'your harness already produces. The precondition is <em>already in the tool call</em>: old_str must occur ' +
+        'exactly once. Widen it with context until it does, and the span becomes content-addressed inside the ' +
+        'file, so it no longer depends on line numbers.' }));
+      const g = el('div', 'cols');
+      for (const p of [C.patches.a, C.patches.b]) {
+        g.appendChild(patchCard(p, applyPatch(anchorTree, anchorSum, anchorTexts, p, {})));
+      }
+      stage.appendChild(g);
+    },
+    stick: () => ({ stock: anchorSum, foil: anchorSum, showStock: true, showFoil: false }),
+    hex: () => ({ stock: sumHex(anchorSum), foil: null }),
+    verdict: () => ({ cls: '', text: 'Two patches, two disjoint paths.',
+                      sub: 'Nothing has been applied. Both preconditions were checked against the anchor bytes on this page.' }),
+  },
+  {
+    name: 'Stock',
+    lit: { nodes: ['S', 'S2'], edges: ['top', 'right'] },
+    render(st, stage) {
+      stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+        'The <b>stock</b> half: do the work. Replace the span, rehash the whole blob, swap one element record for ' +
+        'another, walk the tree. This is the expensive path — every byte of both files was hashed to get here.' }));
+      const g = el('div', 'cols');
+      for (const s of st.steps) if (s.r.ok) g.appendChild(deltaCard(s.patch, s.r));
+      stage.appendChild(g);
+    },
+    stick: (st) => ({ stock: st.stockSum, foil: st.foilSum, showStock: true, showFoil: false }),
+    hex: (st) => ({ stock: sumHex(st.stockSum), foil: null }),
+    verdict: (st) => ({ cls: '', text: 'Realized: two elements removed, two added.',
+                        sub: 'The realized delta is a fact about one application. The intent still travels on its own.' }),
+  },
+  {
+    name: 'Foil',
+    lit: { nodes: ['Sg', 'Sg2'], edges: ['bot'] },
+    render(st, stage) {
+      stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+        'The <b>foil</b> half: do not touch the tree. Take the anchor sum and add each patch\'s own delta — ' +
+        '<em>neg(removed) + added</em>, columnwise, mod eight primes. Eight additions per patch. No file was read.' }));
+      const g = el('div', 'cols');
+      const c = el('div', 'card foil');
+      const hd = el('div', 'hd'); hd.appendChild(el('span', 'fork', 'column arithmetic'));
+      hd.appendChild(el('span', null, 'col 0')); c.appendChild(hd);
+      const d0 = st.steps[0] && st.steps[0].r.ok ? st.steps[0].r.delta : zero();
+      const d1 = st.steps[1] && st.steps[1].r.ok ? st.steps[1].r.delta : zero();
+      const m = el('div', 'colmath');
+      m.innerHTML =
+        '<b>' + String(anchorSum[0]).padStart(10) + '</b>  Σ anchor<br>' +
+        '<i>+' + String(d0[0]).padStart(9) + '</i>  Δ first patch<br>' +
+        '<i>+' + String(d1[0]).padStart(9) + '</i>  Δ second patch<br>' +
+        '<span style="opacity:.45">mod ' + PRIMES[0] + '</span><br>' +
+        '<b>=' + String(st.foilSum[0]).padStart(9) + '</b>';
+      c.appendChild(m); g.appendChild(c);
+      const c2 = el('div', 'card foil');
+      const h2 = el('div', 'hd'); h2.appendChild(el('span', 'fork', 'cost'));
+      h2.appendChild(el('span', null, 'per patch')); c2.appendChild(h2);
+      c2.appendChild(Object.assign(el('div', 'colmath'), { innerHTML:
+        'stock &nbsp;<b>' + (st.steps.reduce((n, s) => n + (s.r.ok ? s.r.bytesIn : 0), 0)).toLocaleString() + ' bytes</b> hashed<br>' +
+        'foil &nbsp;&nbsp;<i>16 modular additions</i><br><br>' +
+        '<span style="opacity:.6">Same answer. The foil finishes first, and it finishes without the files.</span>' }));
+      g.appendChild(c2);
+      stage.appendChild(g);
+    },
+    stick: (st) => ({ stock: st.stockSum, foil: st.foilSum, showStock: false, showFoil: true }),
+    hex: (st) => ({ stock: null, foil: sumHex(st.foilSum) }),
+    verdict: () => ({ cls: '', text: 'Predicted without reading a single file.',
+                      sub: 'A merge you can address before you perform it.' }),
+  },
+  {
+    name: 'Settle',
+    lit: { nodes: ['S','S2','Sg','Sg2'], edges: ['top','bot','left','right'] },
+    opts: [
+      { kind:'label', text:'union order' },
+      { kind:'toggle', key:'order', val:'ab', label:'a then b' },
+      { kind:'toggle', key:'order', val:'ba', label:'b then a' },
+    ],
+    render(st, stage) {
+      const agree = sumHex(st.stockSum) === sumHex(st.foilSum);
+      stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+        'Press the halves together. The stock did the work; the foil did the arithmetic; settlement is whether the ' +
+        'notches still line up across the split. Change the union order and watch nothing happen — <em>that</em> is ' +
+        'the abelian part.' }));
+      const g = el('div', 'cols');
+      for (const s of st.steps) if (s.r.ok) g.appendChild(patchCard(s.patch, s.r));
+      stage.appendChild(g);
+      const c = el('div', 'card'); c.style.marginTop = '10px';
+      const hd = el('div', 'hd'); hd.appendChild(el('span', 'fork', 'what commutes, and why'));
+      hd.appendChild(el('span', null, agree ? 'aligned' : 'misaligned')); c.appendChild(hd);
+      c.appendChild(Object.assign(el('div', 'colmath'), { innerHTML:
+        'Two patches commute when neither one\'s writes land inside the other\'s <b>observed read set</b>, and their ' +
+        'write spans are disjoint. Conflict is a set intersection over reads the harness actually recorded — not ' +
+        'textual overlap, and not a guess. Neither of these two ever opened the other\'s file.' }));
+      stage.appendChild(c);
+    },
+    stick: (st) => ({ stock: st.stockSum, foil: st.foilSum, showStock: true, showFoil: true }),
+    hex: (st) => ({ stock: sumHex(st.stockSum), foil: sumHex(st.foilSum) }),
+    verdict: (st) => sumHex(st.stockSum) === sumHex(st.foilSum)
+      ? { cls:'ok', text:'The halves align.',
+          sub:'Both orders land on the same 64 characters. The merge is verifiable without trusting the merger.' }
+      : { cls:'bad', text:'The halves do not align.', sub:'Something between intent and realization is wrong.' },
+  },
+  {
+    name: 'Misalign',
+    lit: { nodes: ['S','S2','Sg','Sg2'], edges: ['top','bot','left','right'] },
+    opts: [
+      { kind:'label', text:'break it' },
+      { kind:'press', key:'corrupt', label:'flip one byte', danger:true },
+      { kind:'press', key:'rename', label:'land the rename patch' },
+      { kind:'press', key:'widened', label:'widen old_str', dep:'rename' },
+    ],
+    render(st, stage) {
+      if (!S.rename && !S.corrupt) {
+        stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+          'Everything above is the system agreeing with itself, which proves nothing on its own. Two ways to break ' +
+          'it, both drawn from this repository. <b>Flip one byte</b> corrupts a realized blob after the patch ' +
+          'applied. <b>Land the rename patch</b> replays commit 0ae70f5 — a real edit whose precondition was ' +
+          'unique at the anchor and is not unique any more.' }));
+        const g = el('div', 'cols');
+        for (const s of st.steps) if (s.r.ok) g.appendChild(deltaCard(s.patch, s.r));
+        stage.appendChild(g);
+        return;
+      }
+      if (S.rename) {
+        const failed = st.steps.find(s => !s.r.ok);
+        stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+          'A third real patch: <b>0ae70f5</b>, the commit that renamed the project. Its old_str was unique at the ' +
+          'anchor. After the test patch landed, the same string occurs twice in the same file — so the precondition ' +
+          'is not met and the patch is <em>refused</em>, not guessed at. The fix is the one the real commit used: ' +
+          'widen old_str with surrounding context until it is unique again.' }));
+        const g = el('div', 'cols');
+        const last = st.steps[st.steps.length - 1];
+        g.appendChild(patchCard(C.patches.c, last.r));
+        const c = el('div', 'card');
+        const hd = el('div', 'hd');
+        hd.appendChild(el('span', 'fork', 'matches in /src/patch.rs'));
+        hd.appendChild(el('span', null, last.r.ok ? '1 — applies' : last.r.matches + ' — ambiguous'));
+        c.appendChild(hd);
+        const src = (st.texts && st.texts['/src/patch.rs']) || anchorTexts['/src/patch.rs'];
+        c.appendChild(matchView(src, last.r.old));
+        g.appendChild(c);
+        stage.appendChild(g);
+      } else {
+        stage.appendChild(Object.assign(el('p', 'lede'), { innerHTML:
+          'Append one byte to a realized blob. The element record changes, so its sha3 changes, so all eight columns ' +
+          'move — the stock lands somewhere the foil never predicted. Detection is <em>one comparison</em>, not a ' +
+          'diff: you learn the merge is bad without reading any of it. What this does not tell you is <b>where</b> ' +
+          'the damage is; that is what the manifest and the per-line sum_after are for.' }));
+        const g = el('div', 'cols');
+        for (const s of st.steps) if (s.r.ok) g.appendChild(deltaCard(s.patch, s.r));
+        stage.appendChild(g);
+      }
+    },
+    stick: (st) => ({ stock: st.stockSum, foil: st.foilSum, showStock: !st.halted, showFoil: !st.halted }),
+    hex: (st) => st.halted ? { stock: null, foil: null }
+                           : { stock: sumHex(st.stockSum), foil: sumHex(st.foilSum) },
+    
+    verdict: (st) => {
+      if (!S.rename && !S.corrupt) return { cls:'', text:'Nothing broken yet.',
+        sub:'Pick one of the two below. Both are real; neither is staged.' };
+      if (st.halted) return { cls:'bad', text:'Refused at the precondition.',
+        sub:'Stratum 3 declines to guess. Nothing lands, nothing is corrupted, and the agent gets a fact it can act on — two matches, here and here.' };
+      const agree = sumHex(st.stockSum) === sumHex(st.foilSum);
+      return agree
+        ? { cls:'ok', text:'The halves align.', sub:'Widened old_str is unique again, so the patch lands and the arithmetic agrees. This is the fix the real commit used.' }
+        : { cls:'bad', text:'The halves do not align.',
+            sub:'Predicted and realized disagree, so the merge is bad. Cheap to detect, and it says nothing yet about where.' };
+    },
+  },
+];
+
+/* ---- render loop ----------------------------------------------------- */
+function render() {
+  const b = BEATS[S.beat];
+  const st = run();
+  drawSquare({ nodes: b.lit.nodes, edges: b.lit.edges, bad: S.beat === 5 && st.halted });
+  const stage = $('stage'); stage.textContent = '';
+  b.render(st, stage);
+  const sk = b.stick(st);
+  drawStick(sk.stock, sk.foil, sk.showStock, sk.showFoil);
+  const h = b.hex(st);
+  hexOut($('hex-stock'), h.stock, h.foil, !!h.stock);
+  hexOut($('hex-foil'), h.foil, h.stock, !!h.foil);
+  const v = b.verdict(st);
+  $('verdict').className = 'verdict ' + (v.cls || '');
+  $('verdict').textContent = v.text;
+  $('verdict').appendChild(Object.assign(el('span', 'sub'), { textContent: v.sub }));
+  // beat tabs
+  const tabs = $('beats'); tabs.textContent = '';
+  BEATS.forEach((bb, i) => {
+    const t = el('button', 'beat');
+    t.innerHTML = '<span class="n">' + String(i).padStart(2, '0') + '</span>' + bb.name;
+    t.setAttribute('aria-current', i === S.beat ? 'true' : 'false');
+    t.onclick = () => { S.beat = i; render(); };
+    tabs.appendChild(t);
+  });
+  // options
+  const opts = $('opts'); opts.textContent = '';
+  for (const o of (b.opts || [])) {
+    if (o.dep && !S[o.dep]) continue;
+    if (o.kind === 'label') { opts.appendChild(el('span', 'optlab', o.text)); continue; }
+    const btn = el('button', 'opt' + (o.danger ? ' danger' : ''), o.label);
+    const on = o.kind === 'toggle' ? S[o.key] === o.val : !!S[o.key];
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.onclick = () => {
+      if (o.kind === 'toggle') S[o.key] = o.val;
+      else {
+        S[o.key] = !S[o.key];
+        if (o.key === 'rename') { S.corrupt = false; S.widened = false; }
+        if (o.key === 'corrupt' && S.corrupt) { S.rename = false; S.widened = false; }
+      }
+      render();
+    };
+    opts.appendChild(btn);
+  }
+}
+
+$('ey-commit').textContent = C.anchor.commit;
+$('ey-n').textContent = anchorTree.length;
+addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' && S.beat < BEATS.length - 1) { S.beat++; render(); }
+  if (e.key === 'ArrowLeft' && S.beat > 0) { S.beat--; render(); }
+});
+render();
+</script>
