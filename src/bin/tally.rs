@@ -954,11 +954,13 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         view: Option<String>,
         #[arrrg(flag, "Render the un-fused chain: every line, full.")]
         raw: bool,
+        #[arrrg(flag, "Newest first (the default is oldest first).")]
+        reverse: bool,
         #[arrrg(flag, "Plain output: no terminal color (the default on a terminal).")]
         nocolor: bool,
     }
     let (options, free) = Options::from_arguments_relaxed(
-        "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--nocolor] [rev | from..to]",
+        "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--reverse] [--nocolor] [rev | from..to]",
         args,
     );
     reject_extra("log", &free, 1)?;
@@ -981,14 +983,24 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     let history = &history[bounds.start.min(end)..end];
     if options.raw {
         // The un-fused chain: every line, full.  Like the fused view, lines
-        // print oldest first — the log reads in ascending time.
+        // print oldest first — the log reads in ascending time — unless
+        // --reverse flips it to descending.
         let mut shown = bounds.fork.clone();
-        for (fork, line) in history {
-            if fork != &shown {
+        let mut print = |fork: &str, line: &tally::log::LogLine| {
+            if fork != shown {
                 println!("{}", palette.bold(&format!("--- {fork} ---")));
-                shown = fork.clone();
+                fork.clone_into(&mut shown);
             }
             print_line_full(line, &palette);
+        };
+        if options.reverse {
+            for (fork, line) in history.iter().rev() {
+                print(fork, line);
+            }
+        } else {
+            for (fork, line) in history {
+                print(fork, line);
+            }
         }
         return Ok(());
     }
@@ -1003,7 +1015,13 @@ fn cmd_log(args: &[&str]) -> Result<()> {
             .collect()
     });
     let lines: Vec<tally::log::LogLine> = history.iter().map(|(_, line)| line.clone()).collect();
-    for beat in fused_beats(&lines, view.as_deref()) {
+    // Beats resolve in chain order — fusing is a function of the chain — and
+    // --reverse flips only the rendering.
+    let mut beats = fused_beats(&lines, view.as_deref());
+    if options.reverse {
+        beats.reverse();
+    }
+    for beat in beats {
         match beat {
             Beat::Fused { fuse, lines } => {
                 let name = fuse
