@@ -48,23 +48,15 @@ yield the exact setsum predicted, you know that the merge is corrupt.
 For more about what's included, see `git log --oneline`.  It follows its own pattern of AI does the
 work until a human's in the loop.
 
-## What's Not Implemented
+## What's Implemented
 
-- I haven't implemented integration with any editor beyond pi.
-- Thorough testing of repositories at scale.  I know the pack and push algorithm needs work to be
-  efficient.
+- A working Pi integration
+- A working tally protocol that can work against GitHub by importing from Git an exporting a PR.
+- Naive push to object storage.
 
 ## Next Steps
 
-arxiv rejected this as a paper saying it was not a sufficient contribution to warrant submission.
-Given the shit papers I've seen from arxiv over the years, and the fact that arxiv is supposed to be
-a venue where people who can timestamp work publicly, this stings.
+I want to build a GitHub clone.  Every major lab has an incentive to make one that works in their
+harness, and that means lock-in.
 
-I believe in open research and part of that is being able to timestamp your work.  I wanted to have
-the arxiv paper as an anchor so I could comfortably reach out to strangers and ask them to consider
-this work.
-
-If you disagree with arxiv, and are on the PC for a committee that would accept this work, please
-reach out.
-
-Otherwise, I'm going to build this in the open and am looking for contributors.
+Tally is open under the Apache 2.0 license.  Someone needs to build the GitHub replacement.
