@@ -4,6 +4,12 @@ Tally is an agents-only version control system that represents patches as morphi
 It is designed to plug into a GitHub-centric workflow, allowing you to adopt Tally one developer at
 a time.
 
+Unpacking it:
+- What git calls a tree is an object in the groupoid.
+- What git represents as a difference between trees is a patch.
+- An algebra connects the two such that some patches transform one object into another.
+- It works with GitHub, delivering incremental benefit without requiring a whole-team switch.
+
 ## The name
 
 Tally is named for the split tally stick — the twelfth century's distributed, two-party, checksummed
@@ -46,7 +52,7 @@ work until a human's in the loop.
 ## What's Implemented
 
 - A working Pi integration
-- A working tally protocol that can work against GitHub by importing from Git an exporting a PR.
+- A working tally protocol that can work against GitHub by importing from Git and exporting a PR.
 - Naive push to object storage.
 
 ## What's Not Implemented
