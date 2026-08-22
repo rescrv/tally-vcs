@@ -1,23 +1,16 @@
 # Tally
 
-Tally is an agents-only version control system that represents patches as
-morphisms in a groupoid.  That's the entire design.
-
-Unpacking it:
-- What git calls a tree is an object in the groupoid.
-- What git represents as a difference between trees is a patch.
-- An algebra connects the two such that some patches transform one object into another.
-
-It's a groupoid.
+Tally is an agents-only version control system that represents patches as morphisms in a groupoid.
+That's the entire design.  It is designed to plug into a GitHub-centric workflow, allowing you to
+adopt Tally one developer at a time.
 
 ## The name
 
-Tally is named for the split tally stick — the twelfth century's distributed,
-two-party, checksummed ledger.  Notch the stick, split it lengthwise, keep the
-*stock*, hand over the *foil*; settlement is whether the halves still align.
-State identity here forms an abelian group — patches are elements, composition
-is addition, undo is the inverse, and order never matters — and `tally union`
-is pressing the two halves back together to see that they agree.
+Tally is named for the split tally stick — the twelfth century's distributed, two-party, checksummed
+ledger.  Notch the stick, split it lengthwise, keep the *stock*, hand over the *foil*; settlement is
+whether the halves still align.  State identity here forms an abelian group — patches are elements,
+composition is addition, undo is the inverse, and order never matters — and `tally union` is
+pressing the two halves back together to see that they agree.
 
 ## Quick Start
 
@@ -45,6 +38,8 @@ whose digest is the setsum operator on the commit and patch digests.
 This makes the outcome of a merge independently verifiable and addressable.  If the merge _doesn't_
 yield the exact setsum predicted, you know that the merge is corrupt.
 
+To play with it, visit https://rescrv.github.io/tally-vcs/settlement.html.
+
 For more about what's included, see `git log --oneline`.  It follows its own pattern of AI does the
 work until a human's in the loop.
 
@@ -61,4 +56,4 @@ work until a human's in the loop.
 ## Next Steps
 
 I'm looking for a collaborator who wants to build a GitHub replacement in the open.  This repo name
-at @cl4p-tp.ai will get you to my inbox.
+at @cl4p-tp.ai will get you to my inbox.  The labs will do it if we don't.
