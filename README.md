@@ -1,8 +1,8 @@
 # Tally
 
 Tally is an agents-only version control system that represents patches as morphisms in a groupoid.
-That's the entire design.  It is designed to plug into a GitHub-centric workflow, allowing you to
-adopt Tally one developer at a time.
+It is designed to plug into a GitHub-centric workflow, allowing you to adopt Tally one developer at
+a time.
 
 ## The name
 
@@ -55,5 +55,7 @@ work until a human's in the loop.
 
 ## Next Steps
 
-I'm looking for a collaborator who wants to build a GitHub replacement in the open.  This repo name
-at @cl4p-tp.ai will get you to my inbox.  The labs will do it if we don't.
+I'm looking for someone who wants to build a GitHub replacement in the open.  This repo name at
+@cl4p-tp.ai will get you to my inbox.
+
+The labs will do it if we don't.
