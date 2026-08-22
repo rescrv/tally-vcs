@@ -54,9 +54,11 @@ work until a human's in the loop.
 - A working tally protocol that can work against GitHub by importing from Git an exporting a PR.
 - Naive push to object storage.
 
+## What's Not Implemented
+
+- Efficient delta push
+
 ## Next Steps
 
-I want to build a GitHub clone.  Every major lab has an incentive to make one that works in their
-harness, and that means lock-in.
-
-Tally is open under the Apache 2.0 license.  Someone needs to build the GitHub replacement.
+I'm looking for a collaborator who wants to build a GitHub replacement in the open.  This repo name
+at @cl4p-tp.ai will get you to my inbox.
