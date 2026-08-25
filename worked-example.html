@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tally — a worked example</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha3/0.8.0/sha3.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f3f6ef;
+    --rule:#dce4d5;
+    --ink:#1d251f;
+    --ink-soft:#5a675c;
+    --debit:#a3291f;
+    --credit:#1e6b3a;
+    --brass:#8a6a2c;
+    --brass-soft:#f0e7d2;
+    --card:#fbfcf8;
+    --line:#c8d2c1;
+    --marginline:#c9552e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} *{transition:none!important;animation:none!important} }
+  body{
+    font-family:'IBM Plex Sans',system-ui,sans-serif;
+    color:var(--ink);
+    background:
+      repeating-linear-gradient(to bottom, transparent 0 27px, var(--rule) 27px 28px),
+      var(--paper);
+    line-height:1.55;
+    font-size:16px;
+  }
+  .sheet{
+    max-width:880px;margin:0 auto;padding:0 28px 120px 44px;
+    border-left:1px solid var(--marginline);
+    min-height:100vh;
+  }
+  @media(max-width:640px){ .sheet{padding-left:24px;border-left:none} }
+
+  /* ---------- type ---------- */
+  h1,h2{font-family:'Spectral',Georgia,serif;font-weight:600;line-height:1.12}
+  h1{font-size:clamp(34px,6vw,54px);letter-spacing:-0.01em}
+  h2{font-size:clamp(22px,3.4vw,30px);margin-bottom:14px}
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--brass);font-weight:600;margin-bottom:10px;
+  }
+  p{max-width:64ch;margin-bottom:14px}
+  p.dim{color:var(--ink-soft)}
+  em{font-family:'Spectral',Georgia,serif}
+  a{color:var(--brass)}
+  code,.mono{font-family:'IBM Plex Mono',monospace}
+  code{font-size:.92em;background:#e9eee2;padding:1px 5px;border-radius:3px}
+
+  header{padding:84px 0 40px}
+  header .thesis{font-family:'Spectral',Georgia,serif;font-size:clamp(17px,2.4vw,21px);
+    font-style:italic;color:var(--ink-soft);margin-top:18px;max-width:58ch}
+  .livechip{display:inline-block;margin-top:22px;font-family:'IBM Plex Mono',monospace;
+    font-size:12px;color:var(--credit);border:1px solid var(--credit);
+    border-radius:999px;padding:4px 12px;background:#eaf3ea}
+
+  section{padding:44px 0 12px}
+  .secnum{color:var(--marginline)}
+
+  /* ---------- ledger tables ---------- */
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:6px;
+    padding:18px 20px;margin:18px 0;box-shadow:0 1px 0 rgba(29,37,31,.06);
+  }
+  table.ledger{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:13px}
+  table.ledger th{
+    text-align:left;font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-soft);border-bottom:1.5px solid var(--ink);padding:4px 10px 6px 0;
+  }
+  table.ledger td{padding:6px 10px 6px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+  table.ledger tr:last-child td{border-bottom:none}
+  .hash{word-break:break-all;color:var(--ink-soft)}
+  .hash b{color:var(--ink);font-weight:600}
+  .sum{
+    font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:14px;
+    word-break:break-all;background:var(--brass-soft);border:1px solid #ddceaa;
+    border-radius:4px;padding:8px 12px;display:block;margin:8px 0;
+  }
+  .sum .lbl{display:block;font-size:10.5px;font-weight:600;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--brass);margin-bottom:3px}
+  .rm{color:var(--debit)} .ad{color:var(--credit)}
+  .sign{display:inline-block;width:1.1em;font-weight:600}
+
+  /* ---------- patch cards ---------- */
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:720px){.twocol{grid-template-columns:1fr}}
+  .agent{font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;
+    letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+  .agent.a{color:var(--debit)} .agent.b{color:var(--credit)}
+  .intent{font-family:'IBM Plex Mono',monospace;font-size:12.5px;background:#eef2e8;
+    border:1px dashed var(--line);border-radius:4px;padding:10px 12px;margin:8px 0;
+    white-space:pre-wrap;word-break:break-word}
+  .pre-ok{color:var(--credit);font-weight:600} .pre-bad{color:var(--debit);font-weight:600}
+  input.greet{
+    font-family:'IBM Plex Mono',monospace;font-size:13px;border:1.5px solid var(--brass);
+    border-radius:4px;padding:6px 9px;width:100%;max-width:260px;background:#fffdf6;color:var(--ink)
+  }
+  input.greet:focus{outline:2px solid var(--brass);outline-offset:1px}
+  label.greetlbl{display:block;font-size:12px;color:var(--ink-soft);margin:10px 0 4px}
+
+  /* ---------- prediction ---------- */
+  .predline{font-family:'IBM Plex Mono',monospace;font-size:13px;margin:4px 0;word-break:break-all}
+  .predline .op{color:var(--brass);font-weight:600;margin-right:6px}
+  .stamp{
+    display:inline-block;font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:12px;
+    letter-spacing:.12em;text-transform:uppercase;color:var(--brass);
+    border:2px solid var(--brass);border-radius:4px;padding:3px 10px;transform:rotate(-1.4deg);
+    background:var(--brass-soft)
+  }
+
+  /* ---------- replica race ---------- */
+  .race{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:16px}
+  @media(max-width:720px){.race{grid-template-columns:1fr}}
+  .replica{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px 18px}
+  .replica h3{font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:.1em;
+    text-transform:uppercase;border-bottom:1.5px solid var(--ink);padding-bottom:6px;margin-bottom:10px}
+  .chips{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}
+  button.chip{
+    font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;cursor:pointer;
+    border-radius:999px;padding:7px 14px;border:1.5px solid var(--ink);background:#fff;
+    color:var(--ink);transition:transform .08s ease, opacity .2s;
+  }
+  button.chip:hover{transform:translateY(-1px)}
+  button.chip:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+  button.chip.a{border-color:var(--debit);color:var(--debit)}
+  button.chip.b{border-color:var(--credit);color:var(--credit)}
+  button.chip[disabled]{opacity:.35;cursor:default;transform:none}
+  .rrow{font-family:'IBM Plex Mono',monospace;font-size:12px;padding:7px 0;
+    border-bottom:1px solid var(--rule);word-break:break-all}
+  .rrow .tag{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-soft);display:block}
+  .rrow.balance{background:linear-gradient(to right,#fdfaf0,transparent);font-weight:600}
+  .verdict{margin-top:16px;font-family:'IBM Plex Mono',monospace;font-size:13px;min-height:52px}
+  .verdict .differ{color:var(--debit)} .verdict .agree{color:var(--credit)}
+  .settled{
+    display:inline-block;font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:14px;
+    letter-spacing:.16em;text-transform:uppercase;color:var(--credit);
+    border:2.5px double var(--credit);border-radius:6px;padding:6px 16px;transform:rotate(-2deg);
+    background:#eaf3ea;box-shadow:0 1px 0 rgba(30,107,58,.25)
+  }
+  button.reset{
+    font-family:'IBM Plex Sans',sans-serif;font-size:13px;cursor:pointer;margin-top:10px;
+    border:1px solid var(--line);border-radius:4px;background:#fff;padding:5px 12px;color:var(--ink-soft)
+  }
+  button.reset:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
+
+  /* ---------- divergence ---------- */
+  .toggle{
+    font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;cursor:pointer;
+    border:1.5px solid var(--debit);color:var(--debit);background:#fff;
+    border-radius:4px;padding:8px 14px;
+  }
+  .toggle:focus-visible{outline:2px solid var(--debit);outline-offset:2px}
+  .toggle.on{background:var(--debit);color:#fff}
+  .checkline{font-family:'IBM Plex Mono',monospace;font-size:13px;margin:6px 0;word-break:break-all}
+  .ok{color:var(--credit);font-weight:600}
+
+  footer{margin-top:70px;padding-top:18px;border-top:1.5px solid var(--ink);
+    font-size:13.5px;color:var(--ink-soft)}
+  .flash{animation:flash .9s ease}
+  @keyframes flash{0%{background:#f6efc9}100%{background:transparent}}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<header>
+  <div class="eyebrow">tally · setsum · a worked example</div>
+  <h1>Two journeys.<br>One sixty-four-character destination.</h1>
+  <p class="thesis">A repository's identity as a running balance: patches post like ledger
+    entries, in any order the network delivers them, and settlement is comparing two sums.</p>
+  <span class="livechip">● every hash and sum on this page is computed live, in your browser</span>
+</header>
+
+<!-- ================= 1 · ANCHOR ================= -->
+<section id="anchor">
+  <h2><span class="secnum">§1</span> The anchor</h2>
+  <p>A state is a <em>set of element records</em>, one per file — mode, path, and the
+     SHA3-256 of the file's bytes, welded into one canonical line:</p>
+  <div class="card">
+    <table class="ledger" id="anchorTable">
+      <thead><tr><th>mode</th><th>path</th><th>sha3-256(blob)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <span class="sum" id="anchorSum"><span class="lbl">anchor · fold of the three records</span></span>
+  </div>
+  <div class="card">
+    <p style="margin-bottom:8px"><strong>Two layers of hashing.</strong> The blob hash names the
+       <em>content</em>; what feeds the sum is the hash of the <em>record line itself</em>:</p>
+    <div class="checkline">sha3(main.rs bytes) &nbsp;= <span class="hash" id="lyrBlob"></span> <span class="dim" style="color:var(--ink-soft)">← names the content, lives inside the record</span></div>
+    <div class="checkline">sha3(record line) &nbsp;&nbsp;= <span class="hash" id="lyrRec"></span> <span style="color:var(--ink-soft)">← this is the atom the arithmetic adds</span></div>
+    <p class="dim" style="margin-top:8px;font-size:14px">Rename, chmod, or change one byte, and the
+      old record leaves the set whole and a new record enters whole. There is no partial membership.</p>
+  </div>
+</section>
+
+<!-- ================= 2 · PATCHES ================= -->
+<section id="patches">
+  <h2><span class="secnum">§2</span> Two agents fork the anchor</h2>
+  <p>Each patch carries an <em>intent</em> (the precondition-bearing edit) and a
+     <em>realized delta</em> (its record-level effect). Only the realized delta enters the
+     arithmetic — <code>old_str</code> and <code>new_str</code> are never hashed into anything.</p>
+
+  <div class="twocol">
+    <div class="card">
+      <div class="agent a">Agent A · edit /src/main.rs</div>
+      <div class="intent" id="intentA"></div>
+      <div id="preA" style="font-family:'IBM Plex Mono',monospace;font-size:12px;margin:6px 0"></div>
+      <label class="greetlbl" for="greet">Type your own greeting — the whole page recomputes:</label>
+      <input class="greet" id="greet" value="hello, tally" autocomplete="off" spellcheck="false">
+      <table class="ledger" style="margin-top:12px"><tbody id="deltaA"></tbody></table>
+      <span class="sum" id="digA"><span class="lbl">digest(A) = −old record + new record</span></span>
+    </div>
+    <div class="card">
+      <div class="agent b">Agent B · create /src/lib.rs, edit /README.md</div>
+      <div class="intent">create /src/lib.rs
+edit   /README.md
+  old_str: "A tiny demo service.\n"
+  new_str: "A tiny demo service.\n\nSee src/lib.rs for the API.\n"</div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;margin:6px 0">
+        preconditions: path absent ✓ · old_str unique <span class="pre-ok">✓</span></div>
+      <table class="ledger" style="margin-top:12px"><tbody id="deltaB"></tbody></table>
+      <span class="sum" id="digB"><span class="lbl">digest(B)</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3 · PREDICTION ================= -->
+<section id="prediction">
+  <h2><span class="secnum">§3</span> The prediction</h2>
+  <p>Neither agent has seen the other's work. No merge exists. Three columnwise additions
+     commit to what the merged state <em>must</em> sum to:</p>
+  <div class="card">
+    <div class="predline"><span class="op">&nbsp;</span>anchor</div>
+    <div class="predline"><span class="op">+</span>digest(A)</div>
+    <div class="predline"><span class="op">+</span>digest(B)</div>
+    <span class="sum" id="predSum"><span class="lbl">predicted union — written down before the work</span></span>
+    <span class="stamp">commitment · made in advance</span>
+  </div>
+</section>
+
+<!-- ================= 4 · RACE ================= -->
+<section id="race">
+  <h2><span class="secnum">§4</span> Two replicas, any order — you deliver the packets</h2>
+  <p>Each replica keeps one running sum. Deliver the patches to each replica in whatever
+     order you like; each delivery posts <code>sum ← sum + digest</code>.</p>
+  <div class="race">
+    <div class="replica">
+      <h3>Replica 1</h3>
+      <div class="chips">
+        <button class="chip a" id="r1A">deliver patch A</button>
+        <button class="chip b" id="r1B">deliver patch B</button>
+      </div>
+      <div id="log1"></div>
+    </div>
+    <div class="replica">
+      <h3>Replica 2</h3>
+      <div class="chips">
+        <button class="chip a" id="r2A">deliver patch A</button>
+        <button class="chip b" id="r2B">deliver patch B</button>
+      </div>
+      <div id="log2"></div>
+    </div>
+  </div>
+  <div class="verdict" id="verdict"></div>
+  <button class="reset" id="raceReset">reset the race</button>
+</section>
+
+<!-- ================= 5 · SETTLEMENT ================= -->
+<section id="settle">
+  <h2><span class="secnum">§5</span> Settlement</h2>
+  <p>Now forget history. List the four files of the merged state and fold their records
+     from scratch — pure set, no journey:</p>
+  <div class="card">
+    <table class="ledger" id="finalTable">
+      <thead><tr><th>mode</th><th>path</th><th>sha3-256(blob)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <span class="sum" id="foldSum"><span class="lbl">fold of the final manifest</span></span>
+    <div class="checkline" id="settleCheck"></div>
+  </div>
+  <p class="dim">Each side kept its half of the stick; settlement is pressing them together
+     and seeing that they still align.</p>
+</section>
+
+<!-- ================= 6 · DIVERGENCE ================= -->
+<section id="diverge">
+  <h2><span class="secnum">§6</span> When they don't align</h2>
+  <p>Suppose replica 2's disk quietly flips <code>version = "0.1.0"</code> to
+     <code>"0.1.1"</code> in <code>Cargo.toml</code>.</p>
+  <button class="toggle" id="corrupt" aria-pressed="false">flip the byte on replica 2</button>
+  <div class="card" id="divCard" style="display:none">
+    <div class="checkline">healthy&nbsp;&nbsp;= <span class="hash" id="dHealthy"></span></div>
+    <div class="checkline">corrupt&nbsp;&nbsp;= <span class="hash" id="dCorrupt"></span></div>
+    <div class="checkline">healthy − corrupt = <span class="hash" id="dDiff"></span></div>
+    <div class="checkline" style="margin-top:10px">digest(good Cargo.toml − bad Cargo.toml) = <span class="hash" id="dExpect"></span></div>
+    <div class="checkline" id="dVerdict" style="margin-top:8px"></div>
+    <p class="dim" style="margin-top:10px;font-size:14px">The difference between two states is itself a
+      patch digest — a checksum of exactly what diverged. Repair is targeted, not forensic.</p>
+  </div>
+</section>
+
+<!-- ================= 7 · NEGATIVE HALF ================= -->
+<section id="negative">
+  <h2><span class="secnum">§7</span> The negative half</h2>
+  <p>Every sum so far described a state you could <code>ls</code>. The arithmetic is roomier
+     than that. A "negative file" sounds like nonsense until you remember that negative numbers
+     were invented for exactly this: there is no pile of −3 apples — <em>−3 means I owe you
+     three apples</em>. Negative numbers describe transactions, not piles. A sum with negative
+     parts describes an obligation, not a directory: <em>take this exact record away from me</em>.
+     States are the nouns; the group also holds the verbs.</p>
+
+  <div class="card">
+    <p style="margin-bottom:8px"><strong>Every state carries its own anti-state.</strong></p>
+    <div class="checkline">anchor&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= <span class="hash" id="annAnchor"></span></div>
+    <button class="toggle" id="annBtn" style="margin:10px 0;border-color:var(--brass);color:var(--brass)">negate the anchor</button>
+    <div id="annReveal" style="display:none">
+      <div class="checkline">anti-anchor&nbsp;= <span class="hash" id="annAnti"></span></div>
+      <div class="checkline" style="margin-top:6px">anchor + anti-anchor =</div>
+      <span class="sum" id="annZero"><span class="lbl">annihilation · the checksum of the empty set</span></span>
+      <p class="dim" style="font-size:14px">Sixty-four zeros is not "no checksum" — it is the checksum
+        of nothing, and every state annihilates to it against its own negation. The anti-anchor is the
+        "delete everything" patch, implicit in the anchor's own sum all along.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <p style="margin-bottom:8px"><strong>Undo is a sign flip.</strong> Negate digest(A) and you hold
+      the reverting patch — not a description of reversal, the patch itself, as arithmetic:</p>
+    <div class="checkline">&nbsp;digest(A) = <span class="hash" id="undoDig"></span></div>
+    <div class="checkline">−digest(A) = <span class="hash" id="undoNeg"></span></div>
+    <div class="checkline" style="margin-top:8px">(S₀ + A) + (−digest(A)) = <span class="hash" id="undoBack"></span></div>
+    <div class="checkline" id="undoCheck"></div>
+    <p class="dim" style="font-size:14px;margin-top:8px">The <span class="rm">−old&nbsp;main.rs</span> inside
+      digest(A) met the <span class="ad">+old&nbsp;main.rs</span> inside the anchor and annihilated it;
+      the minus sign runs that in reverse. §6's <code>healthy − corrupt</code> was this same move
+      wearing work clothes: a repair ticket is a sum with negative parts.</p>
+  </div>
+
+  <div class="card">
+    <p style="margin-bottom:8px"><strong>Debt can dangle.</strong> The arithmetic is free: subtract a
+      record that isn't present, and nothing errors. Subtract the <code>lib.rs</code> record from the
+      anchor — which doesn't contain it:</p>
+    <div class="checkline">anchor − lib.rs record = <span class="hash" id="debtSum"></span></div>
+    <div class="checkline" style="margin-top:6px">…then + lib.rs record = <span class="hash" id="debtBack"></span> <span id="debtCheck"></span></div>
+    <p class="dim" style="font-size:14px;margin-top:8px">No repository folds to the first value — it
+      describes a state containing −1 copies of a file. The anti-record lingers as unsettled debt until
+      a matching insert cancels it. This freedom is what makes patches portable and order-blind, and it
+      is why the arithmetic alone can't keep states real. Hence the spec's soundness rule:
+      <em>the sum attests; the manifest adjudicates.</em> Arithmetic keeps the books; the manifest
+      checks that the debtor exists.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Construction per the <a href="https://github.com/rescrv/tally-vcs">tally spec</a> §1.2 and the
+     <a href="https://crates.io/crates/setsum">setsum crate</a>: SHA3-256 per record, eight
+     little-endian u32 columns, eight primes just below 2³², columnwise addition. Eleven lines of
+     Python in <code>ANDON.md</code> reproduce everything here.</p>
+</footer>
+
+</div>
+<script>
+(function(){
+"use strict";
+const P=[4294967291,4294967279,4294967231,4294967197,4294967189,4294967161,4294967143,4294967111];
+const te=new TextEncoder();
+const H=s=>sha3_256(te.encode(s));
+function cols(recStr){const d=sha3_256.array(te.encode(recStr));const o=[];
+  for(let i=0;i<8;i++){const v=(d[i*4]|(d[i*4+1]<<8)|(d[i*4+2]<<16))+d[i*4+3]*16777216;o.push(v%P[i]);}return o;}
+const add=(a,b)=>a.map((x,i)=>(x+b[i])%P[i]);
+const neg=a=>a.map((x,i)=>(P[i]-x)%P[i]);
+const Z=[0,0,0,0,0,0,0,0];
+const render=s=>s.map(c=>{let h='';for(let i=0;i<4;i++){h+=((c>>>(8*i))&255).toString(16).padStart(2,'0');}return h;}).join('');
+const rec=(m,p,blob)=>m+"\t"+p+"\t"+H(blob)+"\n";
+const short=h=>'<b>'+h.slice(0,8)+'</b>'+h.slice(8,12)+'…'+h.slice(-6);
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+// ------- fixed content -------
+const readme1="# hello\n\nA tiny demo service.\n";
+const readme2="# hello\n\nA tiny demo service.\n\nSee src/lib.rs for the API.\n";
+const main1='fn main() {\n    println!("hello");\n}\n';
+const cargoGood='[package]\nname = "hello"\nversion = "0.1.0"\n';
+const cargoBad ='[package]\nname = "hello"\nversion = "0.1.1"\n';
+const lib="pub fn greeting() -> &'static str {\n    \"hello, tally\"\n}\n";
+const OLD='hello';
+
+// ------- mutable model, rebuilt on every recompute -------
+let M={};
+function compute(greet){
+  const main2=main1.replace(OLD,greet);
+  const rCargo=rec("100644","/Cargo.toml",cargoGood);
+  const rRead1=rec("100644","/README.md",readme1);
+  const rRead2=rec("100644","/README.md",readme2);
+  const rMain1=rec("100644","/src/main.rs",main1);
+  const rMain2=rec("100644","/src/main.rs",main2);
+  const rLib  =rec("100644","/src/lib.rs",lib);
+  let anchor=Z; for(const r of [rCargo,rRead1,rMain1]) anchor=add(anchor,cols(r));
+  const dA=add(neg(cols(rMain1)),cols(rMain2));
+  const dB=add(add(cols(rLib),neg(cols(rRead1))),cols(rRead2));
+  const pred=add(add(anchor,dA),dB);
+  let fold=Z; for(const r of [rCargo,rRead2,rLib,rMain2]) fold=add(fold,cols(r));
+  M={greet,main2,rCargo,rRead1,rRead2,rMain1,rMain2,rLib,anchor,dA,dB,pred,fold};
+}
+
+// ------- renderers -------
+function setSum(id,label,val){const el=document.getElementById(id);
+  el.innerHTML='<span class="lbl">'+label+'</span>'+val;
+  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');}
+function row3(m,p,h){return '<tr><td>'+m+'</td><td>'+p+'</td><td class="hash">'+short(h)+'</td></tr>';}
+function drow(sign,cls,r){const parts=r.trim().split('\t');
+  return '<tr><td class="'+cls+'"><span class="sign">'+sign+'</span></td>'+
+         '<td class="'+cls+'">'+parts[1]+'</td><td class="hash '+cls+'">'+short(parts[2])+'</td></tr>';}
+
+function paintStatic(){
+  document.querySelector('#anchorTable tbody').innerHTML=
+    row3('100644','/Cargo.toml',H(cargoGood))+
+    row3('100644','/README.md',H(readme1))+
+    row3('100644','/src/main.rs',H(main1));
+  setSum('anchorSum','anchor · fold of the three records',render(M.anchor));
+  document.getElementById('lyrBlob').innerHTML=short(H(main1));
+  document.getElementById('lyrRec').innerHTML=short(H(M.rMain1));
+  document.getElementById('deltaB').innerHTML=
+    drow('+','ad',M.rLib)+drow('−','rm',M.rRead1)+drow('+','ad',M.rRead2);
+  setSum('digB','digest(B)',render(M.dB));
+}
+function paintDynamic(){
+  const g=M.greet, ok=main1.split(OLD).length===2;
+  document.getElementById('intentA').innerHTML=
+    'edit /src/main.rs\n  old_str: "'+OLD+'"\n  new_str: "'+esc(g)+'"';
+  document.getElementById('preA').innerHTML=
+    'precondition: old_str occurs exactly once <span class="'+(ok?'pre-ok':'pre-bad')+'">'+(ok?'✓':'✗')+'</span>';
+  document.getElementById('deltaA').innerHTML=drow('−','rm',M.rMain1)+drow('+','ad',M.rMain2);
+  setSum('digA','digest(A) = −old record + new record',render(M.dA));
+  setSum('predSum','predicted union — written down before the work',render(M.pred));
+  document.querySelector('#finalTable tbody').innerHTML=
+    row3('100644','/Cargo.toml',H(cargoGood))+
+    row3('100644','/README.md',H(readme2))+
+    row3('100644','/src/lib.rs',H(lib))+
+    row3('100644','/src/main.rs',H(M.main2));
+  setSum('foldSum','fold of the final manifest',render(M.fold));
+  const eq=render(M.fold)===render(M.pred);
+  document.getElementById('settleCheck').innerHTML= eq
+    ? '<span class="ok">✓ fold equals the prediction made before the merge existed</span>'
+    : '<span class="rm">✗ fold disagrees with the prediction — the merge would be provably corrupt</span>';
+  paintDiverge();
+}
+
+// ------- replica race -------
+let R;
+function raceReset(){
+  R={1:{sum:M.anchor.slice(),n:0,done:{}},2:{sum:M.anchor.slice(),n:0,done:{}}};
+  for(const id of ['r1A','r1B','r2A','r2B']) document.getElementById(id).disabled=false;
+  for(const i of [1,2]) document.getElementById('log'+i).innerHTML=
+    '<div class="rrow balance"><span class="tag">opening balance = anchor</span>'+render(M.anchor)+'</div>';
+  verdict();
+}
+function deliver(rep,which){
+  const d=which==='A'?M.dA:M.dB;
+  const r=R[rep]; if(r.done[which])return;
+  r.sum=add(r.sum,d); r.n++; r.done[which]=true;
+  document.getElementById('r'+rep+which).disabled=true;
+  const lg=document.getElementById('log'+rep);
+  const row=document.createElement('div');
+  row.className='rrow'; row.innerHTML='<span class="tag '+(which==='A'?'rm':'ad')+'">+ digest('+which+') posted</span>';
+  lg.appendChild(row);
+  const bal=document.createElement('div');
+  bal.className='rrow balance flash';
+  bal.innerHTML='<span class="tag">running balance · '+(r.n===2?'final':'mid-flight')+'</span>'+render(r.sum);
+  lg.appendChild(bal);
+  verdict();
+}
+function verdict(){
+  const v=document.getElementById('verdict');
+  const a=R[1],b=R[2],sa=render(a.sum),sb=render(b.sum);
+  if(a.n===2&&b.n===2){
+    v.innerHTML = sa===sb
+      ? '<span class="settled">settled · balances agree</span>'+
+        '<div style="margin-top:8px">Both journeys ended at <span class="agree">'+sa.slice(0,12)+'…</span>'+
+        (sa===render(M.pred)?' — exactly the sum predicted in §3.':'')+'</div>'
+      : '<span class="differ">balances disagree — states differ</span>';
+  } else if(a.n+b.n===0){
+    v.textContent='Both ledgers open at the anchor. Deliver in any order — try opposite orders on the two replicas.';
+  } else if(a.n===1&&b.n===1&&sa!==sb){
+    v.innerHTML='<span class="differ">mid-flight balances differ — correctly:</span> at this instant the replicas hold genuinely different sets of files. The sum is always the identity of the current state, never a hash of the journey.';
+  } else {
+    v.textContent='Patches in flight…';
+  }
+}
+
+// ------- divergence -------
+let corrupted=false;
+function paintDiverge(){
+  const card=document.getElementById('divCard');
+  const btn=document.getElementById('corrupt');
+  btn.classList.toggle('on',corrupted);
+  btn.setAttribute('aria-pressed',String(corrupted));
+  btn.textContent=corrupted?'restore the byte':'flip the byte on replica 2';
+  if(!corrupted){card.style.display='none';return;}
+  card.style.display='block';
+  const rBad=rec("100644","/Cargo.toml",cargoBad);
+  const bad=add(add(M.fold,neg(cols(M.rCargo))),cols(rBad));
+  const diff=add(M.fold,neg(bad));
+  const expect=add(cols(M.rCargo),neg(cols(rBad)));
+  document.getElementById('dHealthy').textContent=render(M.fold);
+  document.getElementById('dCorrupt').textContent=render(bad);
+  document.getElementById('dDiff').textContent=render(diff);
+  document.getElementById('dExpect').textContent=render(expect);
+  document.getElementById('dVerdict').innerHTML= render(diff)===render(expect)
+    ? '<span class="ok">✓ the difference of the sums isolates the damaged element exactly</span>'
+    : '<span class="rm">✗ mismatch</span>';
+}
+
+// ------- negative half -------
+let annOpen=false;
+function paintNegative(){
+  const anti=neg(M.anchor);
+  document.getElementById('annAnchor').textContent=render(M.anchor);
+  document.getElementById('annAnti').textContent=render(anti);
+  setSum('annZero','annihilation · the checksum of the empty set',render(add(M.anchor,anti)));
+  document.getElementById('annReveal').style.display=annOpen?'block':'none';
+  document.getElementById('annBtn').textContent=annOpen?'hide the anti-anchor':'negate the anchor';
+  const undo=neg(M.dA), SA=add(M.anchor,M.dA), back=add(SA,undo);
+  document.getElementById('undoDig').textContent=render(M.dA);
+  document.getElementById('undoNeg').textContent=render(undo);
+  document.getElementById('undoBack').textContent=render(back);
+  document.getElementById('undoCheck').innerHTML= render(back)===render(M.anchor)
+    ? '<span class="ok">✓ equals the anchor — the edit is gone, arithmetically</span>'
+    : '<span class="rm">✗ mismatch</span>';
+  const debt=add(M.anchor,neg(cols(M.rLib))), repaid=add(debt,cols(M.rLib));
+  document.getElementById('debtSum').textContent=render(debt);
+  document.getElementById('debtBack').textContent=render(repaid);
+  document.getElementById('debtCheck').innerHTML= render(repaid)===render(M.anchor)
+    ? '<span class="ok">✓ the debt cancels; the anchor returns</span>' : '<span class="rm">✗</span>';
+}
+
+// ------- wiring -------
+function recomputeAll(){
+  compute(document.getElementById('greet').value);
+  paintStatic(); paintDynamic(); paintNegative(); raceReset();
+}
+document.getElementById('annBtn').addEventListener('click',()=>{annOpen=!annOpen;paintNegative();});
+document.getElementById('greet').addEventListener('input',recomputeAll);
+document.getElementById('raceReset').addEventListener('click',raceReset);
+document.getElementById('corrupt').addEventListener('click',()=>{corrupted=!corrupted;paintDiverge();});
+for(const [id,rep,w] of [['r1A',1,'A'],['r1B',1,'B'],['r2A',2,'A'],['r2B',2,'B']])
+  document.getElementById(id).addEventListener('click',()=>deliver(rep,w));
+
+recomputeAll();
+})();
+</script>
+</body>
+</html>
