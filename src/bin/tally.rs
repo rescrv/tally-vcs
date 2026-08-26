@@ -323,15 +323,57 @@ fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_git_pr(_args: &[&str]) -> Result<()> {
-    // Rendering a fork as a git branch (one commit per fused beat) and
-    // opening the pull request is a separate bridge component; the command
-    // exists so the namespace is complete, but the mechanism is not wired.
-    Err(Error::Invalid(
-        "git pr is not yet implemented: rendering a fork as a git branch and \
-         opening a pull request lands next"
-            .to_string(),
-    ))
+fn cmd_git_pr(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The mirror fork to export against (default: the binding, or main).", "FORK")]
+        into: Option<String>,
+        #[arrrg(optional, "The branch ref to create (default: tally/pr/<fork>).", "BRANCH")]
+        branch: Option<String>,
+        #[arrrg(
+            optional,
+            "The git repository to write (default: the repository root).",
+            "DIR"
+        )]
+        git: Option<String>,
+        #[arrrg(optional, "Author of the union carries.", "AUTHOR")]
+        author: Option<String>,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: tally git pr [--into FORK] [--branch BRANCH] [--git DIR] <fork>",
+        args,
+    );
+    reject_extra("git pr", &free, 1)?;
+    let Some(source) = free.first() else {
+        return Err(Error::Invalid("git pr requires a source fork".to_string()));
+    };
+    let repo = repo()?;
+    // The mirror is the git-bound fork; --into overrides, else the binding,
+    // else main.
+    let target = match options.into.as_deref() {
+        Some(t) => t.to_string(),
+        None => repo
+            .read_mirror()?
+            .map(|b| b.fork)
+            .unwrap_or_else(|| "main".to_string()),
+    };
+    let branch = options
+        .branch
+        .clone()
+        .unwrap_or_else(|| format!("tally/pr/{source}"));
+    let git_dir = options.git.as_ref().map(std::path::PathBuf::from);
+    let author = options.author.unwrap_or_else(whoami);
+    let summary = tally::git::pr(&repo, git_dir.as_deref(), source, &target, &author, &branch)?;
+    println!(
+        "exported {} against {} (base {})",
+        summary.fork, summary.target, summary.base
+    );
+    println!(
+        "branch {} at {} ({} commit(s))",
+        summary.branch, summary.tip, summary.commits
+    );
+    println!("open a pull request from {} into {}", summary.branch, summary.target);
+    Ok(())
 }
 
 fn cmd_sum(args: &[&str]) -> Result<()> {

@@ -12,50 +12,29 @@
 //! paths must satisfy §1.1 and, in v0, must be ASCII, because NFC
 //! normalization of arbitrary Unicode cannot be verified without tables.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::blobs::BlobStore;
 use crate::fork::ForkFile;
 use crate::ident::{ElementRecord, sha3_hex, validate_path};
 use crate::log::{Annotation, GitImport, LogLine};
 use crate::manifest::Manifest;
-use crate::patch::{Intent, RealizedEntry, apply_realized_to_sum};
+use crate::patch::{Intent, RealizedEntry, apply_realized_to_manifest, apply_realized_to_sum};
 use crate::repo::Repository;
+use crate::union::{ConflictDirection, UnionOutcome, union};
+use crate::views::{Beat, fused_beats};
 use crate::{Error, Result, ioerr};
 
 /// Run `git -C dir args…`, loudly surfacing stderr on failure.
 fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(ioerr("running git"))?;
-    if !output.status.success() {
-        return Err(Error::Invalid(format!(
-            "git {} failed ({}): {}",
-            args.join(" "),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(output.stdout)
+    git_plumb(dir, args, None, &[])
 }
 
 /// `git rev-parse --verify spec`, validated as a hex object name.
 fn rev_parse(git_dir: &Path, spec: &str) -> Result<String> {
-    let out = git(git_dir, &["rev-parse", "--verify", spec])?;
-    let hex = String::from_utf8(out)
-        .map_err(|_| Error::Corrupt("git rev-parse produced non-UTF-8".to_string()))?
-        .trim()
-        .to_string();
-    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(Error::Corrupt(format!(
-            "git rev-parse produced a non-hex name: {hex:?}"
-        )));
-    }
-    Ok(hex)
+    one_oid(git(git_dir, &["rev-parse", "--verify", spec])?, "rev-parse")
 }
 
 /// Resolve a committish to its full object name.
@@ -588,6 +567,384 @@ pub fn pull(
     })
 }
 
+/// Run `git -C dir args…`, feeding `stdin` and setting `env`, returning
+/// stdout.  The plumbing writes below (`hash-object`, `write-tree`,
+/// `commit-tree`) need a body on stdin and a scratch index or identity in the
+/// environment; the read-only [`git`] helper delegates here with no stdin and
+/// no env, so a single spawn+stderr path serves both.
+fn git_plumb(
+    dir: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn().map_err(ioerr("running git"))?;
+    if let Some(bytes) = stdin {
+        child
+            .stdin
+            .take()
+            .expect("stdin piped")
+            .write_all(bytes)
+            .map_err(ioerr("writing git stdin"))?;
+    }
+    let output = child.wait_with_output().map_err(ioerr("running git"))?;
+    if !output.status.success() {
+        return Err(Error::Invalid(format!(
+            "git {} failed ({}): {}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(output.stdout)
+}
+
+/// Trim a git plumbing command's stdout to a single hex object name,
+/// erroring loudly on anything else.
+fn one_oid(out: Vec<u8>, what: &str) -> Result<String> {
+    let hex = String::from_utf8(out)
+        .map_err(|_| Error::Corrupt(format!("git {what} produced non-UTF-8")))?
+        .trim()
+        .to_string();
+    if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Corrupt(format!(
+            "git {what} produced a non-hex name: {hex:?}"
+        )));
+    }
+    Ok(hex)
+}
+
+/// Write `content` into the git object database as a blob; returns its oid.
+fn write_git_blob(git_dir: &Path, content: &[u8]) -> Result<String> {
+    let out = git_plumb(git_dir, &["hash-object", "-w", "--stdin"], Some(content), &[])?;
+    one_oid(out, "hash-object")
+}
+
+/// Render a manifest as a git tree, writing every blob and building the tree
+/// through a scratch index (so nested paths compose correctly).  Returns the
+/// tree oid.  The scratch index lives at `index_path` and is removed first so
+/// stale entries never leak between renders.
+fn write_git_tree(
+    blobs: &BlobStore,
+    git_dir: &Path,
+    manifest: &Manifest,
+    index_path: &Path,
+) -> Result<String> {
+    let _ = std::fs::remove_file(index_path);
+    let index = index_path.to_string_lossy().to_string();
+    let env = [("GIT_INDEX_FILE", index.as_str())];
+    for record in manifest.records() {
+        let content = blobs.get(&record.blob)?;
+        let oid = write_git_blob(git_dir, &content)?;
+        // Element paths are absolute from the root; git wants them relative.
+        let path = record.path.trim_start_matches('/');
+        let cacheinfo = format!("{},{oid},{path}", record.mode);
+        git_plumb(
+            git_dir,
+            &["update-index", "--add", "--cacheinfo", &cacheinfo],
+            None,
+            &env,
+        )?;
+    }
+    let out = git_plumb(git_dir, &["write-tree"], None, &env)?;
+    let _ = std::fs::remove_file(index_path);
+    one_oid(out, "write-tree")
+}
+
+/// Split a `Name <email>` author string into (name, email), falling back to
+/// a placeholder email when the string carries no angle-bracketed address.
+fn split_author(author: &str) -> (String, String) {
+    if let Some(open) = author.rfind('<')
+        && let Some(rel_close) = author[open..].find('>')
+    {
+        let name = author[..open].trim();
+        let email = &author[open + 1..open + rel_close];
+        let name = if name.is_empty() { email } else { name };
+        return (name.to_string(), email.to_string());
+    }
+    (author.to_string(), "tally@example.com".to_string())
+}
+
+/// Create a commit object for `tree` with `parent`, stamping author and
+/// committer identically from `author`/`committed_ms` so the render is a pure
+/// function of the log.  Returns the commit oid.
+fn commit_tree(
+    git_dir: &Path,
+    tree: &str,
+    parent: &str,
+    author: &str,
+    committed_ms: u64,
+    message: &str,
+) -> Result<String> {
+    let (name, email) = split_author(author);
+    let date = format!("{} +0000", committed_ms / 1000);
+    let env = [
+        ("GIT_AUTHOR_NAME", name.as_str()),
+        ("GIT_AUTHOR_EMAIL", email.as_str()),
+        ("GIT_AUTHOR_DATE", date.as_str()),
+        ("GIT_COMMITTER_NAME", name.as_str()),
+        ("GIT_COMMITTER_EMAIL", email.as_str()),
+        ("GIT_COMMITTER_DATE", date.as_str()),
+    ];
+    let out = git_plumb(
+        git_dir,
+        &["commit-tree", tree, "-p", parent],
+        Some(message.as_bytes()),
+        &env,
+    )?;
+    one_oid(out, "commit-tree")
+}
+
+/// The outcome of a `git pr`: a rendered git branch and the facts a caller
+/// (or a real GitHub bridge) needs to open the pull request.
+#[derive(Clone, Debug)]
+pub struct PrSummary {
+    /// The source fork exported.
+    pub fork: String,
+    /// The mirror fork the PR is proposed against.
+    pub target: String,
+    /// The git commit the mirror sits at — the PR's base.
+    pub base: String,
+    /// The branch ref created (`refs/heads/<branch>`).
+    pub branch: String,
+    /// The tip commit of the rendered branch — the PR's head.
+    pub tip: String,
+    /// The number of git commits rendered (one per fused beat).
+    pub commits: usize,
+}
+
+/// Turn an incomplete union outcome into the loud refusal `git pr` returns,
+/// mirroring `tally union`'s reporting: a stratum-4 gate or a §6 read/write
+/// conflict means nothing merges, so nothing exports.
+fn pr_incomplete_error(outcome: &UnionOutcome, source: &str, target: &str) -> Error {
+    if let Some((line_id, evidence)) = &outcome.needs_reenactment {
+        return Error::NeedsReenactment(format!(
+            "line {line_id} of fork {source}: {evidence} \
+             (stratum 4 costs tokens and is never automatic)"
+        ));
+    }
+    let mut detail = String::new();
+    for c in &outcome.semantic_conflicts {
+        let paths: Vec<&str> = c.paths.iter().map(String::as_str).collect();
+        let paths = paths.join(", ");
+        let line = match c.direction {
+            ConflictDirection::IncomingReadStale => format!(
+                "\n  line {} read {paths} which target line {} concurrently wrote",
+                c.source_id, c.target_id
+            ),
+            ConflictDirection::IncomingWriteHitsTargetRead => format!(
+                "\n  line {} wrote {paths} which target line {} had read",
+                c.source_id, c.target_id
+            ),
+        };
+        detail.push_str(&line);
+    }
+    Error::NeedsReenactment(format!(
+        "fork {source} into {target}: {} read/write conflict(s); nothing exports{detail}",
+        outcome.semantic_conflicts.len()
+    ))
+}
+
+/// Export a fork as a git branch against the mirror — `tally git pr`.
+///
+/// This acts exactly like [`union`]: it brings `source`'s log into `target`
+/// (the git mirror, default `main`) through strata 1–3, and refuses the same
+/// way when a merge would need re-enactment or strand a read (§6).  What it
+/// does with the result differs — instead of committing the merge to the
+/// mirror's log, it *renders* it as a git branch forked off the commit the
+/// mirror sits at, one commit per fused beat (§2.6), so a human on the other
+/// side of the GitHub sunset can open a pull request from it.
+///
+/// The mirror is never mutated: the union runs against an ephemeral clone of
+/// `target` (same anchor and log, so §6 conflict detection sees the mirror's
+/// real concurrent writes) that is removed before returning.  The base commit
+/// must match the mirror's current state, so `git pull` the mirror before
+/// exporting against a branch that has moved.
+pub fn pr(
+    repo: &Repository,
+    git_dir: Option<&Path>,
+    source: &str,
+    target: &str,
+    author: &str,
+    branch: &str,
+) -> Result<PrSummary> {
+    let root = repo.root().to_path_buf();
+    let git_dir = git_dir.unwrap_or(&root).to_path_buf();
+
+    // The PR's base: the git commit the mirror sits at, named by its most
+    // recent import line.
+    let target_state = repo.current_state(target)?;
+    let base = target_state
+        .lines
+        .iter()
+        .rev()
+        .find_map(|line| line.annotation.import.as_ref().map(|i| i.commit.clone()))
+        .ok_or_else(|| {
+            Error::Invalid(format!(
+                "fork {target} carries no git import; `git pr` exports against a git mirror \
+                 (bind one with `git pull <branch>`)"
+            ))
+        })?;
+
+    // The base commit's tree must be exactly the mirror's current state, or
+    // the branch we fork from would not match what the mirror represents.
+    let base_entries = commit_entries(&git_dir, &base)?;
+    let base_manifest = commit_manifest(&repo.blobs(), &git_dir, &base_entries)?;
+    if base_manifest.sum() != target_state.sum {
+        return Err(Error::Invalid(format!(
+            "mirror {target} has drifted from its imported commit {base}; \
+             `git pull` it before exporting a PR against it"
+        )));
+    }
+
+    // Refuse before rendering if the branch ref already exists — a PR export
+    // never silently rewrites a branch.
+    if git(&git_dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok()
+    {
+        return Err(Error::Invalid(format!(
+            "branch {branch} already exists; delete it or name another with --branch"
+        )));
+    }
+
+    // Run the merge against an ephemeral clone of the mirror so union sees the
+    // mirror's real log (its §6 write set) but the mirror itself is untouched.
+    let staging = format!("pr-{source}-{}", std::process::id());
+    if repo.fork_exists(&staging)? {
+        repo.remove_fork(&staging, true)?;
+    }
+    let target_fork = repo.read_fork(target)?;
+    let log_bytes = repo.log_bytes(target)?;
+    repo.restore_fork(&staging, &target_fork, &log_bytes)?;
+
+    // The scratch index `write_git_tree` builds each beat's tree through.
+    // Like the staging fork, `pr` owns its lifetime and cleans it up at a
+    // single site whether or not the render succeeded.
+    let index_path = std::env::temp_dir().join(format!("tally-pr-index-{}", std::process::id()));
+    let result = pr_render(
+        repo,
+        &git_dir,
+        source,
+        target,
+        &staging,
+        &base,
+        base_manifest,
+        target_state.lines.len(),
+        author,
+        branch,
+        &index_path,
+    );
+    // The scratch index and staging fork are both scaffolding; drop them
+    // whether or not the render succeeded.  The fork's lines are all union
+    // carries subsumed by the render, so a forced removal is safe.
+    let _ = std::fs::remove_file(&index_path);
+    let _ = repo.remove_fork(&staging, true);
+    result
+}
+
+/// The render half of [`pr`], run against the ephemeral `staging` clone so a
+/// single cleanup site owns the fork's lifetime.
+#[allow(clippy::too_many_arguments)]
+fn pr_render(
+    repo: &Repository,
+    git_dir: &Path,
+    source: &str,
+    target: &str,
+    staging: &str,
+    base: &str,
+    base_manifest: Manifest,
+    base_lines: usize,
+    author: &str,
+    branch: &str,
+    index_path: &Path,
+) -> Result<PrSummary> {
+    let outcome = union(repo, source, staging, author)?;
+    if !outcome.complete() {
+        return Err(pr_incomplete_error(&outcome, source, target));
+    }
+
+    // Everything union appended past the mirror's log is the PR's content.
+    let staged = repo.current_state(staging)?;
+    let landed = &staged.lines[base_lines..];
+    if landed.is_empty() {
+        return Err(Error::Invalid(format!(
+            "fork {source} adds nothing beyond {target}; nothing to export"
+        )));
+    }
+
+    // Render one git commit per fused beat, replaying each beat's realized
+    // delta onto a running manifest that starts at the base commit's tree.
+    let blobs = repo.blobs();
+    // The scratch index `write_git_tree` builds through: `pr` owns its
+    // lifetime and removes it at a single cleanup site, so a mid-render `Err`
+    // here never leaks it into `temp_dir`.
+    let mut manifest = base_manifest;
+    let mut parent = base.to_string();
+    let mut commits = 0usize;
+    for beat in fused_beats(landed, None) {
+        let (lines, header): (&[LogLine], &LogLine) = match beat {
+            Beat::Fused { fuse, lines } => (lines, fuse),
+            Beat::Single(line) => (std::slice::from_ref(line), line),
+        };
+        // Apply the beat's realized delta.  A no-op beat (a dangling or
+        // empty fuse) leaves the tree unchanged and renders no commit.
+        let mut changed = false;
+        for line in lines {
+            if !line.realized.is_empty() {
+                apply_realized_to_manifest(&mut manifest, &line.realized)?;
+                changed = true;
+            }
+        }
+        if !changed {
+            continue;
+        }
+        let tree = write_git_tree(&blobs, git_dir, &manifest, index_path)?;
+        let message = header
+            .annotation
+            .prose
+            .clone()
+            .or_else(|| header.annotation.fuse.as_ref().map(|f| f.name.clone()))
+            .unwrap_or_else(|| format!("tally {}", header.id));
+        parent = commit_tree(
+            git_dir,
+            &tree,
+            &parent,
+            &header.annotation.author,
+            header.committed_ms,
+            &message,
+        )?;
+        commits += 1;
+    }
+
+    if commits == 0 {
+        return Err(Error::Invalid(format!(
+            "fork {source} contributes no tree change beyond {target}; nothing to export"
+        )));
+    }
+
+    // Publish the branch.  Opening the pull request itself is the GitHub
+    // bridge (it sunsets with GitHub); the branch is the durable artifact it
+    // needs.
+    git(git_dir, &["branch", branch, &parent])?;
+
+    Ok(PrSummary {
+        fork: source.to_string(),
+        target: target.to_string(),
+        base: base.to_string(),
+        branch: branch.to_string(),
+        tip: parent,
+        commits,
+    })
+}
+
 /// Recover the mirror fork after an upstream rewrite (`tally git
 /// reanchor`).  A force-push replaces the commit the fork imported from with
 /// one that shares no ancestry, so a fast-forward can no longer bridge the
@@ -865,6 +1222,265 @@ mod tests {
         let drifted = resolve_commit(&dir, "HEAD").unwrap();
         assert_ne!(drifted, commit);
         assert_ne!(derive_records(&dir, &drifted).unwrap(), anchored);
+    }
+
+    #[test]
+    fn git_pr_renders_a_fork_as_a_branch_against_the_mirror() {
+        use crate::log::{Annotation, Provenance};
+        use crate::patch::{Intent, Op};
+
+        // A mirror anchored at genesis.
+        let dir = temp_git_repo("pr");
+        std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
+        commit_all(&dir, "genesis");
+        let (repo, base) = init_from_git(&dir, None, "HEAD").unwrap();
+
+        // A fork with two disjoint edits, fused into a single beat.
+        repo.create_fork("feature", "main").unwrap();
+        let note = |prose: &str| Annotation {
+            author: "Dev <dev@example.com>".to_string(),
+            provenance: Provenance::Agent,
+            prose: Some(prose.to_string()),
+            ..Annotation::default()
+        };
+        let create = Intent {
+            ops: vec![Op::Create {
+                path: "/c.txt".to_string(),
+                mode: "100644".to_string(),
+                blob: None,
+                content_b64: Some(crate::b64::encode(b"gamma\n")),
+            }],
+        };
+        let l1 = repo.apply("feature", create, note("add c")).unwrap();
+        let edit = Intent {
+            ops: vec![Op::Edit {
+                path: "/a.txt".to_string(),
+                old_str: "alpha\n".to_string(),
+                new_str: "alpha 2\n".to_string(),
+            }],
+        };
+        let l2 = repo.apply("feature", edit, note("edit a")).unwrap();
+        repo.fuse(
+            "feature",
+            "work",
+            &l1.id,
+            &l2.id,
+            Some("the whole beat".to_string()),
+            "Dev <dev@example.com>",
+        )
+        .unwrap();
+
+        // Export it as a git branch against the mirror.
+        let summary = pr(
+            &repo,
+            None,
+            "feature",
+            "main",
+            "Dev <dev@example.com>",
+            "pr/feature",
+        )
+        .unwrap();
+        assert_eq!(summary.base, base);
+        assert_eq!(summary.branch, "pr/feature");
+        // One fuse over both lines renders as one commit ("one commit per
+        // fused beat").
+        assert_eq!(summary.commits, 1, "the fuse collapses both edits");
+
+        // The branch forks off the base commit.
+        let parent = String::from_utf8(run_git(&dir, &["rev-parse", "pr/feature^"]))
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(parent, base, "the PR forks off the mirror's commit");
+
+        // Its tree is the merged state: the edit landed and the new file is
+        // present, the untouched nothing-else.
+        let a = String::from_utf8(run_git(&dir, &["show", "pr/feature:a.txt"])).unwrap();
+        assert_eq!(a, "alpha 2\n");
+        let c = String::from_utf8(run_git(&dir, &["show", "pr/feature:c.txt"])).unwrap();
+        assert_eq!(c, "gamma\n");
+
+        // The commit message is the fuse's prose (its narrative beat).
+        let subject = String::from_utf8(run_git(
+            &dir,
+            &["show", "-s", "--format=%s", "pr/feature"],
+        ))
+        .unwrap();
+        assert_eq!(subject.trim(), "the whole beat");
+
+        // The mirror itself is untouched — a PR export never mutates main —
+        // and the staging fork is gone.
+        assert_eq!(repo.current_state("main").unwrap().lines.len(), 1);
+        assert!(
+            repo.fork_names()
+                .unwrap()
+                .iter()
+                .all(|n| !n.starts_with("pr-feature-")),
+            "the ephemeral staging fork is cleaned up"
+        );
+
+        // A second export to the same branch refuses rather than rewrite it.
+        let err = pr(
+            &repo,
+            None,
+            "feature",
+            "main",
+            "Dev <dev@example.com>",
+            "pr/feature",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+
+        // A fork that adds nothing beyond the mirror has nothing to export.
+        repo.create_fork("empty", "main").unwrap();
+        let err = pr(&repo, None, "empty", "main", "Dev <dev@x>", "pr/empty").unwrap_err();
+        assert!(err.to_string().contains("nothing to export"), "{err}");
+    }
+
+    #[test]
+    fn git_pr_refuses_a_read_write_conflict_and_leaves_the_mirror_untouched() {
+        use crate::log::Annotation;
+        use crate::patch::{Intent, Op};
+
+        // A git mirror carrying a /config the fork will read and a /handler
+        // it edits.  Import at the early commit, into a root outside the git
+        // tree so later `add -A` commits do not ingest it.
+        let dir = temp_git_repo("pr-conflict");
+        std::fs::write(dir.join("config"), b"MAX=10\n").unwrap();
+        std::fs::write(dir.join("handler"), b"limit = default\n").unwrap();
+        commit_all(&dir, "genesis");
+        let early = resolve_commit(&dir, "HEAD").unwrap();
+        let root = temp_git_repo("pr-conflict-tally");
+        std::fs::remove_dir_all(&root).unwrap();
+        let (repo, _) = init_from_git_linear(&root, Some(&dir), &early).unwrap();
+
+        // A fork whose /handler edit witnesses /config as a read.
+        repo.create_fork("feature", "main").unwrap();
+        let cfg = repo
+            .current_state("feature")
+            .unwrap()
+            .manifest
+            .get("/config")
+            .unwrap()
+            .blob
+            .clone();
+        let edit = Intent {
+            ops: vec![Op::Edit {
+                path: "/handler".to_string(),
+                old_str: "default".to_string(),
+                new_str: "10".to_string(),
+            }],
+        };
+        let mut note = Annotation {
+            author: "Dev <dev@x>".to_string(),
+            ..Annotation::default()
+        };
+        note.reads = Some(serde_json::json!([{"path": "/config", "blob": cfg}]));
+        repo.apply("feature", edit, note).unwrap();
+
+        // The mirror advances: git rewrites the very file the fork read, and
+        // main fast-forwards onto it.  The base now matches the mirror's
+        // state, so it is the §6 union — not the drift check — that refuses.
+        std::fs::write(dir.join("config"), b"MAX=1000\n").unwrap();
+        commit_all(&dir, "raise MAX");
+        let head = resolve_commit(&dir, "HEAD").unwrap();
+        import_from_git(&repo, Some(&dir), &head, "main").unwrap();
+
+        let before = repo.current_state("main").unwrap();
+        let err = pr(&repo, Some(&dir), "feature", "main", "Dev <dev@x>", "pr/feature")
+            .unwrap_err();
+        // The refusal is the read/write gate, not drift or nothing-to-export.
+        assert!(matches!(err, Error::NeedsReenactment(_)), "{err}");
+        assert!(err.to_string().contains("conflict"), "{err}");
+
+        // The mirror is byte-for-byte untouched and no branch was published.
+        let after = repo.current_state("main").unwrap();
+        assert_eq!(after.sum, before.sum, "mirror untouched");
+        assert_eq!(
+            after.lines.len(),
+            before.lines.len(),
+            "no line leaked onto the mirror"
+        );
+        assert!(
+            git(&dir, &["rev-parse", "--verify", "--quiet", "refs/heads/pr/feature"]).is_err(),
+            "no branch published"
+        );
+        assert!(
+            repo.fork_names()
+                .unwrap()
+                .iter()
+                .all(|n| !n.starts_with("pr-feature-")),
+            "the ephemeral staging fork is cleaned up"
+        );
+    }
+
+    #[test]
+    fn git_pr_refuses_when_the_mirror_has_drifted_from_its_import() {
+        use crate::log::Annotation;
+        use crate::patch::{Intent, Op};
+
+        let dir = temp_git_repo("pr-drift");
+        std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
+        commit_all(&dir, "genesis");
+        let (repo, _) = init_from_git(&dir, None, "HEAD").unwrap();
+
+        // A local edit moves main off the tree its import recorded.
+        let edit = Intent {
+            ops: vec![Op::Edit {
+                path: "/a.txt".to_string(),
+                old_str: "alpha\n".to_string(),
+                new_str: "drifted\n".to_string(),
+            }],
+        };
+        repo.apply(
+            "main",
+            edit,
+            Annotation {
+                author: "Dev <dev@x>".to_string(),
+                ..Annotation::default()
+            },
+        )
+        .unwrap();
+        repo.create_fork("feature", "main").unwrap();
+
+        let err = pr(&repo, None, "feature", "main", "Dev <dev@x>", "pr/feature").unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("has drifted"), "{err}");
+    }
+
+    #[test]
+    fn git_pr_refuses_a_target_with_no_git_import() {
+        use crate::log::Annotation;
+        use crate::patch::{Intent, Op};
+
+        // A plain tally repo — main was never imported from git, so there is
+        // no base commit to export a branch against.
+        let dir = std::env::temp_dir()
+            .join(format!("tally-git-pr-noimport-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        repo.apply(
+            "main",
+            Intent {
+                ops: vec![Op::Create {
+                    path: "/a.txt".to_string(),
+                    mode: "100644".to_string(),
+                    blob: None,
+                    content_b64: Some(crate::b64::encode(b"alpha\n")),
+                }],
+            },
+            Annotation {
+                author: "Dev <dev@x>".to_string(),
+                ..Annotation::default()
+            },
+        )
+        .unwrap();
+        repo.create_fork("feature", "main").unwrap();
+
+        let err = pr(&repo, None, "feature", "main", "Dev <dev@x>", "pr/feature").unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err}");
+        assert!(err.to_string().contains("no git import"), "{err}");
     }
 
     #[test]
