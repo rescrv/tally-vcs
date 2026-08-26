@@ -478,6 +478,8 @@ They've done commutative patches for 20+ years.
 Tally differs in that it observes tool calls rather than inferring from the text, and the setsum
 gives a predictable, fixed-size verifiable identity for the resulting state.
 
+I'm looking forward to learning more about Delta from the makers of Zed.
+
 ## Next Steps
 
 I'm looking for someone who wants to build a GitHub replacement in the open.  This repo name at
