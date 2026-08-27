@@ -660,8 +660,10 @@ fn write_git_tree(
     one_oid(out, "write-tree")
 }
 
-/// Split a `Name <email>` author string into (name, email), falling back to
-/// a placeholder email when the string carries no angle-bracketed address.
+/// Split a `Name <email>` author string into (name, email).  An author with
+/// no angle-bracketed address (e.g. `git-import`) yields an empty email
+/// rather than a fabricated one: git renders `Name <>` verbatim, so the
+/// export stays honest about the absence instead of inventing an identity.
 fn split_author(author: &str) -> (String, String) {
     if let Some(open) = author.rfind('<')
         && let Some(rel_close) = author[open..].find('>')
@@ -671,7 +673,7 @@ fn split_author(author: &str) -> (String, String) {
         let name = if name.is_empty() { email } else { name };
         return (name.to_string(), email.to_string());
     }
-    (author.to_string(), "tally@example.com".to_string())
+    (author.to_string(), String::new())
 }
 
 /// Create a commit object for `tree` with `parent`, stamping author and
@@ -1117,6 +1119,21 @@ fn annotate_import(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_author_leaves_a_bare_name_without_an_email() {
+        // An angle-bracketed address splits into its parts.
+        assert_eq!(
+            split_author("tally <tally@example.com>"),
+            ("tally".to_string(), "tally@example.com".to_string())
+        );
+        // A bare name (as import stamps) yields an empty email rather than a
+        // fabricated one — git renders `git-import <>` verbatim.
+        assert_eq!(
+            split_author("git-import"),
+            ("git-import".to_string(), String::new())
+        );
+    }
 
     fn run_git(dir: &Path, args: &[&str]) -> Vec<u8> {
         git(dir, args).unwrap()
