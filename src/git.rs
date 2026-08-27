@@ -572,6 +572,12 @@ pub fn pull(
 /// `commit-tree`) need a body on stdin and a scratch index or identity in the
 /// environment; the read-only [`git`] helper delegates here with no stdin and
 /// no env, so a single spawn+stderr path serves both.
+///
+/// The stdout is returned raw, never trimmed: `cat-file blob` (via
+/// [`read_git_blob`]) carries byte-exact content that a trailing newline
+/// belongs to.  Trimming is a per-caller choice — [`one_oid`] trims object
+/// names, and the text readers trim through `str::lines`/`str::trim` — so it
+/// stays where the meaning of the whitespace is known.
 fn git_plumb(
     dir: &Path,
     args: &[&str],
