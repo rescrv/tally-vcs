@@ -482,7 +482,7 @@ I'm looking forward to learning more about Delta from the makers of Zed.
 
 ## Next Steps
 
-I'm looking for someone who wants to build a GitHub replacement in the open.  This repo name
+I'm looking for someone who wants to build a GitHub replacement.  This repo name
 @cl4p-tp.ai will get you to my inbox.
 
 The labs will do it if we don't.
