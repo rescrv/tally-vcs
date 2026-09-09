@@ -312,9 +312,6 @@ pub fn unpack_segments(
                 }
                 crate::segment::Enc::Lines { fork, .. } => {
                     let bytes = segment.materialize(entry, &no_blob, &no_line)?;
-                    for line in parse_log_strict(&bytes)? {
-                        lines_by_id.insert(line.id.clone(), line);
-                    }
                     spans
                         .entry((segid.clone(), fork.clone()))
                         .or_default()
@@ -327,6 +324,19 @@ pub fn unpack_segments(
                     blobs.insert(entry.sha3.clone(), bytes);
                 }
             }
+        }
+    }
+    // Log lines parse once every stored blob is gathered: an overflowed
+    // line's blob may sit in any entry of any segment.
+    let fetch_stored_blob = |h: &str| -> Result<Vec<u8>> {
+        blobs
+            .get(h)
+            .cloned()
+            .ok_or_else(|| Error::Corrupt(format!("log references absent blob {h}")))
+    };
+    for bytes in spans.values() {
+        for line in parse_log_strict(bytes, &fetch_stored_blob)? {
+            lines_by_id.insert(line.id.clone(), line);
         }
     }
     // Second pass: constructs apply only verified inputs.
@@ -412,11 +422,18 @@ pub fn restore(unpacked: &Unpacked, dest: &Path) -> Result<Repository> {
     let empty: Vec<u8> = Vec::new();
     let mut known: BTreeMap<String, Manifest> = BTreeMap::new();
     known.insert(Sum::zero().hexdigest(), Manifest::new());
+    let fetch_blob = |h: &str| -> Result<Vec<u8>> {
+        unpacked
+            .blobs
+            .get(h)
+            .cloned()
+            .ok_or_else(|| Error::Corrupt(format!("log references absent blob {h}")))
+    };
     let mut parsed: BTreeMap<&String, Vec<LogLine>> = BTreeMap::new();
     for fork in unpacked.manifest.forks.keys() {
         parsed.insert(
             fork,
-            parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty))?,
+            parse_log_strict(unpacked.logs.get(fork).unwrap_or(&empty), &fetch_blob)?,
         );
     }
     // Every state a log passes through is derivable by replay, guarded by
@@ -663,6 +680,39 @@ mod tests {
             manifest.total_image().unwrap(),
             repacked.total_image().unwrap(),
             "re-encoding preserves the image"
+        );
+    }
+
+    #[test]
+    fn overflowed_line_survives_pack_unpack() {
+        // A line too large even after its reads spill overflows whole into
+        // a blob (`{"line_blob": "<hex>"}`); the packed image must record
+        // the resolved line's id and the restored log must stay
+        // byte-identical.
+        let repo = populated("overflow");
+        let big = Annotation {
+            prose: Some("x".repeat(crate::log::SPILL_THRESHOLD * 2)),
+            ..note()
+        };
+        repo.apply("main", create("/big.txt", b"big\n"), big)
+            .unwrap();
+        let refs = crate::log::line_blob_refs(&repo.log_bytes("main").unwrap());
+        assert_eq!(refs.len(), 1, "the oversized line overflowed");
+        let packed = temp_dir("overflow-packed");
+        pack(&repo, &packed, 1, "", 3).unwrap();
+        let restored = unpack_dir(&packed, &temp_dir("overflow-restored")).unwrap();
+        assert_eq!(
+            repo.log_bytes("main").unwrap(),
+            restored.log_bytes("main").unwrap(),
+            "log bytes of main"
+        );
+        assert_eq!(
+            repo.blobs().list().unwrap(),
+            restored.blobs().list().unwrap()
+        );
+        assert_eq!(
+            repo.current_state("main").unwrap().lines,
+            restored.current_state("main").unwrap().lines,
         );
     }
 

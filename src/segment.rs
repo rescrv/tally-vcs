@@ -449,7 +449,9 @@ impl Segment {
                     let text = std::str::from_utf8(&bytes)
                         .map_err(|_| Error::Corrupt("log span is not UTF-8".to_string()))?;
                     for line in text.lines() {
-                        let parsed = LogLine::parse(line)?;
+                        // Overflowed lines name their blob; the image
+                        // records the resolved line's id either way.
+                        let parsed = LogLine::parse_with(line, fetch_blob)?;
                         items.push(ImageItem::Line(parsed.id));
                     }
                 }

@@ -5,15 +5,19 @@
 //! deliberately redundant: it makes every log prefix independently
 //! verifiable and corruption bisectable.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::blobs::BlobStore;
-use crate::ident::{Sum, canonical_json, record_id};
+use crate::ident::{Sum, canonical_json, is_hex64, record_id};
 use crate::patch::{Intent, RealizedEntry, apply_realized_to_sum};
 use crate::{Error, Result};
 
-/// A log line MUST be under this many bytes (§5); `reads` past the limit
-/// spills whole into a blob.  The one parameter that is format, not policy.
+/// A stored log line MUST be under this many bytes (§5); content past the
+/// limit overflows into the blob pool: first `reads` spills whole into a
+/// blob, then the line itself (`{"line_blob": "<hex>"}`).  The one
+/// parameter that is format, not policy.
 pub const SPILL_THRESHOLD: usize = 65536;
 
 /// Who produced a line.
@@ -185,9 +189,11 @@ impl LogLine {
         record_id(&serde_json::to_value(self)?)
     }
 
-    /// Seal the line: stamp the commit time, apply the spill rule, then
+    /// Seal the line: stamp the commit time, apply the spill rules, then
     /// compute and set `id`.  Returns the canonical bytes to append,
-    /// trailing LF included.
+    /// trailing LF included.  A line too large for the log even after its
+    /// reads spill overflows whole into a blob — no line is too large to
+    /// commit.
     pub fn seal(&mut self, blobs: &BlobStore) -> Result<Vec<u8>> {
         self.validate()?;
         if self.committed_ms == 0 {
@@ -199,13 +205,15 @@ impl LogLine {
         self.spill_reads_if_needed(blobs)?;
         self.id = self.compute_id()?;
         let mut bytes = canonical_json(&serde_json::to_value(&*self)?)?.into_bytes();
-        bytes.push(b'\n');
         if bytes.len() > SPILL_THRESHOLD {
-            return Err(Error::Invalid(format!(
-                "log line is {} bytes even after spilling reads; the limit is {SPILL_THRESHOLD}",
-                bytes.len()
-            )));
+            // Overflow: the line's canonical bytes move whole into a blob
+            // and the stored line becomes `{"line_blob": "<hex>"}`.  The
+            // blob is durable before the append that references it, exactly
+            // as with a spilled read set (I8 write-ahead ordering).
+            let hash = blobs.put(&bytes)?;
+            bytes = canonical_json(&serde_json::json!({ "line_blob": hash }))?.into_bytes();
         }
+        bytes.push(b'\n');
         Ok(bytes)
     }
 
@@ -233,12 +241,107 @@ impl LogLine {
     /// Parse one line and verify its id.  Byte preservation (I4) means the
     /// stored bytes are authoritative; the id must re-verify against them.
     pub fn parse(line: &str) -> Result<Self> {
-        let value: serde_json::Value = serde_json::from_str(line)?;
+        match StoredLine::parse(line)? {
+            StoredLine::Line(parsed) => Ok(*parsed),
+            StoredLine::BlobRef(hash) => Err(Error::Invalid(format!(
+                "log line is an overflow reference to blob {hash}; \
+                 resolve it with LogLine::parse_with"
+            ))),
+        }
+    }
+
+    /// Parse one stored line, resolving an overflow reference
+    /// (`{"line_blob": "<hex>"}`) through `fetch`, which must return the
+    /// named blob's bytes.  The resolved line's id re-verifies against the
+    /// blob bytes exactly as for an inline line.
+    pub fn parse_with(text: &str, fetch: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Self> {
+        StoredLine::parse(text)?.resolve(fetch)
+    }
+}
+
+/// One stored log line, structurally parsed: the line inline, or an
+/// overflow reference (`{"line_blob": "<hex>"}`, §2.5) naming the blob that
+/// holds the line's canonical bytes.  Resolution is a separate step so that
+/// an unreadable blob reports as corruption, never as a torn tail.
+enum StoredLine {
+    Line(Box<LogLine>),
+    BlobRef(String),
+}
+
+impl StoredLine {
+    fn parse(text: &str) -> Result<StoredLine> {
+        let value: serde_json::Value = serde_json::from_str(text)?;
+        if let Some(hash) = line_blob_ref(&value) {
+            return Ok(StoredLine::BlobRef(hash));
+        }
         crate::ident::verify_record_id(&value)?;
         let parsed: LogLine = serde_json::from_value(value)?;
         parsed.validate()?;
-        Ok(parsed)
+        Ok(StoredLine::Line(Box::new(parsed)))
     }
+
+    fn resolve(self, fetch: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<LogLine> {
+        match self {
+            StoredLine::Line(line) => Ok(*line),
+            StoredLine::BlobRef(hash) => {
+                let bytes = fetch(&hash).map_err(|err| {
+                    Error::Corrupt(format!(
+                        "overflowed line's blob {hash} is unreadable: {err}"
+                    ))
+                })?;
+                let text = std::str::from_utf8(&bytes).map_err(|_| {
+                    Error::Corrupt(format!("overflowed line's blob {hash} is not UTF-8"))
+                })?;
+                let value: serde_json::Value = serde_json::from_str(text).map_err(|err| {
+                    Error::Corrupt(format!(
+                        "overflowed line's blob {hash} is not one JSON record: {err}"
+                    ))
+                })?;
+                crate::ident::verify_record_id(&value)?;
+                let parsed: LogLine = serde_json::from_value(value)?;
+                parsed.validate()?;
+                Ok(parsed)
+            }
+        }
+    }
+}
+
+/// The hash a stored line's overflow reference names, if the line is
+/// exactly `{"line_blob": "<hex64>"}` and nothing else.
+fn line_blob_ref(value: &serde_json::Value) -> Option<String> {
+    let object = value.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    let hash = object.get("line_blob")?.as_str()?;
+    is_hex64(hash).then(|| hash.to_string())
+}
+
+/// The blob hashes a raw log's overflow references (`line_blob`) name,
+/// scanned leniently to the first invalid line, matching
+/// [`parse_log_lenient`].  Reachability (blob gc) needs the references,
+/// which resolution discards.
+pub fn line_blob_refs(bytes: &[u8]) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let Some(i) = bytes[offset..].iter().position(|&b| b == b'\n') else {
+            break;
+        };
+        let end = offset + i + 1;
+        let Ok(text) = std::str::from_utf8(&bytes[offset..end - 1]) else {
+            break;
+        };
+        match StoredLine::parse(text) {
+            Ok(StoredLine::BlobRef(hash)) => {
+                refs.insert(hash);
+            }
+            Ok(StoredLine::Line(_)) => {}
+            Err(_) => break,
+        }
+        offset = end;
+    }
+    refs
 }
 
 /// The result of leniently parsing a log: verified lines plus the byte
@@ -252,13 +355,19 @@ pub struct ParsedLog {
     pub valid_prefix: usize,
 }
 
-/// Parse `log.jsonl` bytes, stopping at the first torn line.  Leniency
+/// Parse `log.jsonl` bytes, stopping at the first torn line, resolving
+/// overflow references (`{"line_blob": "<hex>"}`) through `fetch`.  Leniency
 /// covers exactly one shape of damage: a torn *tail*, the residue of a
 /// crash mid-append.  If any line past the sheer point parses as a valid
 /// log line, the damage is in the middle of the log — that is corruption,
-/// never truncated, always an error.
-pub fn parse_log_lenient(bytes: &[u8]) -> Result<ParsedLog> {
-    let mut lines = Vec::new();
+/// never truncated, always an error.  Resolution is not leniency: a
+/// reference's blob lands before the append that names it, so an
+/// unreadable overflow blob is corruption, never a torn tail.
+pub fn parse_log_lenient(
+    bytes: &[u8],
+    fetch: &dyn Fn(&str) -> Result<Vec<u8>>,
+) -> Result<ParsedLog> {
+    let mut stored = Vec::new();
     let mut valid_prefix = 0;
     let mut offset = 0;
     while offset < bytes.len() {
@@ -269,8 +378,8 @@ pub fn parse_log_lenient(bytes: &[u8]) -> Result<ParsedLog> {
         let Ok(text) = std::str::from_utf8(&bytes[offset..end - 1]) else {
             break;
         };
-        match LogLine::parse(text) {
-            Ok(line) => lines.push(line),
+        match StoredLine::parse(text) {
+            Ok(line) => stored.push(line),
             Err(_) => break,
         }
         valid_prefix = end;
@@ -282,12 +391,16 @@ pub fn parse_log_lenient(bytes: &[u8]) -> Result<ParsedLog> {
         let Ok(text) = std::str::from_utf8(chunk) else {
             continue;
         };
-        if LogLine::parse(text).is_ok() {
+        if StoredLine::parse(text).is_ok() {
             return Err(Error::Corrupt(format!(
                 "valid log line follows a torn line {i} past byte {valid_prefix}: \
                  corruption mid-log, not a torn tail"
             )));
         }
+    }
+    let mut lines = Vec::with_capacity(stored.len());
+    for line in stored {
+        lines.push(line.resolve(fetch)?);
     }
     Ok(ParsedLog {
         lines,
@@ -296,8 +409,11 @@ pub fn parse_log_lenient(bytes: &[u8]) -> Result<ParsedLog> {
 }
 
 /// Strictly parse a log: any torn or trailing garbage is corruption.
-pub fn parse_log_strict(bytes: &[u8]) -> Result<Vec<LogLine>> {
-    let parsed = parse_log_lenient(bytes)?;
+pub fn parse_log_strict(
+    bytes: &[u8],
+    fetch: &dyn Fn(&str) -> Result<Vec<u8>>,
+) -> Result<Vec<LogLine>> {
+    let parsed = parse_log_lenient(bytes, fetch)?;
     if parsed.valid_prefix != bytes.len() {
         return Err(Error::Corrupt(format!(
             "log has {} bytes of garbage after byte {}",
@@ -417,20 +533,22 @@ mod tests {
     #[test]
     fn torn_tail_is_truncated_not_fatal() {
         let store = blobs("torn");
+        let fetch = |h: &str| store.get(h);
         let mut sum = Sum::zero();
         let mut line = line_adding("/a", b"a", "", &mut sum);
         let mut bytes = line.seal(&store).unwrap();
         let good_len = bytes.len();
         bytes.extend_from_slice(b"{\"id\":\"torn");
-        let parsed = parse_log_lenient(&bytes).unwrap();
+        let parsed = parse_log_lenient(&bytes, &fetch).unwrap();
         assert_eq!(parsed.lines.len(), 1);
         assert_eq!(parsed.valid_prefix, good_len);
-        assert!(parse_log_strict(&bytes).is_err());
+        assert!(parse_log_strict(&bytes, &fetch).is_err());
     }
 
     #[test]
     fn corruption_mid_log_is_an_error_not_a_truncation() {
         let store = blobs("midlog");
+        let fetch = |h: &str| store.get(h);
         let mut sum = Sum::zero();
         let mut first = line_adding("/a", b"a", "", &mut sum);
         let mut bytes = first.seal(&store).unwrap();
@@ -440,7 +558,7 @@ mod tests {
         bytes.extend_from_slice(b"{\"id\":\"torn\n");
         bytes.extend_from_slice(&second_bytes);
         assert!(
-            matches!(parse_log_lenient(&bytes), Err(Error::Corrupt(_))),
+            matches!(parse_log_lenient(&bytes, &fetch), Err(Error::Corrupt(_))),
             "a valid line after the sheer point is corruption, not a torn tail"
         );
     }
@@ -498,5 +616,68 @@ mod tests {
         let recovered: serde_json::Value =
             serde_json::from_slice(&store.get(hash).unwrap()).unwrap();
         assert_eq!(recovered, reads);
+    }
+
+    #[test]
+    fn oversized_line_overflows_wholesale_to_a_blob() {
+        let store = blobs("overflow");
+        let fetch = |h: &str| store.get(h);
+        let mut sum = Sum::zero();
+        let mut line = line_adding("/a", b"a", "", &mut sum);
+        // Reads big enough to spill, plus prose big enough to keep the line
+        // over the threshold afterwards: the whole line overflows, naming
+        // the spilled reads blob from inside the line blob.
+        let big: Vec<serde_json::Value> = (0..4096)
+            .map(|i| serde_json::json!({"path": format!("/file-{i}"), "blob": "ab".repeat(32)}))
+            .collect();
+        line.annotation.reads = Some(serde_json::Value::Array(big));
+        line.annotation.prose = Some("x".repeat(SPILL_THRESHOLD * 2));
+        let bytes = line.seal(&store).unwrap();
+        assert!(bytes.len() < SPILL_THRESHOLD);
+        // The stored line is exactly the reference.
+        let text = std::str::from_utf8(&bytes[..bytes.len() - 1]).unwrap();
+        let reference: serde_json::Value = serde_json::from_str(text).unwrap();
+        let hash = reference
+            .get("line_blob")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(reference, serde_json::json!({ "line_blob": hash }));
+        // Resolution re-verifies the id against the blob bytes and the
+        // chain arithmetic still folds.
+        let parsed = parse_log_strict(&bytes, &fetch).unwrap();
+        assert_eq!(parsed, vec![line.clone()]);
+        let final_sum = verify_chain(&Sum::zero(), &parsed).unwrap();
+        assert_eq!(final_sum, sum);
+        // Reachability sees the reference; the spilled reads set is named
+        // inside the resolved line.
+        assert_eq!(
+            line_blob_refs(&bytes).into_iter().collect::<Vec<_>>(),
+            vec![hash]
+        );
+        assert!(
+            parsed[0]
+                .annotation
+                .reads
+                .as_ref()
+                .unwrap()
+                .get("reads_blob")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn absent_overflow_blob_is_corruption_not_truncation() {
+        let store = blobs("overflow-absent");
+        let mut sum = Sum::zero();
+        let mut line = line_adding("/a", b"a", "", &mut sum);
+        line.annotation.prose = Some("x".repeat(SPILL_THRESHOLD * 2));
+        let bytes = line.seal(&store).unwrap();
+        let empty = blobs("overflow-empty");
+        let result = parse_log_lenient(&bytes, &|h: &str| empty.get(h));
+        assert!(
+            matches!(result, Err(Error::Corrupt(_))),
+            "the blob lands before the append: an absent one is corruption"
+        );
     }
 }

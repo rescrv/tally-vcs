@@ -631,7 +631,12 @@ fn one_oid(out: Vec<u8>, what: &str) -> Result<String> {
 
 /// Write `content` into the git object database as a blob; returns its oid.
 fn write_git_blob(git_dir: &Path, content: &[u8]) -> Result<String> {
-    let out = git_plumb(git_dir, &["hash-object", "-w", "--stdin"], Some(content), &[])?;
+    let out = git_plumb(
+        git_dir,
+        &["hash-object", "-w", "--stdin"],
+        Some(content),
+        &[],
+    )?;
     one_oid(out, "hash-object")
 }
 
@@ -816,7 +821,16 @@ pub fn pr(
 
     // Refuse before rendering if the branch ref already exists — a PR export
     // never silently rewrites a branch.
-    if git(&git_dir, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok()
+    if git(
+        &git_dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
     {
         return Err(Error::Invalid(format!(
             "branch {branch} already exists; delete it or name another with --branch"
@@ -1324,11 +1338,8 @@ mod tests {
         assert_eq!(c, "gamma\n");
 
         // The commit message is the fuse's prose (its narrative beat).
-        let subject = String::from_utf8(run_git(
-            &dir,
-            &["show", "-s", "--format=%s", "pr/feature"],
-        ))
-        .unwrap();
+        let subject =
+            String::from_utf8(run_git(&dir, &["show", "-s", "--format=%s", "pr/feature"])).unwrap();
         assert_eq!(subject.trim(), "the whole beat");
 
         // The mirror itself is untouched — a PR export never mutates main —
@@ -1410,8 +1421,15 @@ mod tests {
         import_from_git(&repo, Some(&dir), &head, "main").unwrap();
 
         let before = repo.current_state("main").unwrap();
-        let err = pr(&repo, Some(&dir), "feature", "main", "Dev <dev@x>", "pr/feature")
-            .unwrap_err();
+        let err = pr(
+            &repo,
+            Some(&dir),
+            "feature",
+            "main",
+            "Dev <dev@x>",
+            "pr/feature",
+        )
+        .unwrap_err();
         // The refusal is the read/write gate, not drift or nothing-to-export.
         assert!(matches!(err, Error::NeedsReenactment(_)), "{err}");
         assert!(err.to_string().contains("conflict"), "{err}");
@@ -1425,7 +1443,11 @@ mod tests {
             "no line leaked onto the mirror"
         );
         assert!(
-            git(&dir, &["rev-parse", "--verify", "--quiet", "refs/heads/pr/feature"]).is_err(),
+            git(
+                &dir,
+                &["rev-parse", "--verify", "--quiet", "refs/heads/pr/feature"]
+            )
+            .is_err(),
             "no branch published"
         );
         assert!(
@@ -1478,8 +1500,8 @@ mod tests {
 
         // A plain tally repo — main was never imported from git, so there is
         // no base commit to export a branch against.
-        let dir = std::env::temp_dir()
-            .join(format!("tally-git-pr-noimport-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tally-git-pr-noimport-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let repo = Repository::init(&dir).unwrap();

@@ -377,7 +377,8 @@ impl Repository {
     pub fn read_log(&self, fork: &str) -> Result<Vec<LogLine>> {
         let path = self.log_path(fork);
         let bytes = fs::read(&path).map_err(ioerr(format!("reading log of fork {fork}")))?;
-        let parsed = parse_log_lenient(&bytes)?;
+        let blobs = self.blobs();
+        let parsed = parse_log_lenient(&bytes, &|hash: &str| blobs.get(hash))?;
         if parsed.valid_prefix != bytes.len() {
             let file = fs::OpenOptions::new()
                 .write(true)
@@ -1251,7 +1252,8 @@ impl Repository {
     /// The blob hashes any fork reaches: every fork's anchor manifest
     /// records, every log line's realized adds (which name every blob ever
     /// added along the history), each line's spilled read set (`reads_blob`)
-    /// and andon signature (`sig`).  This is the reachability root for
+    /// and andon signature (`sig`), and each overflowed line's blob
+    /// (`line_blob`).  This is the reachability root for
     /// [`Repository::gc_blobs`].
     pub fn referenced_blobs(&self) -> Result<BTreeSet<String>> {
         let mut referenced = BTreeSet::new();
@@ -1260,6 +1262,7 @@ impl Repository {
             for record in self.read_anchor_manifest(&fork_file.manifest)?.records() {
                 referenced.insert(record.blob.clone());
             }
+            referenced.extend(crate::log::line_blob_refs(&self.log_bytes(&fork)?));
             for line in self.current_state(&fork)?.lines {
                 for entry in &line.realized {
                     if let Some(added) = entry.added()? {

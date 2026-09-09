@@ -209,10 +209,15 @@ Semantics, pinned:
   line, it re-keys `from` and `to` through the `origin → landed id`
   correspondence it already computes, so the span names lines on the target
   chain; the name travels untouched.
-- **Spill rule.** A log line MUST be under 65536 bytes. If `reads` pushes
-  past the limit, the array moves whole into a blob and the field becomes
-  `{"reads_blob": "<hex>"}`. The log stays line-scannable; the exhaust stays
-  kept.
+- **Spill rule.** A stored log line MUST be under 65536 bytes; content past
+  the limit overflows into the blob pool rather than failing. If `reads`
+  pushes past the limit, the array moves whole into a blob and the field
+  becomes `{"reads_blob": "<hex>"}`. If the line still exceeds the limit,
+  the line's canonical bytes move whole into a blob and the stored line
+  becomes `{"line_blob": "<hex>"}`; readers resolve the reference through
+  the pool and verify the line's id against the blob bytes. The log stays
+  line-scannable, the exhaust stays kept, and no line is too large to
+  commit.
 
 ### §2.6 Fuses and views
 

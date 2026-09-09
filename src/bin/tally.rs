@@ -326,9 +326,17 @@ fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
 fn cmd_git_pr(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {
-        #[arrrg(optional, "The mirror fork to export against (default: the binding, or main).", "FORK")]
+        #[arrrg(
+            optional,
+            "The mirror fork to export against (default: the binding, or main).",
+            "FORK"
+        )]
         into: Option<String>,
-        #[arrrg(optional, "The branch ref to create (default: tally/pr/<fork>).", "BRANCH")]
+        #[arrrg(
+            optional,
+            "The branch ref to create (default: tally/pr/<fork>).",
+            "BRANCH"
+        )]
         branch: Option<String>,
         #[arrrg(
             optional,
@@ -372,7 +380,10 @@ fn cmd_git_pr(args: &[&str]) -> Result<()> {
         "branch {} at {} ({} commit(s))",
         summary.branch, summary.tip, summary.commits
     );
-    println!("open a pull request from {} into {}", summary.branch, summary.target);
+    println!(
+        "open a pull request from {} into {}",
+        summary.branch, summary.target
+    );
     Ok(())
 }
 
