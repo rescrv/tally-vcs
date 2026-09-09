@@ -378,7 +378,8 @@ impl Repository {
         let path = self.log_path(fork);
         let bytes = fs::read(&path).map_err(ioerr(format!("reading log of fork {fork}")))?;
         let blobs = self.blobs();
-        let parsed = parse_log_lenient(&bytes, &|hash: &str| blobs.get(hash))?;
+        let fetch = |h: &str| -> Result<Vec<u8>> { blobs.get(h) };
+        let parsed = parse_log_lenient(&bytes, &fetch)?;
         if parsed.valid_prefix != bytes.len() {
             let file = fs::OpenOptions::new()
                 .write(true)
@@ -652,6 +653,31 @@ impl Repository {
     /// §2.7 Apply: the seven steps, with the fsync'd log append as the sole
     /// linearization point (I8).
     pub fn apply(&self, fork: &str, intent: Intent, annotation: Annotation) -> Result<LogLine> {
+        self.apply_inner(fork, intent, annotation, true)
+    }
+
+    /// Record an externally completed edit without refreshing the working tree.
+    ///
+    /// Preconditions, locking and durability are identical to [`Self::apply`].
+    /// The caller supplies the observed intent; this method does not infer it
+    /// from disk. This lets post-tool hooks record history without overwriting
+    /// edits that have already happened (or a subsequent external edit).
+    pub fn record_observed(
+        &self,
+        fork: &str,
+        intent: Intent,
+        annotation: Annotation,
+    ) -> Result<LogLine> {
+        self.apply_inner(fork, intent, annotation, false)
+    }
+
+    fn apply_inner(
+        &self,
+        fork: &str,
+        intent: Intent,
+        annotation: Annotation,
+        refresh: bool,
+    ) -> Result<LogLine> {
         // 0. flock forks/<f>/lock
         let _lock = self.lock_fork(fork)?;
         // 1. LOAD current manifest.
@@ -694,7 +720,9 @@ impl Repository {
         file.sync_all().map_err(ioerr("fsyncing log"))?;
         fsync_dir(self.fork_dir(fork).as_path())?;
         // 6. REFRESH working tree; best-effort, derived.
-        let _ = self.refresh_working_tree(&line);
+        if refresh {
+            let _ = self.refresh_working_tree(&line);
+        }
         // 7. unlock (drop).
         Ok(line)
     }
