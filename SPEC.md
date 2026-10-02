@@ -297,9 +297,14 @@ seg/<segid>.pk               # payload: standard zstd frames
 seg/<segid>.idx              # entry table, plain text
 ```
 
-`segid` is the lowercase hex SHA3-256 of the `.pk` bytes — segments are
+`segid` is the lowercase hex SHA3-256 of `pk_sha3 ‖ idx_sha3` — the two
+halves' SHA3-256s as 128 lowercase hex characters. Segments are
 content-addressed, so immutability is enforced by naming, uploads are
-idempotent, and caches never invalidate. `.pk` payloads use standard zstd
+idempotent, and caches never invalidate. The id commits to the `.idx` as
+well as the `.pk` because equal frame bytes can carry different entry
+tables — a `construct` stores no bytes, and the same bytes can be cut into
+entries differently — and both objects are named by the id: an id over the
+`.pk` alone lets two segments claim one `.idx` name. `.pk` payloads use standard zstd
 frames so that a raw segment yields to `zstd -d` without `tally` present.
 
 `.idx` is one line per entry, space-separated, LF-terminated:
@@ -315,7 +320,7 @@ where offsets and lengths refer to the decompressed frame, and:
 | `raw` | bytes as-is | — | — |
 | `zstd` | bytes are in the zstd frame | — | — |
 | `zstdd` | zstd with dictionary | dictionary blob hash | — |
-| `construct` | no bytes stored | base blob hash | log line id |
+| `construct` | no bytes stored | base blob hash, or the empty blob | log line id |
 | `lines` | byte-preserved log span | fork name | first..last line id |
 
 `construct` says: this blob is the result of applying the named line's edit
@@ -323,16 +328,26 @@ ops for this path to the base blob. It stores nothing but the reference —
 the op bytes already live in the log, so versioned files are deduplicated
 against the history that produced them. A `construct` entry MUST reproduce
 the blob's exact bytes; since the blob's name is its content hash, every
-materialization is self-verifying. Chains bottom out at **keyframes** —
-versions stored `raw`/`zstd`/`zstdd`.
+materialization is self-verifying, and a packer emits one only after
+replaying it locally. The base is the blob at the path before the line, or
+the **empty blob** (`a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a`,
+the SHA3-256 of no bytes) when the line creates the path from inline
+content: the empty blob is implicitly present in every pack, so a create is
+an edit from nothing and stores no bytes either. A base may itself be a
+`construct` in any live segment; readers resolve chains in dependency
+order, and a base that never resolves (absent, or a cycle) is corruption.
+A blob a log line overflows into (§2.5) MUST be stored whole, never as a
+`construct`: readers parse lines once stored blobs are gathered and resolve
+constructs only after, so a line must never wait on one.
+Chains bottom out at **keyframes** — versions stored `raw`/`zstd`/`zstdd`.
 
 > **Keyframe interval K is a cache policy, not a format parameter** (corollary
 > of I1). It may differ per path, per class, per segment, and may be changed
 > retroactively by re-encoding: deepening chains demotes known-good keyframes
 > to references; shallowing chains materializes (replay + hash check) and
 > promotes. Neither direction touches any hash. Default K = 32 for text,
-> K = 1 for blobs the packer cannot construct (binaries, `create` payloads,
-> union re-enactments).
+> K = 1 for blobs the packer cannot construct (binaries, creates by blob
+> reference, exhaust no line produces).
 
 Log spans (`lines`) are byte-preserved per I4: exact JSONL bytes inside the
 zstd frame, never transcoded — ids must re-verify after decode.
@@ -355,7 +370,7 @@ manifest/<seq>.json          # canonical JSON, id per §1.3, put-if-absent
             "head_sum": "<64 hex>",
             "log_segments": ["<segid>", …]}},
  "segments": {
-   "<segid>": {"pk_sha3": "<hex, equals segid>", "idx_sha3": "<hex>",
+   "<segid>": {"pk_sha3": "<hex>", "idx_sha3": "<hex>",
                "bytes": 123456, "entries": 400,
                "image_setsum": "<64 hex>",
                "log_span": ["<first id>", "<last id>"]}},
@@ -371,24 +386,44 @@ segment's **image items** — one canonical record per entry, regardless of
 encoding:
 
 ```
-blob  <TAB> <content sha3 hex> <LF>     # raw, zstd, zstdd, and construct alike
-line  <TAB> <line id>          <LF>
-dict  <TAB> <content sha3 hex> <LF>
+blob  <TAB> <content sha3 hex>       <LF>   # raw, zstd, zstdd, and construct alike
+line  <TAB> <fork> <TAB> <line id>   <LF>
+dict  <TAB> <content sha3 hex>       <LF>
 ```
 
 A `construct` entry contributes the same `blob` item a keyframe of the same
-content would: the image is *logical*, encoding-blind. The pair is the Wall
-(I1) made verifiable: two segments with equal `image_setsum` and unequal
-`pk_sha3` are re-encodings of the same content; unequal `image_setsum` is
-content forgery. Scrub is stratified like union: arithmetic on setsums and
-byte counts first; decompress-and-rehash only on suspicion. `prev` chains
-manifests, so the history of swaps is itself an auditable log.
+content would: the image is *logical*, encoding-blind. Line items are
+fork-qualified because a fork's log is what a span stores: two forks that
+each carry a line with the same id carry two items.
+
+The pair is the Wall (I1) made verifiable: two segments with equal
+`image_setsum` and unequal `pk_sha3` are re-encodings of the same content;
+unequal `image_setsum` is content forgery. Scrub is stratified like union:
+arithmetic on setsums and byte counts first; decompress-and-rehash only on
+suspicion. `prev` chains manifests, so the history of swaps is itself an
+auditable log.
+
+> **I12 (the image is a set).** No image item is stored in more than one
+> live segment. Writers maintain it (§4 push carries only what no live
+> segment holds); a writer MUST refuse to build on a manifest that violates
+> it, and a reader MAY.
+
+I12 is what makes every equation below exact. Image setsums add, and sums
+cannot see multiplicity: a store holding one blob twice has a total image
+that counts it twice, and a compaction that kept one copy would have to
+declare the other as dropped — a claim the arithmetic balances but cannot
+check, because only the `.idx` tables know whether a copy survives
+elsewhere. Forbidding duplicates moves that membership check to the writer,
+which computes it anyway to decide what to send.
 
 ### §3.3 Compaction
 
 Compaction rewrites segments into better segments — merged small ones, newer
 dictionaries, retuned K — publishes a manifest referencing the new set and
-listing the old in `retire`, and eventually deletes retired segments.
+listing the old in `retire`, and eventually deletes retired segments. The
+segments a swap folds MUST form a suffix of every fork's `log_segments`, so
+each fork's log tail is rewritten in place; a fork's folded spans
+concatenate byte for byte, in log order.
 
 Because image items are encoding-blind, **compaction correctness is an
 arithmetic proof**: across any manifest swap,
@@ -400,7 +435,10 @@ arithmetic proof**: across any manifest swap,
 
 and for a pure compaction the right-hand side is zero. A re-encoding that
 lost or invented so much as one entry fails a group equation checkable in
-microseconds without touching a single `.pk`. I2's equivalence obligation
+microseconds without touching a single `.pk`. The equation is exact because
+of I12: the folded segments are disjoint, so their image moves whole into
+the new segments with no correction term. A writer checks it before it
+publishes. I2's equivalence obligation
 thereby has a cheap necessary condition enforced at every swap; the
 sufficient condition (bit-identical unpack) remains the scrub-level check.
 
@@ -411,8 +449,10 @@ sufficient condition (bit-identical unpack) remains the scrub-level check.
 
 Retired segments MUST be retained until every manifest referencing them ages
 out of the retention window (parameter R, §5) — readers may hold old
-manifests. Compaction scheduling is an LSM problem and is out of scope here;
-the reference implementation intends lsmtk-style triangular compaction.
+manifests. Compaction scheduling is an LSM problem and is out of scope here.
+The reference implementation folds small segments during push (§4) once T
+of them form a suffix of every fork's log; folding larger segments
+(lsmtk-style triangular compaction) is not yet implemented.
 
 ## §4. Wire protocol
 
@@ -428,12 +468,34 @@ caching is trivially safe. Unpack what you need or operate on packs directly.
 the difference. There is no negotiation because there is nothing to
 negotiate.
 
+**Remote tracking.** A client keeps, per store, under
+`index/remote/<store>/`: the last manifest it verified; the `.idx` of
+every live segment, fetched once ever because names commit to content; the
+payloads of small segments it built, so it can fold them without fetching
+them back; and the fork heads as of its last clone or push of each fork.
+Everything but the synced heads is derived from the store. The synced heads
+are history rather than cache, but losing them is safe in the conservative
+direction — a fork the client is merely behind on is refused as if it had
+diverged — so deleting `index/` remains safe. A clone seeds all of it,
+so a fresh clone's first push is already incremental.
+
+**Discovery.** Probe `manifest/<seq+1>.json` forward from the last
+verified manifest until a miss, requiring at every step that `seq` advance
+by one and `prev` name the manifest before: what comes back is an
+authenticated extension of what the client already verified, and a warm
+client never LISTs. The probe starts by re-reading the cached manifest's
+own seq; if the store no longer holds it byte for byte (by id), the store
+was wiped or replaced, the cached manifest and synced heads are discarded —
+they describe a chain that no longer exists — and discovery falls back to
+LIST.
+
 **Verification.** Fetched bytes are hostile until proven otherwise, and the
 order of proof is mandated:
 
 ```
-1. manifest:  size-bounded (§5) parse; verify id per §1.3
-2. .pk:       sha3 the raw bytes; compare to pk_sha3 (= segid)
+1. manifest:  size-bounded (§5) parse; verify id per §1.3; every segid
+              must equal sha3(pk_sha3 ‖ idx_sha3)
+2. .pk:       sha3 the raw bytes; compare to pk_sha3
               BEFORE the decompressor sees a single byte
 3. .idx:      sha3 the raw bytes; compare to idx_sha3; only then parse
 4. frames:    decompress with hard output budgets taken from the
@@ -455,24 +517,40 @@ size-bounded JSON parse of the manifest itself; v0 accepts it, and the
 designated exit is an outer detached signature over the manifest's raw bytes
 so that even the parse is post-authentication.
 
-**Push.**
+**Push.** A push carries what the store lacks, and nothing else.
 
 ```
-1. pack new content into segments locally
-2. PUT segments                      (idempotent; existing names are no-ops)
-3. build manifest seq N+1 with prev = id of N
-4. put-if-absent manifest/<N+1>.json          ← LINEARIZATION POINT (wire)
-5. on conflict: GET the winner, rebuild the manifest against it, retry —
-   uploaded segments are content-addressed and reusable as-is
+1. DISCOVER  the latest manifest N (above)
+2. PLAN      per fork, the lines past its remote head; the blobs no live
+             segment holds (I12); edits and inline creates as constructs,
+             at most K deep
+3. PACK      cut into segments at the target size (§5); fold small
+             segments when T of them form a suffix of every fork's log (§3.3)
+4. PUT       each segment the store lacks — HEAD first; names commit to
+             content, so presence is proof
+5. put-if-absent manifest/<N+1>.json, prev = id of N
+                                               ← LINEARIZATION POINT (wire)
+6. on conflict: go to 1 and re-plan against the winner
 ```
 
-Manifest rebuild at step 5 is a union of segment sets plus per-fork head
-updates. Pushes to different forks merge trivially. Two pushes advancing the
-same fork violate single-writer (I8) and the loser MUST NOT silently splice:
-it re-runs `union` at the log level and pushes the result. The put-if-absent
-on the next sequence number is the server-side linearization point — the same
-role the fsync'd append plays loose, and deliberately the same shape wal3
-uses against object storage.
+Per fork, step 2 decides one of four things. A remote head the local log
+contains fast-forwards: the lines after it travel. A fork the store lacks
+travels whole. A remote head the local log lacks, on a fork whose local
+head is the one this client last synced, means the client is behind with
+nothing to send, and the fork is left as the store has it. Otherwise the
+fork has diverged: two pushes advancing the same fork violate single-writer
+(I8), and the loser MUST NOT silently splice — it re-runs `union` at the
+log level and pushes the result. Pushes to different forks merge trivially.
+
+Re-planning at step 6 is what keeps the image a set: a winner that stored
+some of the same blobs changes the plan, and segments that come out byte
+for byte the same are already uploaded and cost a HEAD. The same property
+makes an interrupted upload resumable — the cut at step 3 is a pure
+function of the plan. A loser's superseded segments are named by no
+manifest; they are garbage, collectable once older than the retention
+window R. The put-if-absent on the next sequence number is the server-side
+linearization point — the same role the fsync'd append plays loose, and
+deliberately the same shape wal3 uses against object storage.
 
 **Andon over the wire.** The emergency path is loose-first: fetch, unpack,
 operate per the ANDON with an editor and stdlib Python, repack, push. With
@@ -493,7 +571,9 @@ defaults, not requirements.
 |---|---|---|
 | keyframe interval K | 32 text / 1 opaque | cache policy, per path-class |
 | log-line spill threshold | 65536 bytes | loose-format requirement (§2.5) |
-| segment target size | 64 MiB | packing policy |
+| segment target size | 64 MiB (decompressed) | packing policy |
+| small segment | `.pk` under 4 MiB | compaction policy (§3.3) |
+| fold trigger T | 8 small segments | compaction policy (§3.3) |
 | zstd level | 19 at rest, 3 on pack-for-push | packing policy |
 | retention window R | 30 days of manifests | deletion safety (§3.3) |
 | manifest size bound | 16 MiB | root-of-trust parse bound (§4) |
@@ -533,6 +613,9 @@ so it is versioned with the format.
   budgeted by authenticated lengths. Every decompression boundary carries
   the pair (sha3 of the compressed form, setsum of the uncompressed image),
   and the pair is the Wall made verifiable.
+- **I12** — the image is a set: no image item is stored in two live
+  segments, so image setsums count each item once and compaction's
+  equation needs no correction term.
 
 ---
 

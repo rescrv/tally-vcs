@@ -463,11 +463,14 @@ print("B then A ", render(add(add(anchor,dB),dA)))
 
 - A working Pi integration
 - A working tally protocol that can work against GitHub by importing from Git and exporting a PR.
-- Naive push to object storage.
+- Incremental push to object storage: a push carries only what the store lacks.
+  Edits and inline creates travel as references to the log lines that made
+  them; a file's full bytes are stored once per K versions (default 32).
 
 ## What's Not Implemented
 
-- Efficient delta push
+- Compaction beyond folding small segments (lsmtk-style levels).
+- Garbage collection of retired segments and segments orphaned by lost push races.
 
 ## Related Work
 

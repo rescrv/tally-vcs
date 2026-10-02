@@ -18,7 +18,9 @@ use crate::log::{LogLine, parse_log_strict};
 use crate::manifest::Manifest;
 use crate::patch::{apply_realized_to_manifest, apply_realized_to_sum};
 use crate::repo::Repository;
-use crate::segment::{BuiltSegment, Segment, SegmentInput, build_segment, image_setsum};
+use crate::segment::{
+    BuiltSegment, EMPTY_BLOB, Segment, SegmentInput, build_segment, image_setsum, segid_of,
+};
 use crate::{Error, Result, ioerr};
 
 /// Root-of-trust parse bound for a serve-manifest (§5): 16 MiB.
@@ -44,7 +46,8 @@ pub struct ForkHead {
 /// unequal pk: a re-encoding.  Unequal image: content forgery.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentMeta {
-    /// SHA3-256 of the compressed `.pk` bytes; equals the segid.
+    /// SHA3-256 of the compressed `.pk` bytes.  The segid is
+    /// [`segid_of`](crate::segment::segid_of)`(pk_sha3, idx_sha3)`.
     pub pk_sha3: String,
     /// SHA3-256 of the `.idx` bytes.
     pub idx_sha3: String,
@@ -57,6 +60,20 @@ pub struct SegmentMeta {
     /// First and last log line ids in the segment, if it holds log spans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_span: Option<(String, String)>,
+}
+
+impl SegmentMeta {
+    /// The manifest's record of a freshly built segment.
+    pub fn of(built: &BuiltSegment) -> Self {
+        SegmentMeta {
+            pk_sha3: built.pk_sha3.clone(),
+            idx_sha3: built.idx_sha3.clone(),
+            bytes: built.pk.len() as u64,
+            entries: built.entries as u64,
+            image_setsum: built.image_setsum.hexdigest(),
+            log_span: built.log_span.clone(),
+        }
+    }
 }
 
 /// `manifest/<seq>.json`, canonical JSON, id per §1.3, put-if-absent.
@@ -222,17 +239,7 @@ pub fn pack(
     )?;
 
     let mut segments = BTreeMap::new();
-    segments.insert(
-        built.segid.clone(),
-        SegmentMeta {
-            pk_sha3: built.segid.clone(),
-            idx_sha3: built.idx_sha3.clone(),
-            bytes: built.pk.len() as u64,
-            entries: built.entries as u64,
-            image_setsum: built.image_setsum.hexdigest(),
-            log_span: built.log_span.clone(),
-        },
-    );
+    segments.insert(built.segid.clone(), SegmentMeta::of(&built));
     let mut manifest = ServeManifest {
         id: String::new(),
         v: 0,
@@ -287,9 +294,9 @@ pub fn unpack_segments(
     // in any segment: first everything with stored bytes, then constructs.
     let mut opened = Vec::new();
     for (segid, meta) in &manifest.segments {
-        if meta.pk_sha3 != *segid {
+        if segid_of(&meta.pk_sha3, &meta.idx_sha3) != *segid {
             return Err(Error::Corrupt(format!(
-                "segment {segid}: pk_sha3 differs from segid"
+                "segment {segid}: id does not commit to its pk_sha3 and idx_sha3"
             )));
         }
         let pk = fetch(&format!("seg/{segid}.pk"))?;
@@ -327,7 +334,9 @@ pub fn unpack_segments(
         }
     }
     // Log lines parse once every stored blob is gathered: an overflowed
-    // line's blob may sit in any entry of any segment.
+    // line's blob may sit in any entry of any segment.  It is never a
+    // construct (writers refuse to pack one as such), because constructs
+    // resolve only after lines do.
     let fetch_stored_blob = |h: &str| -> Result<Vec<u8>> {
         blobs
             .get(h)
@@ -339,31 +348,58 @@ pub fn unpack_segments(
             lines_by_id.insert(line.id.clone(), line);
         }
     }
-    // Second pass: constructs apply only verified inputs.
-    let fetch_blob = |h: &str| -> Result<Vec<u8>> {
-        blobs
-            .get(h)
-            .cloned()
-            .ok_or_else(|| Error::Corrupt(format!("construct references absent blob {h}")))
-    };
+    // Second pass: constructs apply only verified inputs.  A construct's
+    // base may itself be a construct, packed in any segment, so resolve to a
+    // fixpoint: each round materializes every construct whose base is
+    // already known.  A round that makes no progress means a base that is
+    // absent or a cycle — either way the pack is corrupt.  Writers emit
+    // chains in log order, so honest packs resolve in one round per
+    // cross-segment hop; a hostile ordering costs quadratic time in the
+    // number of constructs, never unbounded time.
     let fetch_line = |id: &str| -> Result<LogLine> {
         lines_by_id
             .get(id)
             .cloned()
             .ok_or_else(|| Error::Corrupt(format!("construct references absent line {id}")))
     };
-    let mut constructed = Vec::new();
-    for (segid, entry) in &constructs {
-        let segment = &opened
-            .iter()
-            .find(|(s, _)| s == segid)
-            .expect("opened above")
-            .1;
-        let bytes = segment.materialize(entry, &fetch_blob, &fetch_line)?;
-        constructed.push((entry.sha3.clone(), bytes));
-    }
-    for (hash, bytes) in constructed {
-        blobs.insert(hash, bytes);
+    let mut pending = constructs;
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut deferred = Vec::new();
+        for (segid, entry) in pending {
+            let crate::segment::Enc::Construct { base, .. } = &entry.enc else {
+                unreachable!("only constructs are pending");
+            };
+            if base != EMPTY_BLOB && !blobs.contains_key(base) {
+                deferred.push((segid, entry));
+                continue;
+            }
+            let segment = &opened
+                .iter()
+                .find(|(s, _)| *s == segid)
+                .expect("opened above")
+                .1;
+            let fetch_blob = |h: &str| -> Result<Vec<u8>> {
+                blobs
+                    .get(h)
+                    .cloned()
+                    .ok_or_else(|| Error::Corrupt(format!("construct references absent blob {h}")))
+            };
+            let bytes = segment.materialize(&entry, &fetch_blob, &fetch_line)?;
+            blobs.insert(entry.sha3.clone(), bytes);
+        }
+        if let Some((_, stuck)) = deferred.first()
+            && deferred.len() == before
+        {
+            let crate::segment::Enc::Construct { base, .. } = &stuck.enc else {
+                unreachable!("only constructs are pending");
+            };
+            return Err(Error::Corrupt(format!(
+                "construct of {} references absent blob {base} (or a cycle)",
+                stuck.sha3
+            )));
+        }
+        pending = deferred;
     }
     // Verify each segment's image against the manifest's stated setsum.
     let fetch_blob = |h: &str| -> Result<Vec<u8>> {

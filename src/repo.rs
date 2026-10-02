@@ -59,6 +59,11 @@ impl Repository {
         &self.root
     }
 
+    /// `.tally/index/`: derived state, safe to delete (I3).
+    pub fn index_dir(&self) -> PathBuf {
+        self.dot.join("index")
+    }
+
     /// Initialize a repository at `root` with an empty `main` fork.
     pub fn init(root: impl Into<PathBuf>) -> Result<Self> {
         let repo = Repository::init_bare(root)?;

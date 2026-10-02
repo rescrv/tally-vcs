@@ -738,7 +738,7 @@ proptest! {
             image_setsum(&expected).hexdigest()
         );
 
-        let segment = Segment::open(&built.pk, &built.idx, &built.segid, &built.idx_sha3).unwrap();
+        let segment = Segment::open(&built.pk, &built.idx, &built.pk_sha3, &built.idx_sha3).unwrap();
         let no_blob = |h: &str| -> tally::Result<Vec<u8>> {
             Err(tally::Error::Corrupt(format!("unexpected blob fetch {h}")))
         };
@@ -761,22 +761,25 @@ proptest! {
         let inputs: Vec<SegmentInput> =
             blobs.iter().cloned().map(SegmentInput::Blob).collect();
         let built = build_segment(&inputs, 3).unwrap();
+        // Control: the honest segment opens, so every rejection below is
+        // the tampering's doing.
+        prop_assert!(Segment::open(&built.pk, &built.idx, &built.pk_sha3, &built.idx_sha3).is_ok());
 
         // Flip one byte of the .pk payload.
         let mut pk = built.pk.clone();
         let at = flip.index(pk.len());
         pk[at] ^= 0x01;
-        prop_assert!(Segment::open(&pk, &built.idx, &built.segid, &built.idx_sha3).is_err());
+        prop_assert!(Segment::open(&pk, &built.idx, &built.pk_sha3, &built.idx_sha3).is_err());
 
         // Flip one byte of the .idx table.
         let mut idx = built.idx.clone();
         let at = flip.index(idx.len());
         idx[at] ^= 0x01;
-        prop_assert!(Segment::open(&built.pk, &idx, &built.segid, &built.idx_sha3).is_err());
+        prop_assert!(Segment::open(&built.pk, &idx, &built.pk_sha3, &built.idx_sha3).is_err());
 
         // Lie about the expected hashes.
         let wrong = sha3_hex(b"wrong");
         prop_assert!(Segment::open(&built.pk, &built.idx, &wrong, &built.idx_sha3).is_err());
-        prop_assert!(Segment::open(&built.pk, &built.idx, &built.segid, &wrong).is_err());
+        prop_assert!(Segment::open(&built.pk, &built.idx, &built.pk_sha3, &wrong).is_err());
     }
 }

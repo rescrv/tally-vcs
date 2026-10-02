@@ -66,7 +66,7 @@ patches:
 wire:
   clone <store> <dest>             clone a packed repository from an object store
   fetch <store> <cache>            update a packed cache from an object store
-  push <store>                     pack and push (put-if-absent linearization)
+  push <store>                     push what the store lacks (put-if-absent linearization)
   pack <dir>                       pack the loose repository into a directory
   unpack <dir> <dest>              unpack a packed directory into a loose repository
 ";
@@ -1443,8 +1443,30 @@ fn cmd_push(args: &[&str]) -> Result<()> {
     };
     let repo = repo()?;
     let store = FsStore::open(store)?;
-    let manifest = tally::wire::push(&repo, &store, options.level.unwrap_or(3))?;
-    println!("pushed manifest seq {} ({})", manifest.seq, manifest.id);
+    let policy = tally::delta::Policy {
+        level: options.level.unwrap_or(3),
+        ..tally::delta::Policy::default()
+    };
+    let outcome = tally::wire::push(&repo, &store, &policy)?;
+    let manifest = &outcome.manifest;
+    if !outcome.published {
+        println!(
+            "up to date at manifest seq {} ({})",
+            manifest.seq, manifest.id
+        );
+        return Ok(());
+    }
+    let mut detail = format!(
+        "{} segment(s), {} byte(s) uploaded; {} construct(s), {} keyframe(s)",
+        outcome.segments, outcome.uploaded, outcome.constructs, outcome.keyframes
+    );
+    if outcome.compacted > 0 {
+        detail.push_str(&format!("; folded {} small segment(s)", outcome.compacted));
+    }
+    println!(
+        "pushed manifest seq {} ({}): {detail}",
+        manifest.seq, manifest.id
+    );
     Ok(())
 }
 
