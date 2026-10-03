@@ -955,6 +955,16 @@ fn short(sum: &str) -> String {
 /// misplaced word, and swallowing it hides the bug.
 fn reject_extra(command: &str, free: &[String], max: usize) -> Result<()> {
     if free.len() > max {
+        // getopts stops parsing options at the first positional argument
+        // (arrrg parses with StopAtFirstFree), so a flag placed after one —
+        // git's natural order — surfaces here as a free argument.  Name the
+        // trap instead of reporting an "unexpected argument".
+        if let Some(flag) = free[max..].iter().find(|a| a.starts_with('-')) {
+            return Err(Error::Invalid(format!(
+                "{command}: unrecognized or misplaced option {flag}; options \
+                 must come before positional arguments (try `tally {command} --help`)"
+            )));
+        }
         return Err(Error::Invalid(format!(
             "{command}: unexpected argument(s): {}",
             free[max..].join(" ")
