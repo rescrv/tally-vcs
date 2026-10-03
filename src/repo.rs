@@ -1292,12 +1292,40 @@ impl Repository {
             ));
         }
         let state = self.current_state(fork)?;
-        let index_of = |id: &str| state.lines.iter().position(|l| l.id == id);
-        let (Some(a), Some(b)) = (index_of(from), index_of(to)) else {
-            return Err(Error::Invalid(format!(
-                "fuse span {from}..{to} does not name lines on fork {fork}"
-            )));
+        // An endpoint is a full line id, or a prefix naming exactly one
+        // line — the same resolution `show` grants.  Whatever is accepted
+        // is stored in full, so the fuse still renders after the prefix
+        // is forgotten.
+        let resolve = |id: &str| -> std::result::Result<usize, String> {
+            if let Some(i) = state.lines.iter().position(|l| l.id == id) {
+                return Ok(i);
+            }
+            let matches: Vec<usize> = state
+                .lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.id.starts_with(id))
+                .map(|(i, _)| i)
+                .collect();
+            match matches.as_slice() {
+                [i] => Ok(*i),
+                [] => Err(format!(
+                    "fuse endpoint {id} names no line on fork {fork}; \
+                     copy a full id from `tally log --raw`"
+                )),
+                _ => Err(format!(
+                    "fuse endpoint {id} is ambiguous: {} lines on fork {fork} \
+                     share that prefix; name one in full",
+                    matches.len()
+                )),
+            }
         };
+        let (a, b) = match (resolve(from), resolve(to)) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(m), _) | (_, Err(m)) => return Err(Error::Invalid(m)),
+        };
+        let from = state.lines[a].id.clone();
+        let to = state.lines[b].id.clone();
         if a > b {
             return Err(Error::Invalid(format!(
                 "fuse span {from}..{to} is reversed on fork {fork}"

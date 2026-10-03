@@ -1368,8 +1368,16 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         options.prose,
         &options.author.unwrap_or_else(whoami),
     )?;
+    // Report the resolved span, not the ids as typed: the fuse is stored
+    // in full, whatever prefix named it.
+    let span = line
+        .annotation
+        .fuse
+        .as_ref()
+        .map(|f| format!("{}..{}", f.from, f.to))
+        .unwrap_or_else(|| format!("{from}..{to}"));
     println!(
-        "{} fused[{name}] {from}..{to} (lossless: the fine structure remains underneath)",
+        "{} fused[{name}] {span} (lossless: the fine structure remains underneath)",
         line.id
     );
     Ok(())
