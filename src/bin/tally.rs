@@ -488,7 +488,10 @@ fn cmd_check(args: &[&str]) -> Result<()> {
     println!("working tree  {}", actual.hexdigest());
     if expected != actual {
         return Err(Error::Corrupt(
-            "the working tree does not match the log's expectation".to_string(),
+            "the working tree does not match the log's expectation; \
+             if the working tree is right, run `tally snapshot` to adopt it; \
+             if the log is right, run `tally restore` to discard your edits"
+                .to_string(),
         ));
     }
     println!("ok");
@@ -1068,6 +1071,12 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     let history = repo.continuity_log(&bounds.fork)?;
     let end = bounds.end.min(history.len());
     let history = &history[bounds.start.min(end)..end];
+    if history.is_empty() {
+        println!(
+            "no history yet on fork {fork}; commit, or `git pull <branch>` to import"
+        );
+        return Ok(());
+    }
     if options.raw {
         // The un-fused chain: every line, full.  Like the fused view, lines
         // print oldest first — the log reads in ascending time — unless
