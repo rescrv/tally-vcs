@@ -604,11 +604,22 @@ fn git_plumb(
     }
     let output = child.wait_with_output().map_err(ioerr("running git"))?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        // "Not a git repository" names the fix, not the failure: the user
+        // pointed the bridge at a directory with no .git in it.
+        if stderr.contains("not a git repository") {
+            return Err(Error::Invalid(format!(
+                "no git repository at {} (git {}: {stderr}); \
+                 run inside one or pass --git DIR",
+                dir.display(),
+                args.first().unwrap_or(&"git")
+            )));
+        }
         return Err(Error::Invalid(format!(
             "git {} failed ({}): {}",
             args.join(" "),
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr
         )));
     }
     Ok(output.stdout)
