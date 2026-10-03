@@ -1371,10 +1371,28 @@ fn cmd_union(args: &[&str]) -> Result<()> {
             Stratum::RealizedReplay => "stratum 2: realized replay",
             Stratum::IntentReplay => "stratum 3: intent replay",
         };
-        println!(
-            "landed {} <- {}  ({stratum})",
-            landed.line.id, landed.origin_id
-        );
+        // The ids name the lines; the subject says what landed.  Both ids
+        // stay full-length: scripts (and the ANDON) grep for the origin.
+        let subject = landed
+            .line
+            .annotation
+            .prose
+            .as_deref()
+            .unwrap_or("")
+            .split("\n")
+            .next()
+            .unwrap_or("");
+        if subject.is_empty() {
+            println!(
+                "landed {} <- {}  ({stratum})",
+                landed.line.id, landed.origin_id
+            );
+        } else {
+            println!(
+                "landed {} <- {}  \"{subject}\" ({stratum})",
+                landed.line.id, landed.origin_id
+            );
+        }
     }
     if let Some((line_id, evidence)) = &outcome.needs_reenactment {
         return Err(Error::NeedsReenactment(format!(
