@@ -524,8 +524,23 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     let dest = match free.get(1) {
         Some(dest) => std::path::PathBuf::from(dest),
         None => {
+            // Default to a fresh directory beside the repository, not
+            // inside the working tree: a materialization inside the tree
+            // would show up in status as pending adds of itself.
             let name = format!("tally-{}", short(&resolved.sum));
-            std::path::PathBuf::from(name)
+            match repo.root().parent() {
+                Some(beside) => beside.join(name),
+                // A repository at the root of the filesystem has nowhere
+                // beside itself to go; silently materializing inside the
+                // working tree is the bug this default exists to prevent.
+                None => {
+                    return Err(Error::Invalid(
+                        "cannot default to a directory beside a repository at the \
+                         filesystem root; name a destination"
+                            .to_string(),
+                    ));
+                }
+            }
         }
     };
     if dest.exists() {
