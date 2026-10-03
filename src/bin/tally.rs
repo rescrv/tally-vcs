@@ -626,7 +626,7 @@ fn cmd_repoint(args: &[&str]) -> Result<()> {
     let target = repo.manifest_at_lineage(&resolved.fork, &resolved.sum)?;
     let author = options.author.unwrap_or_else(whoami);
     let line = repo.repoint(fork, &target, &author, options.prose)?;
-    println!("{} {}", line.id, line.sum_after);
+    println!("line {}  state {}", line.id, line.sum_after);
     println!(
         "repointed {fork} to {} (non-destructive: the prior state remains reachable)",
         short(&resolved.sum)
@@ -925,7 +925,7 @@ fn cmd_apply(args: &[&str]) -> Result<()> {
         intent,
         annotation,
     )?;
-    println!("{} {}", line.id, line.sum_after);
+    println!("line {}  state {}", line.id, line.sum_after);
     Ok(())
 }
 
@@ -1004,7 +1004,7 @@ fn cmd_commit(args: &[&str]) -> Result<()> {
         filters,
         annotation,
     )?;
-    println!("{} {}", line.id, line.sum_after);
+    println!("line {}  state {}", line.id, line.sum_after);
     println!("committed {} path(s)", line.realized.len());
     Ok(())
 }

@@ -866,7 +866,7 @@ assert_bytes "§6 anchored manifest" "$ANDON_WORK/hand-manifest-2" \
 DELTA_LIB='[{"remove":"100644\t/src/lib.rs\t'$H_LIB0'","add":"100644\t/src/lib.rs\t'$H_LIB1'"}]'
 DEV_OUT=$("$TALLY" apply --fork dev --author andon-tester \
     --prose 'dev: answer 137' "$ANDON_WORK/patch-dev.json")
-DEV_LINE_ID=${DEV_OUT%% *}
+DEV_LINE_ID=$(printf '%s\n' "$DEV_OUT" | cut -d " " -f 2)
 HAND_DEV=$(printf '%s' "$DELTA_LIB" | python3 "$ANDON_WORK/arith.py" "$S_2")
 assert_eq "§6 dev sum, by hand" "$S_DEV" "$HAND_DEV"
 assert_eq "§6 dev sum, tally == hand" "$HAND_DEV" "${DEV_OUT##* }"
@@ -904,7 +904,7 @@ assert_eq "§6 union does not mutate the source fork" "$S_DEV" "$DEV_AFTER_UNION
 DELTA_DEV2='[{"remove":"100644\t/src/main.rs\t'$H_MAIN2'","add":"100644\t/src/main.rs\t'$H_MAIN3'"}]'
 DEV2_OUT=$("$TALLY" apply --fork dev2 --author andon-tester \
     --prose 'dev2: comment at top' "$ANDON_WORK/patch-dev2.json")
-DEV2_LINE_ID=${DEV2_OUT%% *}
+DEV2_LINE_ID=$(printf '%s\n' "$DEV2_OUT" | cut -d " " -f 2)
 HAND_DEV2=$(printf '%s' "$DELTA_DEV2" | python3 "$ANDON_WORK/arith.py" "$S_UNION2")
 assert_eq "§6 dev2 sum, by hand" "$S_DEV2" "$HAND_DEV2"
 assert_eq "§6 dev2 sum, tally == hand" "$HAND_DEV2" "${DEV2_OUT##* }"
