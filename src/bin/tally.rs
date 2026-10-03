@@ -71,6 +71,11 @@ wire:
   push <store>                     push what the store lacks (put-if-absent linearization)
   pack <dir>                       pack the loose repository into a directory
   unpack <dir> <dest>              unpack a packed directory into a loose repository
+
+help:
+  help [command]                   usage for a command; none prints this page
+  <command> -h                     a command's flags in detail
+  <command> -completions           a zsh completion script for a command
 ";
 
 /// The usage line for a command, for `tally help <command>`.  Keep these
