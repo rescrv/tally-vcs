@@ -60,7 +60,7 @@ patches:
   log [rev | from..to] [options]   render history: a rev from that state backwards,
                                    from..to forward exclusive of from (options:
                                    --view FUSES | --raw; default collapses every fuse)
-  show <id>                        render one log line
+  show <id>                        render one log line (--json for the record)
   fuse <name> <from> <to>          name a span under one interpretation (lossless)
 
 wire:
@@ -1248,20 +1248,37 @@ fn print_prose(header: &str, prose: &str) {
 }
 
 fn cmd_show(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(optional, "The fork to read (default: main).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(flag, "Print the raw record as JSON instead of the prose view.")]
+        json: bool,
+    }
     let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally show [--fork FORK] <id>", args);
+        Options::from_arguments_relaxed("USAGE: tally show [--fork FORK] [--json] <id>", args);
     reject_extra("show", &free, 1)?;
     let Some(id) = free.first() else {
         return Err(Error::Invalid("show requires a line id".to_string()));
     };
     let repo = repo()?;
-    let state = repo.current_state(options.fork())?;
+    let state = repo.current_state(options.fork.as_deref().unwrap_or("main"))?;
     let line = state
         .lines
         .iter()
         .find(|l| l.id == *id || l.id.starts_with(id.as_str()))
-        .ok_or_else(|| Error::Invalid(format!("no line {id} on fork {}", options.fork())))?;
-    println!("{}", serde_json::to_string_pretty(line)?);
+        .ok_or_else(|| {
+            Error::Invalid(format!(
+                "no line {id} on fork {}",
+                options.fork.as_deref().unwrap_or("main")
+            ))
+        })?;
+    if options.json {
+        println!("{}", serde_json::to_string_pretty(line)?);
+        return Ok(());
+    }
+    // Default to the git-log-style prose view; the record is one --json away.
+    print_line_full(line, &Palette::new(false));
     Ok(())
 }
 

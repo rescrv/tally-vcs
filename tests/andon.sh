@@ -832,7 +832,7 @@ IDS=$(python3 "$ANDON_WORK/verify_log.py" .tally/forks/main/log.jsonl \
     "$S_EMPTY" 2 "$S_2")
 note "§5 both lines: canonical bytes, ids re-derived, prev chained, sums replayed"
 set -- $IDS
-"$TALLY" show "$2" > "$ANDON_WORK/show.json"
+"$TALLY" show --json "$2" > "$ANDON_WORK/show.json"
 python3 "$ANDON_WORK/showcheck.py" "$ANDON_WORK/show.json" .tally/forks/main/log.jsonl
 note "§5 tally show re-canonicalizes to the stored line, byte for byte"
 "$TALLY" log --raw > "$ANDON_WORK/log-raw"
@@ -1001,7 +1001,7 @@ CORD_HEAD=$("$TALLY" rev-parse HEAD)
 assert_eq "§9 tally rev-parse accepts the hand line" "$S_CORD" "$CORD_HEAD"
 CORD_HEAD_LINE=$("$TALLY" rev-parse --line HEAD)
 assert_eq "§9 the hand line is the head" "$CORD_ID" "$CORD_HEAD_LINE"
-"$TALLY" show "$CORD_ID" > "$ANDON_WORK/show-cord.json"
+"$TALLY" show --json "$CORD_ID" > "$ANDON_WORK/show-cord.json"
 python3 "$ANDON_WORK/showcheck.py" "$ANDON_WORK/show-cord.json" \
     .tally/forks/main/log.jsonl
 note "§9 tally show re-canonicalizes to the hand-written bytes"
