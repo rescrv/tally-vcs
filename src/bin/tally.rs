@@ -172,10 +172,13 @@ fn cmd_init(args: &[&str]) -> Result<()> {
         None => std::env::current_dir().map_err(tally::ioerr("getting cwd"))?,
     };
     let repo = Repository::init(&dir)?;
-    println!(
-        "initialized empty tally repository at {}",
-        repo.root().display()
-    );
+    // Canonical, like git init: the same path whether the argument was
+    // relative, absolute, or defaulted.
+    let root = repo
+        .root()
+        .canonicalize()
+        .unwrap_or_else(|_| repo.root().to_path_buf());
+    println!("initialized empty tally repository at {}", root.display());
     Ok(())
 }
 
@@ -498,7 +501,7 @@ fn cmd_snapshot(args: &[&str]) -> Result<()> {
     reject_extra("snapshot", &free, 0)?;
     let repo = repo()?;
     let sum = repo.snapshot(options.fork())?;
-    println!("anchored {} at {sum}", options.fork());
+    println!("anchored {} at {}", options.fork(), short(&sum));
     Ok(())
 }
 
@@ -1354,7 +1357,7 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
     };
     let repo = repo()?;
     let fork = repo.create_fork(name, options.from.as_deref().unwrap_or("main"))?;
-    println!("fork {name} anchored at {}", fork.anchor);
+    println!("fork {name} anchored at {}", short(&fork.anchor));
     Ok(())
 }
 

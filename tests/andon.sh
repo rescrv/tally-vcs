@@ -843,7 +843,7 @@ note "§5 tally log --raw renders every line"
 
 step "§6 Fork and union — tally fork, tally union"
 FORK_OUT=$("$TALLY" fork dev)
-assert_eq "§6 tally fork" "fork dev anchored at $S_2" "$FORK_OUT"
+assert_eq "§6 tally fork" "fork dev anchored at ${S_2:0:12}" "$FORK_OUT"
 { printf 'tally-fork v0\n'
   printf 'anchor %s\n' "$S_2"
   printf 'manifest %s\n' "$S_2"; } > "$ANDON_WORK/hand-fork"
