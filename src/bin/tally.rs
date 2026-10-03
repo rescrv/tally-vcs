@@ -8,7 +8,7 @@
 
 use std::process::exit;
 
-use arrrg::CommandLine;
+use arrrg::{CommandLine, NoExitCommandLine};
 
 use tally::ident::Sum;
 use tally::log::{Annotation, Provenance};
@@ -174,7 +174,7 @@ struct ApplyOptions {
 fn cmd_init(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally init [dir]", args);
+    let (_, free) = parse::<Options>("USAGE: tally init [dir]", args);
     reject_extra("init", &free, 1)?;
     let dir = match free.first() {
         Some(dir) => std::path::PathBuf::from(dir),
@@ -220,7 +220,7 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
         )]
         git: Option<String>,
     }
-    let (options, free) = Options::from_arguments_relaxed(
+    let (options, free) = parse::<Options>(
         "USAGE: tally git pull [--fork FORK] [--git DIR] [branch]",
         args,
     );
@@ -307,7 +307,7 @@ fn cmd_git_reanchor(args: &[&str]) -> Result<()> {
         )]
         git: Option<String>,
     }
-    let (options, free) = Options::from_arguments_relaxed(
+    let (options, free) = parse::<Options>(
         "USAGE: tally git reanchor [--fork FORK] [--git DIR] <commit>",
         args,
     );
@@ -359,7 +359,7 @@ fn cmd_git_pr(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "Author of the union carries.", "AUTHOR")]
         author: Option<String>,
     }
-    let (options, free) = Options::from_arguments_relaxed(
+    let (options, free) = parse::<Options>(
         "USAGE: tally git pr [--into FORK] [--branch BRANCH] [--git DIR] <fork>",
         args,
     );
@@ -405,7 +405,7 @@ fn cmd_sum(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print the element records too, not only the sum.")]
         records: bool,
     }
-    let (options, free) = Options::from_arguments_relaxed("USAGE: tally sum [--records]", args);
+    let (options, free) = parse::<Options>("USAGE: tally sum [--records]", args);
     reject_extra("sum", &free, 0)?;
     let repo = repo()?;
     let records = repo.records_of_working_tree()?;
@@ -428,8 +428,7 @@ fn cmd_status(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print machine-readable lines: <code> <TAB> <path>.")]
         porcelain: bool,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally status [--fork FORK] [--porcelain]", args);
+    let (options, free) = parse::<Options>("USAGE: tally status [--fork FORK] [--porcelain]", args);
     reject_extra("status", &free, 0)?;
     let fork = options.fork.as_deref().unwrap_or("main");
     let repo = repo()?;
@@ -488,8 +487,7 @@ fn cmd_status(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_check(args: &[&str]) -> Result<()> {
-    let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally check [--fork FORK]", args);
+    let (options, free) = parse::<ForkOptions>("USAGE: tally check [--fork FORK]", args);
     reject_extra("check", &free, 0)?;
     let repo = repo()?;
     let (expected, actual) = repo.check(options.fork())?;
@@ -508,8 +506,7 @@ fn cmd_check(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_snapshot(args: &[&str]) -> Result<()> {
-    let (options, free) =
-        ForkOptions::from_arguments_relaxed("USAGE: tally snapshot [--fork FORK]", args);
+    let (options, free) = parse::<ForkOptions>("USAGE: tally snapshot [--fork FORK]", args);
     reject_extra("snapshot", &free, 0)?;
     let repo = repo()?;
     let sum = repo.snapshot(options.fork())?;
@@ -518,10 +515,8 @@ fn cmd_snapshot(args: &[&str]) -> Result<()> {
 }
 
 fn cmd_materialize(args: &[&str]) -> Result<()> {
-    let (options, free) = ForkOptions::from_arguments_relaxed(
-        "USAGE: tally materialize [--fork FORK] <rev> [dest]",
-        args,
-    );
+    let (options, free) =
+        parse::<ForkOptions>("USAGE: tally materialize [--fork FORK] <rev> [dest]", args);
     reject_extra("materialize", &free, 2)?;
     let Some(spec) = free.first() else {
         return Err(Error::Invalid(
@@ -593,7 +588,7 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
         ),
         None => (args.to_vec(), Vec::new()),
     };
-    let (options, revs) = Options::from_arguments_relaxed(
+    let (options, revs) = parse::<Options>(
         "USAGE: tally restore [--fork FORK] [rev] [-- path...]",
         &left,
     );
@@ -650,8 +645,7 @@ fn cmd_repoint(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "Narrative prose for the repoint.", "PROSE")]
         prose: Option<String>,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally repoint [--fork FORK] <rev>", args);
+    let (options, free) = parse::<Options>("USAGE: tally repoint [--fork FORK] <rev>", args);
     reject_extra("repoint", &free, 1)?;
     let Some(spec) = free.first() else {
         return Err(Error::Invalid("repoint requires a revision".to_string()));
@@ -680,7 +674,7 @@ fn cmd_rev_parse(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print sum, line id, and fork, one field per line.")]
         verbose: bool,
     }
-    let (options, free) = Options::from_arguments_relaxed(
+    let (options, free) = parse::<Options>(
         "USAGE: tally rev-parse [--fork FORK] [--line|--verbose] <rev>",
         args,
     );
@@ -726,10 +720,7 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         stat: bool,
         #[arrrg(flag, "Do not pair a delete with an add of the same blob as a rename.")]
         no_renames: bool,
-        #[arrrg(
-            flag,
-            "Emit the patch as an intent JSON — the file tally apply takes."
-        )]
+        #[arrrg(flag, "Emit the patch as an intent JSON — the file tally apply takes.")]
         intent: bool,
         #[arrrg(optional, "Lines of context in hunks (default: 3).", "N")]
         context: Option<usize>,
@@ -746,7 +737,7 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         ),
         None => (args.to_vec(), Vec::new()),
     };
-    let (options, revs) = Options::from_arguments_relaxed(
+    let (options, revs) = parse::<Options>(
         "USAGE: tally diff [--fork FORK] [--stat] [--no-renames] [rev [rev]] [-- path...]",
         &left,
     );
@@ -879,8 +870,7 @@ fn cmd_blame(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "The fork to blame against (default: main).", "FORK")]
         fork: Option<String>,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally blame [--fork FORK] <path>", args);
+    let (options, free) = parse::<Options>("USAGE: tally blame [--fork FORK] <path>", args);
     reject_extra("blame", &free, 1)?;
     let Some(raw) = free.first() else {
         return Err(Error::Invalid("blame requires a path".to_string()));
@@ -944,6 +934,59 @@ fn short(sum: &str) -> String {
     sum.chars().take(12).collect()
 }
 
+/// Parse a subcommand's options without letting arrrg exit the process
+/// from inside a parse.  A failed parse reports the command it belongs to
+/// and points at its help, exiting 64 as before; `-h`/`--help` prints the
+/// usage to stdout and exits 0 (a question, answered); `--completions`
+/// prints the zsh script arrrg generates and stops before the command
+/// body runs.
+fn parse<T: Default + CommandLine>(usage: &str, args: &[&str]) -> (T, Vec<String>) {
+    // The invocation, e.g. "git pull", taken from the usage line itself:
+    // "USAGE: tally <invocation> [flags...] <args...>".
+    let invocation = usage
+        .strip_prefix("USAGE: tally ")
+        .map(|rest| {
+            let end = rest
+                .find([' ', '[', '<'])
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .unwrap_or("command");
+    let (parsed, free) = NoExitCommandLine::<T>::from_arguments_relaxed(usage, args);
+    let (parsed, messages, status) = parsed.into_parts();
+    if args
+        .iter()
+        .any(|a| *a == "--completions" || *a == "-completions")
+    {
+        // arrrg printed the script on its way to an exit we deferred.
+        exit(0);
+    }
+    if args.iter().any(|a| *a == "-h" || *a == "--help")
+        && messages.iter().any(|m| m.contains("Print this help menu."))
+    {
+        for m in &messages {
+            println!("{m}");
+        }
+        exit(0);
+    }
+    if status != 0 || !messages.is_empty() {
+        // arrrg frames its own parse failures; strip that prefix and frame
+        // once.  On a missing value arrrg also captures the usage text:
+        // print it, so the expected shape is visible without a re-run.
+        let first = messages.first().map(String::as_str).unwrap_or("");
+        let first = first
+            .strip_prefix("could not parse command line: ")
+            .unwrap_or(first);
+        eprintln!("tally: could not parse command line: {first}");
+        for m in messages.iter().skip(1) {
+            eprintln!("{m}");
+        }
+        eprintln!("run `tally {invocation} --help` for the options");
+        exit(64);
+    }
+    (parsed, free)
+}
+
 /// Reject positional arguments a command does not consume, rather than
 /// silently ignoring them.  `max` is how many leading free args the command
 /// uses; anything past that is an error.  We parse with arrrg's `relaxed`
@@ -974,8 +1017,7 @@ fn reject_extra(command: &str, free: &[String], max: usize) -> Result<()> {
 }
 
 fn cmd_apply(args: &[&str]) -> Result<()> {
-    let (options, free) =
-        ApplyOptions::from_arguments_relaxed("USAGE: tally apply [options] <patch.json>", args);
+    let (options, free) = parse::<ApplyOptions>("USAGE: tally apply [options] <patch.json>", args);
     reject_extra("apply", &free, 1)?;
     let Some(patch_path) = free.first() else {
         return Err(Error::Invalid(
@@ -1055,7 +1097,7 @@ fn cmd_commit(args: &[&str]) -> Result<()> {
         None => (args.to_vec(), Vec::new()),
     };
     let (options, free) =
-        ApplyOptions::from_arguments_relaxed("USAGE: tally commit [options] [-- path...]", &left);
+        parse::<ApplyOptions>("USAGE: tally commit [options] [-- path...]", &left);
     reject_extra("commit", &free, 0)?;
     let repo = repo()?;
     let annotation = annotation_from(&options, &repo)?;
@@ -1104,7 +1146,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Plain output: no terminal color (the default on a terminal).")]
         nocolor: bool,
     }
-    let (options, free) = Options::from_arguments_relaxed(
+    let (options, free) = parse::<Options>(
         "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--reverse] [--nocolor] [rev | from..to]",
         args,
     );
@@ -1127,9 +1169,7 @@ fn cmd_log(args: &[&str]) -> Result<()> {
     let end = bounds.end.min(history.len());
     let history = &history[bounds.start.min(end)..end];
     if history.is_empty() {
-        println!(
-            "no history yet on fork {fork}; commit, or `git pull <branch>` to import"
-        );
+        println!("no history yet on fork {fork}; commit, or `git pull <branch>` to import");
         return Ok(());
     }
     // --max-count bounds the render to the most recent N lines of the
@@ -1334,8 +1374,7 @@ fn cmd_show(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Print the raw record as JSON instead of the prose view.")]
         json: bool,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally show [--fork FORK] [--json] <id>", args);
+    let (options, free) = parse::<Options>("USAGE: tally show [--fork FORK] [--json] <id>", args);
     reject_extra("show", &free, 1)?;
     let Some(id) = free.first() else {
         return Err(Error::Invalid("show requires a line id".to_string()));
@@ -1371,7 +1410,7 @@ fn cmd_fuse(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "Author of the fuse.", "AUTHOR")]
         author: Option<String>,
     }
-    let (options, free) = Options::from_arguments_relaxed(
+    let (options, free) = parse::<Options>(
         "USAGE: tally fuse [--fork FORK] [--prose P] <name> <from-id> <to-id>",
         args,
     );
@@ -1411,8 +1450,7 @@ fn cmd_gc_blobs(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Report what would be collected without removing anything.")]
         dry_run: bool,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally gc-blobs [--dry-run]", args);
+    let (options, free) = parse::<Options>("USAGE: tally gc-blobs [--dry-run]", args);
     reject_extra("gc-blobs", &free, 0)?;
     let repo = repo()?;
     let collected = repo.gc_blobs(options.dry_run)?;
@@ -1433,8 +1471,7 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "The fork to anchor at (default: main).", "FORK")]
         from: Option<String>,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally fork [--from FORK] <name>", args);
+    let (options, free) = parse::<Options>("USAGE: tally fork [--from FORK] <name>", args);
     reject_extra("fork", &free, 1)?;
     let Some(name) = free.first() else {
         return Err(Error::Invalid("fork requires a name".to_string()));
@@ -1449,7 +1486,7 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
 fn cmd_forks(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally forks", args);
+    let (_, free) = parse::<Options>("USAGE: tally forks", args);
     reject_extra("forks", &free, 0)?;
     let repo = repo()?;
     for name in repo.fork_names()? {
@@ -1464,8 +1501,7 @@ fn cmd_remove_fork(args: &[&str]) -> Result<()> {
         #[arrrg(flag, "Delete even work no other fork has taken up (git branch -D).")]
         force: bool,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally remove-fork [--force] <name>", args);
+    let (options, free) = parse::<Options>("USAGE: tally remove-fork [--force] <name>", args);
     reject_extra("remove-fork", &free, 1)?;
     let Some(name) = free.first() else {
         return Err(Error::Invalid(
@@ -1486,8 +1522,7 @@ fn cmd_union(args: &[&str]) -> Result<()> {
         #[arrrg(optional, "Author of the union lines.", "AUTHOR")]
         author: Option<String>,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally union [--into FORK] <fork>", args);
+    let (options, free) = parse::<Options>("USAGE: tally union [--into FORK] <fork>", args);
     reject_extra("union", &free, 1)?;
     let Some(source) = free.first() else {
         return Err(Error::Invalid("union requires a source fork".to_string()));
@@ -1564,7 +1599,7 @@ fn cmd_union(args: &[&str]) -> Result<()> {
 fn cmd_clone(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally clone <store> <dest>", args);
+    let (_, free) = parse::<Options>("USAGE: tally clone <store> <dest>", args);
     reject_extra("clone", &free, 2)?;
     let (Some(store), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("clone requires <store> <dest>".to_string()));
@@ -1578,7 +1613,7 @@ fn cmd_clone(args: &[&str]) -> Result<()> {
 fn cmd_fetch(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally fetch <store> <cache>", args);
+    let (_, free) = parse::<Options>("USAGE: tally fetch <store> <cache>", args);
     reject_extra("fetch", &free, 2)?;
     let (Some(store), Some(cache)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("fetch requires <store> <cache>".to_string()));
@@ -1601,8 +1636,7 @@ fn cmd_push(args: &[&str]) -> Result<()> {
         )]
         level: Option<i32>,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally push [--level N] <store>", args);
+    let (options, free) = parse::<Options>("USAGE: tally push [--level N] <store>", args);
     reject_extra("push", &free, 1)?;
     let Some(store) = free.first() else {
         return Err(Error::Invalid("push requires <store>".to_string()));
@@ -1646,8 +1680,7 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
         )]
         level: Option<i32>,
     }
-    let (options, free) =
-        Options::from_arguments_relaxed("USAGE: tally pack [--level N] <dir>", args);
+    let (options, free) = parse::<Options>("USAGE: tally pack [--level N] <dir>", args);
     reject_extra("pack", &free, 1)?;
     let Some(dir) = free.first() else {
         return Err(Error::Invalid(
@@ -1669,7 +1702,7 @@ fn cmd_pack(args: &[&str]) -> Result<()> {
 fn cmd_unpack(args: &[&str]) -> Result<()> {
     #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
     struct Options {}
-    let (_, free) = Options::from_arguments_relaxed("USAGE: tally unpack <dir> <dest>", args);
+    let (_, free) = parse::<Options>("USAGE: tally unpack <dir> <dest>", args);
     reject_extra("unpack", &free, 2)?;
     let (Some(dir), Some(dest)) = (free.first(), free.get(1)) else {
         return Err(Error::Invalid("unpack requires <dir> <dest>".to_string()));
@@ -1715,7 +1748,7 @@ fn nearest_command(typed: &str) -> Option<&'static str> {
     let mut best: Option<(&'static str, usize)> = None;
     for cmd in COMMANDS {
         let d = edit_distance(typed, cmd);
-        if best.map_or(true, |(_, best_d)| d < best_d) {
+        if best.is_none_or(|(_, best_d)| d < best_d) {
             best = Some((cmd, d));
         }
     }
