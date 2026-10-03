@@ -249,20 +249,34 @@ fn cmd_init(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// The git section of the top-level usage, sliced from USAGE so the two
+/// cannot drift: the section ends where the next one begins.
+fn git_usage() -> &'static str {
+    let start = USAGE
+        .find("git (sunsets with GitHub):")
+        .expect("git section");
+    let rest = &USAGE[start..];
+    let end = rest.find("\nworking tree:").expect("the section after git");
+    rest[..end].trim_end()
+}
+
 /// The `git` namespace: the bridge that sunsets with GitHub.
 fn cmd_git(args: &[&str]) -> Result<()> {
     let Some((sub, rest)) = args.split_first() else {
-        return Err(Error::Invalid(
-            "git requires a subcommand: pull, pr, or reanchor".to_string(),
-        ));
+        eprintln!("git requires a subcommand:\n{}", git_usage());
+        exit(64);
     };
     match *sub {
         "pull" => cmd_git_pull(rest),
         "pr" => cmd_git_pr(rest),
         "reanchor" => cmd_git_reanchor(rest),
-        other => Err(Error::Invalid(format!(
-            "unknown git subcommand {other:?}; expected pull, pr, or reanchor"
-        ))),
+        other => {
+            eprintln!(
+                "tally git: unknown git subcommand {other:?}\n{}",
+                git_usage()
+            );
+            exit(64);
+        }
     }
 }
 
