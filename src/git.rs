@@ -898,7 +898,7 @@ fn pr_render(
     let landed = &staged.lines[base_lines..];
     if landed.is_empty() {
         return Err(Error::Invalid(format!(
-            "fork {source} adds nothing beyond {target}; nothing to export"
+            "fork {source} adds nothing beyond fork {target}; nothing to export"
         )));
     }
 

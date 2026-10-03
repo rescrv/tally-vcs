@@ -327,20 +327,21 @@ fn cmd_git_pull(args: &[&str]) -> Result<()> {
         })?;
     }
     // One commit, one line; report the binding — the read path status wants.
+    // Fork and git branch are both commonly "main": name which is which.
     if summary.imported.is_empty() {
         println!(
-            "mirror {fork} bound to {branch}, up to date at {}",
+            "mirror fork {fork} bound to git branch {branch}, up to date at {}",
             summary.commit
         );
         return Ok(());
     }
     match &summary.base {
         Some(base) => println!(
-            "fast-forwarded mirror {fork} from {base} to {}",
+            "fast-forwarded mirror fork {fork} (git branch {branch}) from {base} to {}",
             summary.commit
         ),
         None => println!(
-            "bound mirror {fork} to {branch}, imported fresh history to {}",
+            "bound mirror fork {fork} to git branch {branch}, imported fresh history to {}",
             summary.commit
         ),
     }
@@ -443,11 +444,11 @@ fn cmd_git_pr(args: &[&str]) -> Result<()> {
     let author = options.author.unwrap_or_else(whoami);
     let summary = tally::git::pr(&repo, git_dir.as_deref(), source, &target, &author, &branch)?;
     println!(
-        "exported {} against {} (base {})",
+        "exported fork {} against fork {} (base {})",
         summary.fork, summary.target, summary.base
     );
     println!(
-        "branch {} at {} ({} commit(s))",
+        "git branch {} at {} ({} commit(s))",
         summary.branch, summary.tip, summary.commits
     );
     println!(
