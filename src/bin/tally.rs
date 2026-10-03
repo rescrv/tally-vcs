@@ -52,6 +52,7 @@ forks:
 revisions:
   rev-parse <rev>                  resolve a revision (HEAD, HEAD~N, fork, sum:S, line:ID)
   diff [rev] [rev] [-- path...]    the patch between two states (or working tree vs ref)
+                                   (--intent emits the patch as apply's JSON)
   blame <path>                     attribute each line to the patch that produced it
 
 patches:
@@ -719,6 +720,11 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         stat: bool,
         #[arrrg(flag, "Do not pair a delete with an add of the same blob as a rename.")]
         no_renames: bool,
+        #[arrrg(
+            flag,
+            "Emit the patch as an intent JSON — the file tally apply takes."
+        )]
+        intent: bool,
         #[arrrg(optional, "Lines of context in hunks (default: 3).", "N")]
         context: Option<usize>,
     }
@@ -780,13 +786,21 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
     if !paths.is_empty() {
         changes.retain(|c| path_matches(&c.path, &paths));
     }
+    let blobs = repo.blobs();
+    let read = |hash: &str| -> Result<Vec<u8>> { blobs.get(hash) };
+    if options.intent {
+        // The producer side of apply: the same synthesis commit trusts,
+        // rendered as the JSON apply consumes.  Creates inline their
+        // content (b64), so the intent travels between repositories.
+        let intent = tally::diff::synthesize_intent(&changes, read)?;
+        println!("{}", serde_json::to_string_pretty(&intent)?);
+        return Ok(());
+    }
     let (renames, changes) = if options.no_renames {
         (Vec::new(), changes)
     } else {
         tally::diff::detect_renames(&changes)
     };
-    let blobs = repo.blobs();
-    let read = |hash: &str| -> Result<Vec<u8>> { blobs.get(hash) };
 
     if options.stat {
         let mut total_ins = 0;
