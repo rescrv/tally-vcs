@@ -1290,11 +1290,17 @@ fn print_line_full(line: &tally::log::LogLine, palette: &Palette) {
 /// Render a header line followed by prose, git-log style: the header stands
 /// alone, then a blank line, then every prose line—subject included—is
 /// indented four spaces.  Blank prose lines stay blank (no trailing
-/// whitespace).  A trailing blank line closes the entry.
+/// whitespace).  A trailing blank line closes the entry.  An entry with no
+/// prose renders the header and the closing blank, and nothing between.
 fn print_prose(header: &str, prose: &str) {
     println!("{header}");
+    let prose = prose.trim_end_matches('\n');
+    if prose.is_empty() {
+        println!();
+        return;
+    }
     println!();
-    for line in prose.trim_end_matches('\n').split('\n') {
+    for line in prose.split('\n') {
         if line.is_empty() {
             println!();
         } else {
