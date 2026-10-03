@@ -113,8 +113,14 @@ fn main() {
             return;
         }
         other => {
-            eprintln!("tally: unknown command {other:?}\n");
-            eprint!("{USAGE}");
+            // A typo gets a suggestion and a pointer, not the whole usage.
+            match nearest_command(other) {
+                Some(near) => {
+                    eprintln!("tally: unknown command {other:?} (did you mean {near:?}?)")
+                }
+                None => eprintln!("tally: unknown command {other:?}"),
+            }
+            eprintln!("run `tally help` for the command list");
             exit(64);
         }
     };
@@ -1661,6 +1667,70 @@ fn cmd_unpack(args: &[&str]) -> Result<()> {
     let repo = tally::serve::unpack_dir(std::path::Path::new(dir), std::path::Path::new(dest))?;
     println!("unpacked into {}", repo.root().display());
     Ok(())
+}
+
+/// The command closest to `typed` by edit distance, when close enough to
+/// plausibly be what was meant.  A typo is a small edit away from its
+/// target; anything further is a different word.
+fn nearest_command(typed: &str) -> Option<&'static str> {
+    const COMMANDS: &[&str] = &[
+        "init",
+        "gc-blobs",
+        "git",
+        "sum",
+        "status",
+        "check",
+        "snapshot",
+        "materialize",
+        "restore",
+        "rev-parse",
+        "diff",
+        "blame",
+        "commit",
+        "apply",
+        "log",
+        "show",
+        "fuse",
+        "fork",
+        "forks",
+        "remove-fork",
+        "union",
+        "repoint",
+        "clone",
+        "fetch",
+        "push",
+        "pack",
+        "unpack",
+    ];
+    let mut best: Option<(&'static str, usize)> = None;
+    for cmd in COMMANDS {
+        let d = edit_distance(typed, cmd);
+        if best.map_or(true, |(_, best_d)| d < best_d) {
+            best = Some((cmd, d));
+        }
+    }
+    let (cmd, d) = best?;
+    let close = d <= 2 || d * 3 <= cmd.len() || cmd.starts_with(typed);
+    close.then_some(cmd)
+}
+
+/// Levenshtein distance over characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            let next = (prev[j] + cost)
+                .min(prev[j + 1] + 1)
+                .min(cur.last().unwrap() + 1);
+            cur.push(next);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
 }
 
 fn whoami() -> String {
