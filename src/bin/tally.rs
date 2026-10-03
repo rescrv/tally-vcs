@@ -639,10 +639,11 @@ fn cmd_materialize(args: &[&str]) -> Result<()> {
     }
     repo.materialize(&manifest, &dest)?;
     println!(
-        "materialized {} elements at {} into {}",
+        "materialized {} element{} into {} at {}",
         manifest.len(),
-        short(&resolved.sum),
-        dest.display()
+        if manifest.len() == 1 { "" } else { "s" },
+        dest.display(),
+        short(&resolved.sum)
     );
     Ok(())
 }
