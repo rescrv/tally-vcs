@@ -43,6 +43,7 @@ working tree:
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
+  forks                            list the forks in this repository
   remove-fork <name>               delete a fork; refuses unsubsumed work unless --force
   union <fork>                     bring that fork's log into this one (strata 1-3)
   repoint <rev>                    move this fork's state to a prior one, non-destructively
@@ -97,6 +98,7 @@ fn main() {
         "show" => cmd_show(&rest),
         "fuse" => cmd_fuse(&rest),
         "fork" => cmd_fork(&rest),
+        "forks" => cmd_forks(&rest),
         "remove-fork" => cmd_remove_fork(&rest),
         "union" => cmd_union(&rest),
         "repoint" => cmd_repoint(&rest),
@@ -1375,6 +1377,19 @@ fn cmd_fork(args: &[&str]) -> Result<()> {
     let repo = repo()?;
     let fork = repo.create_fork(name, options.from.as_deref().unwrap_or("main"))?;
     println!("fork {name} anchored at {}", short(&fork.anchor));
+    Ok(())
+}
+
+/// List the forks: the names a --fork flag can take, one per line.
+fn cmd_forks(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {}
+    let (_, free) = Options::from_arguments_relaxed("USAGE: tally forks", args);
+    reject_extra("forks", &free, 0)?;
+    let repo = repo()?;
+    for name in repo.fork_names()? {
+        println!("{name}");
+    }
     Ok(())
 }
 
