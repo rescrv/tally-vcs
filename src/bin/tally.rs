@@ -73,6 +73,51 @@ wire:
   unpack <dir> <dest>              unpack a packed directory into a loose repository
 ";
 
+/// The usage line for a command, for `tally help <command>`.  Keep these
+/// in sync with the usage strings the cmd_* functions pass to `parse`:
+/// each command owns its line there, and this table borrows it verbatim.
+fn command_usage(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "init" => "USAGE: tally init [dir]",
+        "gc-blobs" => "USAGE: tally gc-blobs [--dry-run]",
+        "git pull" => "USAGE: tally git pull [--fork FORK] [--git DIR] [branch]",
+        "git reanchor" => "USAGE: tally git reanchor [--fork FORK] [--git DIR] <commit>",
+        "git pr" => "USAGE: tally git pr [--into FORK] [--branch BRANCH] [--git DIR] <fork>",
+        "sum" => "USAGE: tally sum [--records]",
+        "status" => "USAGE: tally status [--fork FORK] [--porcelain]",
+        "check" => "USAGE: tally check [--fork FORK]",
+        "snapshot" => "USAGE: tally snapshot [--fork FORK]",
+        "materialize" => "USAGE: tally materialize [--fork FORK] <rev> [dest]",
+        "restore" => "USAGE: tally restore [--fork FORK] [rev] [-- path...]",
+        "repoint" => "USAGE: tally repoint [--fork FORK] [--author AUTHOR] [--prose PROSE] <rev>",
+        "rev-parse" => "USAGE: tally rev-parse [--fork FORK] [--line|--verbose] <rev>",
+        "diff" => {
+            "USAGE: tally diff [--fork FORK] [--stat] [--no-renames] [rev [rev]] [-- path...]"
+        }
+        "blame" => "USAGE: tally blame [--fork FORK] <path>",
+        "commit" => "USAGE: tally commit [options] [-- path...]",
+        "apply" => "USAGE: tally apply [options] <patch.json>",
+        "log" => {
+            "USAGE: tally log [--fork FORK] [--view FUSES | --raw] [--reverse] [--nocolor] [rev | from..to]"
+        }
+        "show" => "USAGE: tally show [--fork FORK] [--json] <id>",
+        "fuse" => {
+            "USAGE: tally fuse [--fork FORK] [--prose PROSE] [--author AUTHOR] <name> <from-id> <to-id>"
+        }
+        "fork" => "USAGE: tally fork [--from FORK] <name>",
+        "forks" => "USAGE: tally forks",
+        "remove-fork" => "USAGE: tally remove-fork [--force] <name>",
+        "union" => "USAGE: tally union [--into FORK] [--author AUTHOR] <fork>",
+        "clone" => "USAGE: tally clone <store> <dest>",
+        "fetch" => "USAGE: tally fetch <store> <cache>",
+        "push" => "USAGE: tally push [--level LEVEL] <store>",
+        "pack" => "USAGE: tally pack [--level LEVEL] <dir>",
+        "unpack" => "USAGE: tally unpack <dir> <dest>",
+        "git" => "USAGE: tally git pull | pr | reanchor  (subcommand required)",
+        _ => return None,
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {
@@ -109,7 +154,20 @@ fn main() {
         "pack" => cmd_pack(&rest),
         "unpack" => cmd_unpack(&rest),
         "help" | "--help" | "-h" => {
-            print!("{USAGE}");
+            match rest.first() {
+                None => print!("{USAGE}"),
+                Some(name) => match command_usage(name) {
+                    Some(usage) => println!("{usage}\n\nflags: tally {name} --help"),
+                    None => {
+                        eprintln!("tally: no command {name:?}");
+                        if let Some(near) = nearest_command(name) {
+                            eprintln!("did you mean {near:?}?");
+                        }
+                        eprintln!("run `tally help` for the command list");
+                        exit(64);
+                    }
+                },
+            }
             return;
         }
         other => {
@@ -946,9 +1004,7 @@ fn parse<T: Default + CommandLine>(usage: &str, args: &[&str]) -> (T, Vec<String
     let invocation = usage
         .strip_prefix("USAGE: tally ")
         .map(|rest| {
-            let end = rest
-                .find([' ', '[', '<'])
-                .unwrap_or(rest.len());
+            let end = rest.find([' ', '[', '<']).unwrap_or(rest.len());
             &rest[..end]
         })
         .unwrap_or("command");
