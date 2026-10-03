@@ -1046,6 +1046,8 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         raw: bool,
         #[arrrg(flag, "Newest first (the default is oldest first).")]
         reverse: bool,
+        #[arrrg(optional, "Show at most N lines: the most recent.", "N")]
+        max_count: Option<usize>,
         #[arrrg(flag, "Plain output: no terminal color (the default on a terminal).")]
         nocolor: bool,
     }
@@ -1077,6 +1079,12 @@ fn cmd_log(args: &[&str]) -> Result<()> {
         );
         return Ok(());
     }
+    // --max-count bounds the render to the most recent N lines of the
+    // chain, whatever the ordering: the most recent are the chain's end.
+    let history = match options.max_count {
+        Some(n) => &history[history.len().saturating_sub(n)..],
+        None => history,
+    };
     if options.raw {
         // The un-fused chain: every line, full.  Like the fused view, lines
         // print oldest first — the log reads in ascending time — unless
