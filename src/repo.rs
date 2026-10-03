@@ -126,15 +126,18 @@ impl Repository {
 
     /// Walk up from `start` to find a repository.
     pub fn discover(start: impl Into<PathBuf>) -> Result<Self> {
-        let mut dir = start.into();
+        let start = start.into();
+        let mut dir = start.clone();
         loop {
             if dir.join(".tally").join("version").exists() {
                 return Repository::open(dir);
             }
             if !dir.pop() {
-                return Err(Error::Invalid(
-                    "not inside an tally repository (no .tally found)".to_string(),
-                ));
+                return Err(Error::Invalid(format!(
+                    "not inside a tally repository (no .tally in {} or any parent); \
+                     run `tally init` to create one",
+                    start.display()
+                )));
             }
         }
     }
