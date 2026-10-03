@@ -1157,6 +1157,25 @@ impl Repository {
         target: &Manifest,
         filters: Option<&[String]>,
     ) -> Result<Vec<(&'static str, String)>> {
+        self.restore_impl(target, filters, true)
+    }
+
+    /// What [`Repository::restore`] would do, without doing it: the same
+    /// action list, nothing rewritten.  `tally restore --dry-run`.
+    pub fn restore_dry_run(
+        &self,
+        target: &Manifest,
+        filters: Option<&[String]>,
+    ) -> Result<Vec<(&'static str, String)>> {
+        self.restore_impl(target, filters, false)
+    }
+
+    fn restore_impl(
+        &self,
+        target: &Manifest,
+        filters: Option<&[String]>,
+        apply: bool,
+    ) -> Result<Vec<(&'static str, String)>> {
         let blobs = self.blobs();
         let mut actions = Vec::new();
         let matches = |path: &str| match filters {
@@ -1180,11 +1199,15 @@ impl Repository {
             }
             match target.get(&path) {
                 Some(record) => {
-                    self.write_tree_file(&blobs, record)?;
+                    if apply {
+                        self.write_tree_file(&blobs, record)?;
+                    }
                     actions.push(("restore", path));
                 }
                 None => {
-                    let _ = fs::remove_file(self.tree_path(&path));
+                    if apply {
+                        let _ = fs::remove_file(self.tree_path(&path));
+                    }
                     actions.push(("remove", path));
                 }
             }

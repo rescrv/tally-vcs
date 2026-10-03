@@ -39,7 +39,7 @@ working tree:
   check                            compare the working tree against the log's expectation
   materialize <rev> [dest]         produce a working tree at a state (default: new dir)
   restore [rev] [-- path...]       rewrite working-tree paths to a state (discards edits)
-                                   (does not discard untracked files)
+                                   (does not discard untracked files; --dry-run previews)
 
 forks:
   fork <name>                      create a fork (anchor + empty log)
@@ -572,6 +572,8 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     struct Options {
         #[arrrg(optional, "The fork to restore from (default: main).", "FORK")]
         fork: Option<String>,
+        #[arrrg(flag, "Print what would be rewritten without rewriting it.")]
+        dry_run: bool,
     }
     // A trailing `--` restricts to a pathspec, as diff does.
     let (left, paths): (Vec<&str>, Vec<String>) = match args.iter().position(|a| *a == "--") {
@@ -600,15 +602,34 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     } else {
         Some(paths.as_slice())
     };
-    let actions = repo.restore(&target, filters)?;
+    let actions = if options.dry_run {
+        repo.restore_dry_run(&target, filters)?
+    } else {
+        repo.restore(&target, filters)?
+    };
+    let verb = |code: &&'static str| {
+        if options.dry_run {
+            format!("would {code}")
+        } else {
+            code.to_string()
+        }
+    };
     for (code, path) in &actions {
-        println!("{code}  {}", display_path(path));
+        println!("{}  {}", verb(code), display_path(path));
     }
-    println!(
-        "{} path(s) restored to {}",
-        actions.len(),
-        short(&resolved.sum)
-    );
+    if options.dry_run {
+        println!(
+            "{} path(s) would change to {}; run without --dry-run to apply",
+            actions.len(),
+            short(&resolved.sum)
+        );
+    } else {
+        println!(
+            "{} path(s) restored to {}",
+            actions.len(),
+            short(&resolved.sum)
+        );
+    }
     Ok(())
 }
 
