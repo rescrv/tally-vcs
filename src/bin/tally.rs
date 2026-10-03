@@ -461,7 +461,7 @@ fn cmd_status(args: &[&str]) -> Result<()> {
     println!("pending {}", pending.hexdigest());
     println!();
     for change in &changes {
-        println!("  {}  {}", change.code(), change.path);
+        println!("  {}  {}", change.code(), display_path(&change.path));
     }
     println!();
     let (a, d, m) = changes
@@ -594,7 +594,7 @@ fn cmd_restore(args: &[&str]) -> Result<()> {
     };
     let actions = repo.restore(&target, filters)?;
     for (code, path) in &actions {
-        println!("{code}  {path}");
+        println!("{code}  {}", display_path(path));
     }
     println!(
         "{} path(s) restored to {}",
@@ -763,7 +763,11 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
         let mut total_ins = 0;
         let mut total_del = 0;
         for r in &renames {
-            println!(" {} => {} (rename)", r.from.path, r.to.path);
+            println!(
+                " {} => {} (rename)",
+                display_path(&r.from.path),
+                display_path(&r.to.path)
+            );
         }
         for c in &changes {
             let old = match &c.before {
@@ -777,7 +781,7 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
             let (ins, del) = tally::diff::line_stat(&old, &new);
             total_ins += ins;
             total_del += del;
-            println!(" {} | +{ins} -{del}", c.path);
+            println!(" {} | +{ins} -{del}", display_path(&c.path));
         }
         println!(
             "{} file(s) changed, {total_ins} insertion(s), {total_del} deletion(s)",
@@ -787,7 +791,11 @@ fn cmd_diff(args: &[&str]) -> Result<()> {
     }
 
     for r in &renames {
-        println!("rename {} => {}", r.from.path, r.to.path);
+        println!(
+            "rename {} => {}",
+            display_path(&r.from.path),
+            display_path(&r.to.path)
+        );
         if r.from.mode != r.to.mode {
             println!("  mode {} => {}", r.from.mode, r.to.mode);
         }
@@ -856,6 +864,14 @@ fn cmd_blame(args: &[&str]) -> Result<()> {
         println!("{short_id:8}  {author:>12}  {:>width$}  {}", n + 1, bl.text);
     }
     Ok(())
+}
+
+/// The human form of an element path: element paths are absolute by spec
+/// (§1), but `/a.txt` reads like a filesystem oddity; display paths drop
+/// the leading slash.  Machine formats (status --porcelain, intents) keep
+/// the raw path.
+fn display_path(path: &str) -> &str {
+    path.trim_start_matches('/')
 }
 
 /// Normalize a pathspec argument to an absolute element path for matching.
