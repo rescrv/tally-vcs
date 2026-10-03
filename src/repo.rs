@@ -293,8 +293,17 @@ impl Repository {
     /// Read a fork file.
     pub fn read_fork(&self, name: &str) -> Result<ForkFile> {
         validate_fork_name(name)?;
-        let bytes = fs::read(self.fork_dir(name).join("fork"))
-            .map_err(ioerr(format!("reading fork {name}")))?;
+        let path = self.fork_dir(name).join("fork");
+        if !path.exists() {
+            // A missing fork is a naming mistake, not an I/O failure: name
+            // the forks that do exist so the typo is correctable in place.
+            let forks = self.fork_names()?.join(", ");
+            let forks = if forks.is_empty() { "none" } else { &forks };
+            return Err(Error::Invalid(format!(
+                "no fork named {name} (existing forks: {forks})"
+            )));
+        }
+        let bytes = fs::read(&path).map_err(ioerr(format!("reading fork {name}")))?;
         ForkFile::parse(&bytes)
     }
 
