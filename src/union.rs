@@ -138,8 +138,11 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             concurrent.push((line.id.clone(), writes));
         }
     }
-    // The pristine target — before this union lands anything — is the
-    // reference the span-precise staleness check diffs each read against.
+    // The pristine target — before this union lands anything.  The symmetric
+    // tripwire subtracts the lines changed read-blob → `target_before` (the
+    // target's own writes) from those changed read-blob → post-union, so a
+    // target edit's read of its own `old_str` is not mistaken for a line the
+    // union disturbed.
     let blobs = repo.blobs();
     let target_before = &target_state.manifest;
 
@@ -209,13 +212,13 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         // for the stratum-3 attempt.
         let mut trial = scratch.clone();
         let (realized, st) = if apply_realized_to_manifest(&mut trial, &line.realized).is_ok() {
-            scratch = trial;
             (line.realized.clone(), Stratum::RealizedReplay)
         } else {
             // Stratum 3: intent replay.  A consumed record is missing because
             // the target drifted; re-validate the span precondition against
             // the scratch blob and realize fresh deltas.
-            match apply_intent(&line.intent, &mut scratch, &blobs) {
+            trial = scratch.clone();
+            match apply_intent(&line.intent, &mut trial, &blobs) {
                 Ok(realization) => {
                     // Write the re-realized blobs now: content-addressed and
                     // idempotent, they are safe to leave even if the union
@@ -237,6 +240,15 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             }
         };
 
+        // The forward tripwire (§6): W_target ∩ R_source.  The source line's
+        // read blob already carries every earlier source line's edit, so the
+        // reference to diff it against is the scratch *before this line
+        // lands* — target plus the source lines landed so far.  Diffing
+        // against the pristine target would show the second patch of a
+        // series over one file its predecessor's edit as a concurrent write.
+        note_stale_reads(&mut outcome, line, &concurrent, &scratch, &blobs)?;
+        scratch = trial;
+
         // Fold the sum and seal the line in memory, chaining from the running
         // head.  `seal` stamps the id and commit time.
         sum = apply_realized_to_sum(&sum, &realized)?;
@@ -252,7 +264,6 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
         bytes.extend_from_slice(&landed.seal(&blobs)?);
         prev = landed.id.clone();
         rekey.insert(line.id.clone(), landed.id.clone());
-        note_stale_reads(&mut outcome, line, &concurrent, target_before, &blobs)?;
         for path in write_paths(&landed)? {
             union_writers.insert(path, line.id.clone());
         }
@@ -268,9 +279,17 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
     // them would strand a concurrent target line's reasoning — a target patch
     // that read state this merge overwrites.  Only paths the union wrote are
     // considered, and staleness is span-precise against the post-union
-    // manifest, so a target read the merge did not disturb is left alone.
+    // manifest net of the target's own writes, so a target read the merge
+    // did not disturb is left alone.
     for target_line in &target_state.lines[concurrent_start..] {
-        note_stranded_reads(&mut outcome, target_line, &union_writers, &scratch, &blobs);
+        note_stranded_reads(
+            &mut outcome,
+            target_line,
+            &union_writers,
+            target_before,
+            &scratch,
+            &blobs,
+        );
     }
 
     // The commit point.  A semantic conflict aborts exactly like a stratum-4
@@ -357,7 +376,7 @@ fn stale_reads(
             // whole state, so any concurrent write may have voided it.
             return concurrent_writes.clone();
         };
-        if concurrent_writes.contains(path) && read_is_stale(read, path, target, blobs) {
+        if concurrent_writes.contains(path) && read_is_stale(read, path, None, target, blobs) {
             stale.insert(path.to_string());
         }
     }
@@ -372,9 +391,17 @@ fn stale_reads(
 /// span not uniquely locatable, a vanished path, or a read that named no
 /// spans (a whole-file read) — is treated as stale: conservative, never a
 /// missed conflict.
+///
+/// `own` is the reader's own side of the fork, if it wrote the path after
+/// reading it: lines changed read-blob → `own` are the reader's own writes
+/// (an `edit` records its `old_str` as a read of the pre-edit blob), not
+/// concurrent ones, and are subtracted from the changed set.  Without it,
+/// every edit would find its own `old_str` "changed" the moment the other
+/// side touched the same file anywhere.
 fn read_is_stale(
     read: &serde_json::Value,
     path: &str,
+    own: Option<&Manifest>,
     target: &Manifest,
     blobs: &BlobStore,
 ) -> bool {
@@ -393,9 +420,19 @@ fn read_is_stale(
     let (Ok(read_bytes), Ok(now_bytes)) = (blobs.get(read_hash), blobs.get(&record.blob)) else {
         return true;
     };
-    let Some(changed) = crate::diff::changed_old_lines(&read_bytes, &now_bytes) else {
+    let Some(mut changed) = crate::diff::changed_old_lines(&read_bytes, &now_bytes) else {
         return true; // non-UTF-8: cannot localize.
     };
+    // Subtract the reader's own writes.  If its side never touched the path
+    // after the read, or we cannot resolve its blob, nothing is subtracted:
+    // conservative.
+    if let Some(own_record) = own.and_then(|m| m.get(path))
+        && own_record.blob != read_hash
+        && let Ok(own_bytes) = blobs.get(&own_record.blob)
+        && let Some(own_changed) = crate::diff::changed_old_lines(&read_bytes, &own_bytes)
+    {
+        changed = &changed - &own_changed;
+    }
     let Some(spans) = read
         .get("spans")
         .and_then(|s| s.as_array())
@@ -419,10 +456,26 @@ fn read_is_stale(
     false
 }
 
-/// The inclusive range of 0-based line indices a `needle` covers in `blob`,
-/// iff it occurs exactly once.  A line index is the count of `\n` bytes
-/// preceding an offset, matching the diff's line splitting.
+/// The inclusive range of 0-based line indices a `needle` covers in `blob`.
+///
+/// Two span forms are understood.  `L<start>-<end>` names a 1-based inclusive
+/// line range — the form a ranged `view` records — and is clamped to the
+/// blob's line count; a range lying wholly past the end is not locatable.
+/// Any other needle is literal text, located iff it occurs exactly once; a
+/// line index is then the count of `\n` bytes preceding an offset, matching
+/// the diff's line splitting.  `<whole file>` matches neither and falls
+/// through to the caller's conservative arm.
 fn span_line_range(blob: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
+    if let Some((start, end)) = parse_line_span(needle) {
+        // Lines as the diff counts them: a trailing newline does not open an
+        // empty final line, but an unterminated tail is a line.
+        let nlines = blob.iter().filter(|&&b| b == b'\n').count()
+            + usize::from(blob.last().is_some_and(|&b| b != b'\n'));
+        if nlines == 0 || start > nlines || start > end {
+            return None;
+        }
+        return Some((start - 1, end.min(nlines) - 1));
+    }
     if needle.is_empty() || crate::patch::count_occurrences(blob, needle) != 1 {
         return None;
     }
@@ -432,17 +485,31 @@ fn span_line_range(blob: &[u8], needle: &[u8]) -> Option<(usize, usize)> {
     Some((line_of(start), line_of(last)))
 }
 
+/// Parse a ranged-view span, `L<start>-<end>` with both 1-based and
+/// inclusive, as the editor records it.  Anything else — including `L0-5`
+/// or a bare `L7` — is not a line span.
+fn parse_line_span(needle: &[u8]) -> Option<(usize, usize)> {
+    let text = std::str::from_utf8(needle).ok()?.strip_prefix('L')?;
+    let (start, end) = text.split_once('-')?;
+    let start: usize = start.parse().ok()?;
+    let end: usize = end.parse().ok()?;
+    (start >= 1 && end >= 1).then_some((start, end))
+}
+
 /// The symmetric direction: record a conflict for each read of a concurrent
 /// target line that the union's write would strand.  Only paths the union
 /// actually wrote (`union_writers`, path → the source line that wrote it) are
 /// considered, and each read is checked span-precisely against the post-union
-/// manifest.  A universally-quantified target read (a grep negative) or one
-/// spilled to a blob is stranded conservatively by any union write.  Conflicts
-/// are grouped one per (writing source line, this target line).
+/// manifest, net of the lines the target itself changed between the read and
+/// `target_before` (its own writes are not the union's).  A
+/// universally-quantified target read (a grep negative) or one spilled to a
+/// blob is stranded conservatively by any union write.  Conflicts are grouped
+/// one per (writing source line, this target line).
 fn note_stranded_reads(
     outcome: &mut UnionOutcome,
     target_line: &LogLine,
     union_writers: &BTreeMap<String, String>,
+    target_before: &Manifest,
     after: &Manifest,
     blobs: &BlobStore,
 ) {
@@ -471,7 +538,7 @@ fn note_stranded_reads(
                     None => strand_all(&mut by_source),
                     Some(path) => {
                         if let Some(source_id) = union_writers.get(path)
-                            && read_is_stale(read, path, after, blobs)
+                            && read_is_stale(read, path, Some(target_before), after, blobs)
                         {
                             by_source
                                 .entry(source_id.clone())
@@ -979,6 +1046,153 @@ mod tests {
             "reading /config while main writes /unrelated is no conflict"
         );
         assert!(outcome.semantic_conflicts.is_empty());
+    }
+
+    /// A 200-line file, `line 1\n` … `line 200\n`.
+    fn two_hundred_lines() -> Vec<u8> {
+        (1..=200)
+            .map(|i| format!("line {i}\n"))
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    /// The current blob hash of `path` on `fork`.
+    fn blob_of(repo: &Repository, fork: &str, path: &str) -> String {
+        repo.current_state(fork)
+            .unwrap()
+            .manifest
+            .get(path)
+            .unwrap()
+            .blob
+            .clone()
+    }
+
+    /// Apply an `edit` the way the editor records it: `old` is a read of the
+    /// pre-edit blob at `path`.
+    fn edit_with_read(repo: &Repository, fork: &str, path: &str, old: &str, new: &str) {
+        let blob = blob_of(repo, fork, path);
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": path, "blob": blob, "spans": [old]}]));
+        repo.apply(fork, edit(path, old, new), n).unwrap();
+    }
+
+    #[test]
+    fn a_target_edit_is_not_stranded_by_its_own_old_str() {
+        // E-038 fault 1.  Every `edit` records its `old_str` as a read of the
+        // pre-edit blob.  Diffing pre-edit → post-union always shows that
+        // span changed — by the target itself.  The target edits line 2, the
+        // source edits line 150: nothing either side read was disturbed by
+        // the other.
+        let repo = temp_repo("own-old-str");
+        repo.apply("main", create("/f", &two_hundred_lines()), note("t"))
+            .unwrap();
+        repo.create_fork("s", "main").unwrap();
+        edit_with_read(&repo, "main", "/f", "line 2\n", "line two\n");
+        edit_with_read(&repo, "s", "/f", "line 150\n", "line one-fifty\n");
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(
+            outcome.complete(),
+            "a target edit's read of its own old_str is not a stranded read: {:?}",
+            outcome.semantic_conflicts
+        );
+        assert_eq!(outcome.landed.len(), 1);
+        let merged = repo.blobs().get(&blob_of(&repo, "main", "/f")).unwrap();
+        let merged = String::from_utf8(merged).unwrap();
+        assert!(merged.contains("line two\n") && merged.contains("line one-fifty\n"));
+    }
+
+    #[test]
+    fn a_ranged_view_of_a_disjoint_region_is_not_stale() {
+        // E-038 fault 2.  A ranged view records `L<start>-<end>`, which is
+        // not text in the file.  Treating it as "not uniquely locatable" made
+        // every ranged view of a file the other side touched a conflict.  The
+        // source viewed lines 95-125 and edited line 150; the target edited
+        // line 2.  Symmetrically, the target viewed lines 180-190.
+        let repo = temp_repo("ranged-view");
+        repo.apply("main", create("/f", &two_hundred_lines()), note("t"))
+            .unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let before = blob_of(&repo, "main", "/f");
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/f", "blob": before, "spans": ["L180-190"]}]));
+        repo.apply("main", edit("/f", "line 2\n", "line two\n"), n)
+            .unwrap();
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/f", "blob": before, "spans": ["L95-125"]}]));
+        repo.apply("s", edit("/f", "line 150\n", "line one-fifty\n"), n)
+            .unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(
+            outcome.complete(),
+            "views of lines 95-125 and 180-190 survive edits to lines 2 and 150: {:?}",
+            outcome.semantic_conflicts
+        );
+        assert_eq!(outcome.landed.len(), 1);
+    }
+
+    #[test]
+    fn a_ranged_view_over_the_edited_line_is_stale() {
+        // The `L..` form is located, not waved through: a view that covered
+        // the line the other side changed is still a conflict, and the range
+        // is 1-based inclusive and clamped to the blob.
+        let blob = two_hundred_lines();
+        assert_eq!(span_line_range(&blob, b"L95-125"), Some((94, 124)));
+        assert_eq!(span_line_range(&blob, b"L150-999"), Some((149, 199)));
+        assert_eq!(span_line_range(&blob, b"L201-210"), None, "past the end");
+        assert_eq!(span_line_range(&blob, b"L0-5"), None, "1-based");
+        assert_eq!(span_line_range(&blob, b"<whole file>"), None);
+
+        let repo = temp_repo("ranged-view-hit");
+        repo.apply("main", create("/f", &two_hundred_lines()), note("t"))
+            .unwrap();
+        repo.create_fork("s", "main").unwrap();
+        let before = blob_of(&repo, "main", "/f");
+        repo.apply("main", edit("/f", "line 2\n", "line two\n"), note("t"))
+            .unwrap();
+        let mut n = note("t");
+        n.reads = Some(serde_json::json!([{"path": "/f", "blob": before, "spans": ["L1-3"]}]));
+        repo.apply("s", edit("/f", "line 150\n", "line one-fifty\n"), n)
+            .unwrap();
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(!outcome.complete(), "the view covered line 2");
+        assert_eq!(outcome.semantic_conflicts.len(), 1);
+        assert_eq!(
+            outcome.semantic_conflicts[0].direction,
+            ConflictDirection::IncomingReadStale
+        );
+    }
+
+    #[test]
+    fn second_patch_of_a_series_does_not_see_the_first_as_concurrent() {
+        // E-038, the third fault.  The source lands two edits to one file; the
+        // second reads text the first wrote.  Checked against the pristine
+        // target, that read looks disturbed — by the source's own earlier
+        // line.  It must be checked against the scratch as it stands when the
+        // line lands.  The target concurrently edits line 2.
+        let repo = temp_repo("series");
+        repo.apply("main", create("/f", &two_hundred_lines()), note("t"))
+            .unwrap();
+        repo.create_fork("s", "main").unwrap();
+        edit_with_read(&repo, "main", "/f", "line 2\n", "line two\n");
+        edit_with_read(&repo, "s", "/f", "line 100\n", "line hundred\n");
+        edit_with_read(
+            &repo,
+            "s",
+            "/f",
+            "line hundred\nline 101\n",
+            "line hundred\nline hundred-and-one\n",
+        );
+
+        let outcome = union(&repo, "s", "main", "maintainer").unwrap();
+        assert!(
+            outcome.complete(),
+            "the second patch read its predecessor's edit, not a target write: {:?}",
+            outcome.semantic_conflicts
+        );
+        assert_eq!(outcome.landed.len(), 2);
     }
 
     #[test]
