@@ -171,6 +171,7 @@ writes one and MAY repoint the fork file at it; earlier log lines remain.
    "reason": null, "sig": null,
    "session": "…", "prose": "…",
    "reads": [ … ],
+   "harness": null,
    "origin": null}}
 ```
 
@@ -209,6 +210,16 @@ Semantics, pinned:
   line, it re-keys `from` and `to` through the `origin → landed id`
   correspondence it already computes, so the span names lines on the target
   chain; the name travels untouched.
+- `harness`, when present, is
+  `{"harness": "<name>", "tool": "<tool>", "entry": "<id>", "call": "<id>"}`:
+  the tool call a harness observed producing this line, for harnesses that
+  cannot be handed an instrumented editor and must be read back afterwards
+  (`tally claude commit`). Provenance stays `agent` — the harness saw the
+  call, it only reported it a step late — and `reads` is recorded or absent
+  on its own merits. The names are the harness's own and tally does not
+  interpret them; they exist so a line traces to the call that made it and so
+  a second ingest of one session appends only what is new. Union carries the
+  field verbatim, as it does `import`.
 - **Spill rule.** A stored log line MUST be under 65536 bytes; content past
   the limit overflows into the blob pool rather than failing. If `reads`
   pushes past the limit, the array moves whole into a blob and the field

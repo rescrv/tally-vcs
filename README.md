@@ -462,6 +462,9 @@ print("B then A ", render(add(add(anchor,dB),dA)))
 ## What's Implemented
 
 - A working Pi integration
+- A Claude Code integration: `tally claude commit` reads the session transcript
+  and the working tree, reconciles them, and lands the session as a fork
+  (one line per observed tool call); the `tally-session` skill runs it
 - A working tally protocol that can work against GitHub by importing from Git and exporting a PR.
 - Incremental push to object storage: a push carries only what the store lacks.
   Edits and inline creates travel as references to the log lines that made

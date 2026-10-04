@@ -33,6 +33,12 @@ git (sunsets with GitHub):
                                    (one commit per fused beat)
   git reanchor <commit>            recover the mirror fork after an upstream rewrite
 
+claude (the harness bridge):
+  claude commit                    ingest this Claude Code session: one line per
+                                   observed tool call on fork claude-<session>,
+                                   then one reconciling line for the residue
+                                   (--dry-run previews it; --session names another)
+
 working tree:
   sum                              print the working tree's sum (--records for elements)
   status                           the pending patch: working tree vs the fork's ref
@@ -134,6 +140,7 @@ fn main() {
         "init" => cmd_init(&rest),
         "gc-blobs" => cmd_gc_blobs(&rest),
         "git" => cmd_git(&rest),
+        "claude" => cmd_claude(&rest),
         "sum" => cmd_sum(&rest),
         "status" => cmd_status(&rest),
         "check" => cmd_check(&rest),
@@ -475,6 +482,137 @@ fn cmd_git_pr(args: &[&str]) -> Result<()> {
         summary.branch, summary.target
     );
     Ok(())
+}
+
+/// The `claude` namespace: the bridge to a harness whose tool set is fixed.
+fn cmd_claude(args: &[&str]) -> Result<()> {
+    let Some((sub, rest)) = args.split_first() else {
+        return Err(Error::Invalid(
+            "claude requires a subcommand: commit".to_string(),
+        ));
+    };
+    match *sub {
+        "commit" => cmd_claude_commit(rest),
+        other => Err(Error::Invalid(format!(
+            "unknown claude subcommand {other:?}; expected commit"
+        ))),
+    }
+}
+
+fn cmd_claude_commit(args: &[&str]) -> Result<()> {
+    #[derive(Debug, Default, Eq, PartialEq, arrrg_derive::CommandLine)]
+    struct Options {
+        #[arrrg(
+            optional,
+            "The session to ingest (default: this one, from the environment).",
+            "ID"
+        )]
+        session: Option<String>,
+        #[arrrg(
+            optional,
+            "The transcript to read (default: the session's own).",
+            "PATH"
+        )]
+        transcript: Option<String>,
+        #[arrrg(optional, "The fork to land on (default: claude-<session>).", "FORK")]
+        fork: Option<String>,
+        #[arrrg(
+            optional,
+            "The fork to anchor a new session fork on (default: the fork of the \
+             session this one continues, else main).",
+            "FORK"
+        )]
+        from: Option<String>,
+        #[arrrg(optional, "Author of the ingested lines.", "AUTHOR")]
+        author: Option<String>,
+        #[arrrg(flag, "Report what would be ingested and write nothing.")]
+        dry_run: bool,
+        #[arrrg(flag, "Do not append the reconciling line; leave the residue pending.")]
+        no_reconcile: bool,
+    }
+    let (options, free) = Options::from_arguments_relaxed(
+        "USAGE: tally claude commit [--session ID] [--transcript PATH] [--fork FORK] \
+         [--from FORK] [--author AUTHOR] [--dry-run] [--no-reconcile]",
+        args,
+    );
+    reject_extra("claude commit", &free, 0)?;
+    let repo = repo()?;
+    let summary = tally::claude::commit(
+        &repo,
+        &tally::claude::Options {
+            session: options.session,
+            transcript: options.transcript.map(std::path::PathBuf::from),
+            fork: options.fork,
+            from: options.from,
+            author: options.author,
+            dry_run: options.dry_run,
+            no_reconcile: options.no_reconcile,
+        },
+    )?;
+    print_claude_summary(&summary);
+    Ok(())
+}
+
+/// Render a `claude commit` outcome: what was read, what landed, what the
+/// session could not explain.
+fn print_claude_summary(summary: &tally::claude::Summary) {
+    println!("session   {}", summary.session);
+    println!("          {}", summary.transcript.display());
+    match &summary.inherited {
+        Some(parent) => println!(
+            "          {} entries, uniquely its own from entry {} (continues session {parent})",
+            summary.entries, summary.origin
+        ),
+        None => println!("          {} entries, none inherited", summary.entries),
+    }
+    let how = if summary.dry_run {
+        "would anchor on"
+    } else if summary.created {
+        "created, anchored on"
+    } else {
+        "anchored on"
+    };
+    println!("fork      {} ({how} {})", summary.fork, summary.base);
+    println!(
+        "observed  {} file-mutating call(s); {} already recorded",
+        summary.observed, summary.already
+    );
+    for landed in &summary.landed {
+        println!("  {}  {}", short(&landed.id), landed.label);
+    }
+    for skipped in &summary.skipped {
+        // Not an error: the call happened, its precondition has since moved,
+        // and the reconciling line carries what it did.
+        println!("  skipped   {}: {}", skipped.label, skipped.why);
+    }
+    if summary.residue.is_empty() {
+        println!("residue   none: the fork equals the working tree");
+    } else {
+        println!(
+            "residue   {} path(s) the session's calls do not explain",
+            summary.residue.len()
+        );
+        for path in &summary.residue {
+            println!("  {path}");
+        }
+        match (&summary.reconciled, summary.dry_run) {
+            (Some(id), _) => println!("reconciled {}", short(id)),
+            (None, true) => println!("reconciled  would append one line for them"),
+            (None, false) => println!("reconciled  nothing: --no-reconcile left them pending"),
+        }
+    }
+    println!("head      {}", summary.head);
+    // The fine structure is the point; collapsing it is a separate, lossless
+    // step the operator chooses (§2.6).
+    if let (Some(first), Some(last)) = (summary.landed.first(), summary.landed.last())
+        && !summary.dry_run
+        && first.id != last.id
+    {
+        println!(
+            "render it as one beat: tally fuse --fork {} session {} {}",
+            summary.fork, first.id, last.id
+        );
+    }
 }
 
 fn cmd_sum(args: &[&str]) -> Result<()> {
@@ -1157,6 +1295,7 @@ fn annotation_from(options: &ApplyOptions, repo: &Repository) -> Result<Annotati
         origin: None,
         fuse: None,
         import: None,
+        harness: None,
     })
 }
 

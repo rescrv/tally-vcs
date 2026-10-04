@@ -13,6 +13,7 @@ use handled::SError;
 pub mod b64;
 pub mod blame;
 pub mod blobs;
+pub mod claude;
 pub mod delta;
 pub mod diff;
 pub mod fork;

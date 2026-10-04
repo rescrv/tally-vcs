@@ -77,6 +77,24 @@ pub struct GitImport {
     pub reference: Option<String>,
 }
 
+/// For lines a harness observed after the fact (`tally claude commit`): the
+/// tool call that produced the line.  An agent harness that cannot be handed
+/// a replacement editor can still be read back afterwards, and what it read
+/// back is a fact worth keeping: it names the transcript entry and the tool
+/// call, so a line traces to the exact call that made it and a later ingest
+/// of the same session can tell which calls it already recorded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessCall {
+    /// The harness that observed the call (`claude`).
+    pub harness: String,
+    /// The tool the harness ran (`Edit`, `MultiEdit`, `Write`).
+    pub tool: String,
+    /// The transcript entry the call appeared in.
+    pub entry: String,
+    /// The call's id, unique within the session.
+    pub call: String,
+}
+
 /// The annotation: the exhaust the harness stops throwing away.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Annotation {
@@ -104,6 +122,11 @@ pub struct Annotation {
     /// present, `prose` carries the commit message verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub import: Option<GitImport>,
+    /// For lines a harness observed after the fact, the tool call behind the
+    /// line (§2.5).  Agent provenance either way: the harness saw the call,
+    /// it just reported it a step late.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessCall>,
     /// For fuse lines, the named span (§2.6).  A line carrying a fuse MUST
     /// have an empty realized delta: a fuse is an interpretation, never a
     /// mutation.  Union re-keys `from`/`to` when the line lands elsewhere;

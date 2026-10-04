@@ -204,6 +204,9 @@ pub fn union(repo: &Repository, source: &str, target: &str, author: &str) -> Res
             }),
             fuse,
             import: line.annotation.import.clone(),
+            // Derivation facts travel with the line, as `import` does: a
+            // landed line still names the tool call that first produced it.
+            harness: line.annotation.harness.clone(),
         };
 
         // Stratum 2: realized replay.  If the incoming realized delta applies
