@@ -196,6 +196,101 @@ pub fn replace_unique(
     Ok(out)
 }
 
+/// Materialize a `replace_all`-shaped edit as the series of uniquely-anchored
+/// edits that produces the same bytes.
+///
+/// tally has no `replace_all` op and will not grow one.  Its precondition is
+/// "every occurrence, however many", which is not content-addressed: a
+/// concurrent patch that inserts the same text silently joins the set being
+/// replaced, so two such edits do not commute in any way the substrate can
+/// check, and the read set is honestly the whole file rather than a span.  A
+/// harness that offers the shape anyway (Claude Code's `Edit` carries a
+/// `replace_all` flag) is therefore translated, not accommodated: each
+/// occurrence becomes an [`Op::Edit`] whose `old_str` is widened by whole
+/// lines until it occurs exactly once in the content that edit will meet.
+/// Widening terminates because the whole content is trivially unique in
+/// itself.
+///
+/// The occurrences are the non-overlapping ones of the original content, left
+/// to right — exactly what a one-pass replace-all replaces — so a `new` that
+/// contains `old` grows no extra matches.  Returns `None` when the content is
+/// not UTF-8 (the ops carry strings) or when `old` does not occur, which are
+/// both "nothing to anchor", not failures.
+pub fn anchored_replace_all(content: &[u8], old: &str, new: &str) -> Option<Vec<(String, String)>> {
+    if old.is_empty() || std::str::from_utf8(content).is_err() {
+        return None;
+    }
+    // The non-overlapping occurrence starts in the original content.
+    let mut starts = Vec::new();
+    let mut at = 0;
+    while at + old.len() <= content.len() {
+        if &content[at..at + old.len()] == old.as_bytes() {
+            starts.push(at);
+            at += old.len();
+        } else {
+            at += 1;
+        }
+    }
+    if starts.is_empty() {
+        return None;
+    }
+    let mut working = content.to_vec();
+    let mut edits = Vec::with_capacity(starts.len());
+    let mut shift: isize = 0;
+    for start in starts {
+        let at = (start as isize + shift) as usize;
+        let (from, to) = unique_window(&working, at, old.len())?;
+        let span = std::str::from_utf8(&working[from..to]).ok()?;
+        // The same window with this one occurrence replaced: the window is
+        // unique, so the edit names exactly this occurrence and no other.
+        let mut replaced = String::with_capacity(span.len() - old.len() + new.len());
+        replaced.push_str(std::str::from_utf8(&working[from..at]).ok()?);
+        replaced.push_str(new);
+        replaced.push_str(std::str::from_utf8(&working[at + old.len()..to]).ok()?);
+        edits.push((span.to_string(), replaced));
+        working.splice(at..at + old.len(), new.bytes());
+        shift += new.len() as isize - old.len() as isize;
+    }
+    Some(edits)
+}
+
+/// The smallest whole-line window around `content[at..at + len]` that occurs
+/// exactly once in `content`, widening a line at a time in both directions.
+/// `None` only if the bytes do not divide into lines at char boundaries,
+/// which cannot happen for UTF-8.
+fn unique_window(content: &[u8], at: usize, len: usize) -> Option<(usize, usize)> {
+    let line_start = |from: usize| {
+        content[..from]
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |i| i + 1)
+    };
+    let line_end = |from: usize| {
+        content[from..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(content.len(), |i| from + i + 1)
+    };
+    let mut from = line_start(at);
+    let mut to = line_end(at + len);
+    loop {
+        if count_occurrences(content, &content[from..to]) == 1 {
+            return Some((from, to));
+        }
+        if from == 0 && to == content.len() {
+            // The whole content occurs exactly once in itself, so this is
+            // unreachable; be honest rather than loop.
+            return None;
+        }
+        if from > 0 {
+            from = line_start(from - 1);
+        }
+        if to < content.len() {
+            to = line_end(to);
+        }
+    }
+}
+
 /// Validate and apply an intent against a manifest and blob store.  On any
 /// failure, nothing is written anywhere (§2.7 step 2: any failure → write
 /// nothing).  On success the manifest reflects the new state and the
@@ -518,5 +613,52 @@ mod tests {
             apply_realized_to_sum(&sum_after, &inverse).unwrap(),
             sum_before
         );
+    }
+
+    /// Applying a materialized series in order reproduces exactly what a
+    /// one-pass replace-all would have produced.
+    fn replay(content: &[u8], edits: &[(String, String)]) -> Vec<u8> {
+        let mut out = content.to_vec();
+        for (old, new) in edits {
+            out = replace_unique(&out, old.as_bytes(), new.as_bytes())
+                .expect("each span is unique when its turn comes");
+        }
+        out
+    }
+
+    #[test]
+    fn replace_all_materializes_as_unique_spans() {
+        let content = b"alpha x\nbeta x\ngamma x\n";
+        let edits = anchored_replace_all(content, "x", "y").unwrap();
+        assert_eq!(edits.len(), 3);
+        assert_eq!(replay(content, &edits), b"alpha y\nbeta y\ngamma y\n");
+    }
+
+    #[test]
+    fn replace_all_handles_identical_lines() {
+        // Nothing distinguishes the lines from each other, so widening runs to
+        // the whole content — which is unique in itself, so the series still
+        // exists and still reproduces the bytes.
+        let content = b"dup\ndup\ndup\n";
+        let edits = anchored_replace_all(content, "dup", "one").unwrap();
+        assert_eq!(edits.len(), 3);
+        assert_eq!(replay(content, &edits), b"one\none\none\n");
+    }
+
+    #[test]
+    fn replace_all_does_not_rematch_its_own_output() {
+        // A replacement containing the needle must not grow the occurrence
+        // set: a one-pass replace-all would not, and neither does the series.
+        let content = b"a foo b\nc foo d\n";
+        let edits = anchored_replace_all(content, "foo", "foofoo").unwrap();
+        assert_eq!(edits.len(), 2);
+        assert_eq!(replay(content, &edits), b"a foofoo b\nc foofoo d\n");
+    }
+
+    #[test]
+    fn replace_all_declines_what_it_cannot_anchor() {
+        assert!(anchored_replace_all(b"abc\n", "zzz", "q").is_none());
+        assert!(anchored_replace_all(b"abc\n", "", "q").is_none());
+        assert!(anchored_replace_all(&[0xff, 0xfe], "a", "b").is_none());
     }
 }
