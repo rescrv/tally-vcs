@@ -218,7 +218,10 @@ Semantics, pinned:
   call, it only reported it a step late — and `reads` is recorded or absent
   on its own merits. The names are the harness's own and tally does not
   interpret them; they exist so a line traces to the call that made it and so
-  a second ingest of one session appends only what is new. Union carries the
+  a second ingest of one session appends only what is new. An optional
+  `"absorbed": ["<id>", ...]` lists later calls of the same session folded
+  into this line because they only rewrote bytes this call wrote; the line
+  carries their effect, and they count as recorded. Union carries the
   field verbatim, as it does `import`.
 - **Spill rule.** A stored log line MUST be under 65536 bytes; content past
   the limit overflows into the blob pool rather than failing. If `reads`

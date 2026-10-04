@@ -171,6 +171,22 @@ pub fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
         .count()
 }
 
+/// The offset of the unique occurrence of `needle` in `haystack`, found in
+/// the same scan that proves it unique.  `Err` carries the occurrence count
+/// when it is not exactly one, as [`count_occurrences`] would report it.
+pub fn find_unique(haystack: &[u8], needle: &[u8]) -> std::result::Result<usize, usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return Err(0);
+    }
+    let mut hits =
+        (0..=haystack.len() - needle.len()).filter(|&i| &haystack[i..i + needle.len()] == needle);
+    match (hits.next(), hits.next()) {
+        (Some(at), None) => Ok(at),
+        (None, _) => Err(0),
+        (Some(_), Some(_)) => Err(2 + hits.count()),
+    }
+}
+
 /// Replace the unique occurrence of `old` in `content` with `new` — the one
 /// span operation, shared by intent application and construct replay.  When
 /// the occurrence count is not exactly one, `Err` carries the count so the
@@ -181,14 +197,7 @@ pub fn replace_unique(
     old: &[u8],
     new: &[u8],
 ) -> std::result::Result<Vec<u8>, usize> {
-    let n = count_occurrences(content, old);
-    if n != 1 {
-        return Err(n);
-    }
-    let at = content
-        .windows(old.len())
-        .position(|w| w == old)
-        .expect("counted exactly one occurrence");
+    let at = find_unique(content, old)?;
     let mut out = Vec::with_capacity(content.len() - old.len() + new.len());
     out.extend_from_slice(&content[..at]);
     out.extend_from_slice(new);

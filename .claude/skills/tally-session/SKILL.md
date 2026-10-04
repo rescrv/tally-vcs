@@ -66,6 +66,10 @@ span rather than a whole file.
   folds it back into that edit's line and marks the line `(aligned with the
   working tree)`. The reconciling line then carries only the formatter's
   footprint on code the session did not write.
+- **Fixing your own edit is free.** A later edit that only rewrites bytes an
+  earlier edit of the same ingest wrote folds into that edit's line (listed
+  as `+ ... (absorbed)`), so the log shows one span per change, not each
+  draft.
 - **Write a sentence before a change.** The prose in a turn becomes the
   narrative of that turn's first patch; `tally log` is read by humans.
 

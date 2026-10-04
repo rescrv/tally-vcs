@@ -584,6 +584,9 @@ fn print_claude_summary(summary: &tally::claude::Summary) {
             ""
         };
         println!("  {}  {}{}", short(&landed.id), landed.label, aligned);
+        for label in &landed.absorbed {
+            println!("      + {label}  (absorbed)");
+        }
     }
     for skipped in &summary.skipped {
         // Not an error: the call happened, its precondition has since moved,

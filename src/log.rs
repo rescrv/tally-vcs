@@ -93,6 +93,11 @@ pub struct HarnessCall {
     pub entry: String,
     /// The call's id, unique within the session.
     pub call: String,
+    /// Later calls of the same session folded into this line because they
+    /// only rewrote bytes this call wrote: their ids, in session order.
+    /// The line carries their effect, so an ingest counts them recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub absorbed: Vec<String>,
 }
 
 /// The annotation: the exhaust the harness stops throwing away.

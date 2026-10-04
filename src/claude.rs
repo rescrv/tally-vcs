@@ -54,6 +54,17 @@
 //! bytes no other call names, the replay re-validates the aligned intent,
 //! and a landed line that was adjusted says so ([`Landed::aligned`]).
 //!
+//! **A call that only rewrites what an earlier call wrote folds into it.**
+//! The model writes a span and then fixes it; recorded call by call, the
+//! log shows the same lines rewritten twice.  When every span of a later
+//! call falls within bytes one earlier call of the same ingest wrote, the
+//! earlier line lands the final form and the later call lands no line of
+//! its own — it is listed in the earlier line's [`HarnessCall::absorbed`],
+//! so a later ingest counts it recorded.  The minimal diff wins over a
+//! faithful call-by-call record; a span reaching past the earlier call's
+//! bytes still lands as written, so no line gains a precondition its call
+//! never named.
+//!
 //! Every line records the call behind it ([`HarnessCall`]), so a second run
 //! over the same session appends only what is new.
 //!
@@ -73,7 +84,7 @@ use serde_json::{Value, json};
 use crate::blobs::BlobStore;
 use crate::log::{Annotation, HarnessCall, LogLine, Provenance};
 use crate::manifest::Manifest;
-use crate::patch::{Intent, Op, anchored_replace_all, apply_intent, replace_unique};
+use crate::patch::{Intent, Op, anchored_replace_all, apply_intent, find_unique, replace_unique};
 use crate::repo::Repository;
 use crate::{Error, Result, ioerr};
 
@@ -451,16 +462,15 @@ fn element_path(repo: &Repository, cwd: &str, raw: &str) -> Result<String> {
 
 /////////////////////////////////////////////// intent ////////////////////////////////////////////
 
-/// The intent one observed call realizes against the state it meets, and the
-/// read set the harness saw it read.
+/// The intent one observed call realizes against the state it meets.
 ///
 /// The ops are the tool call's own fields, not a diff of the bytes it left
 /// behind: `old_string` *is* the span precondition, so replaying it
 /// re-validates the same thing the editor checked, and the resulting line
 /// travels by union stratum 3 instead of landing only arithmetically.
-fn intent_for(blobs: &BlobStore, manifest: &Manifest, call: &Call) -> Result<(Intent, Value)> {
+fn intent_for(blobs: &BlobStore, manifest: &Manifest, call: &Call) -> Result<Intent> {
     let existing = manifest.get(&call.path).cloned();
-    let (ops, mut reads) = match &call.wrote {
+    let ops = match &call.wrote {
         Wrote::Spans(spans) => {
             let record = existing.ok_or_else(|| {
                 Error::Precondition(format!("edit of absent path: {}", call.path))
@@ -471,7 +481,6 @@ fn intent_for(blobs: &BlobStore, manifest: &Manifest, call: &Call) -> Result<(In
             // will actually meet.
             let mut content = blobs.get(&record.blob)?;
             let mut ops = Vec::with_capacity(spans.len());
-            let mut consumed = Vec::new();
             for span in spans {
                 let series = if span.all {
                     anchored_replace_all(&content, &span.old, &span.new).ok_or_else(|| {
@@ -491,7 +500,6 @@ fn intent_for(blobs: &BlobStore, manifest: &Manifest, call: &Call) -> Result<(In
                                 call.path
                             ))
                         })?;
-                    consumed.push(Value::String(old_str.clone()));
                     ops.push(Op::Edit {
                         path: call.path.clone(),
                         old_str,
@@ -499,11 +507,7 @@ fn intent_for(blobs: &BlobStore, manifest: &Manifest, call: &Call) -> Result<(In
                     });
                 }
             }
-            // Every span an edit consumes is a span it read.
-            let reads = vec![json!({
-                "path": call.path, "blob": record.blob, "spans": consumed,
-            })];
-            (ops, reads)
+            ops
         }
         // A whole-file write is a create when the path is absent, and
         // delete-then-create when it is not: the delete carries the prior blob
@@ -511,65 +515,112 @@ fn intent_for(blobs: &BlobStore, manifest: &Manifest, call: &Call) -> Result<(In
         Wrote::Whole(content) => {
             let content_b64 = crate::b64::encode(content.as_bytes());
             match existing {
-                None => (
-                    vec![Op::Create {
+                None => vec![Op::Create {
+                    path: call.path.clone(),
+                    mode: "100644".to_string(),
+                    blob: None,
+                    content_b64: Some(content_b64),
+                }],
+                Some(record) => vec![
+                    Op::Delete {
                         path: call.path.clone(),
-                        mode: "100644".to_string(),
+                        blob: record.blob.clone(),
+                    },
+                    Op::Create {
+                        path: call.path.clone(),
+                        mode: record.mode.clone(),
                         blob: None,
                         content_b64: Some(content_b64),
-                    }],
-                    Vec::new(),
-                ),
-                Some(record) => (
-                    vec![
-                        Op::Delete {
-                            path: call.path.clone(),
-                            blob: record.blob.clone(),
-                        },
-                        Op::Create {
-                            path: call.path.clone(),
-                            mode: record.mode.clone(),
-                            blob: None,
-                            content_b64: Some(content_b64),
-                        },
-                    ],
-                    vec![json!({
-                        "path": call.path, "blob": record.blob,
-                        "spans": ["<whole file>"],
-                    })],
-                ),
+                    },
+                ],
             }
         }
     };
-    // The files the session read before this call.  A read of a path tally
-    // does not carry is still a read — the model learned it was absent — so it
-    // is recorded with a null blob rather than dropped.
-    for path in &call.reads {
+    Ok(Intent { ops })
+}
+
+/// The read set of `intent` landing on `manifest`, plus the element paths
+/// the session read before it (`read_paths`).  Every span an edit consumes
+/// is a span it read, of the blob it met; a delete read the whole file it
+/// deleted.  A read of a path tally does not carry is still a read — the
+/// model learned it was absent — so it is recorded with a null blob rather
+/// than dropped.
+///
+/// Derived from the intent and the state it lands on, never from the
+/// transcript, so a line whose spans were aligned or absorbed names the
+/// blobs its own replay meets.
+fn reads_for<'a>(
+    manifest: &Manifest,
+    intent: &Intent,
+    read_paths: impl IntoIterator<Item = &'a String>,
+) -> Value {
+    let blob_of = |path: &str| {
+        manifest
+            .get(path)
+            .map(|r| json!(r.blob))
+            .unwrap_or(Value::Null)
+    };
+    let mut reads: Vec<Value> = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for op in &intent.ops {
+        let path = op.path();
+        if seen.contains(&path) {
+            continue;
+        }
+        seen.push(path);
+        let path_ops = intent.ops.iter().filter(|o| o.path() == path);
+        if let Some(blob) = path_ops.clone().find_map(|o| match o {
+            Op::Delete { blob, .. } => Some(blob.clone()),
+            _ => None,
+        }) {
+            reads.push(json!({ "path": path, "blob": blob, "spans": ["<whole file>"] }));
+            continue;
+        }
+        let consumed: Vec<Value> = path_ops
+            .filter_map(|o| match o {
+                Op::Edit { old_str, .. } => Some(Value::String(old_str.clone())),
+                _ => None,
+            })
+            .collect();
+        if !consumed.is_empty() {
+            reads.push(json!({ "path": path, "blob": blob_of(path), "spans": consumed }));
+        }
+    }
+    for path in read_paths {
         if reads.iter().any(|r| r.get("path") == Some(&json!(path))) {
             continue;
         }
-        let blob = manifest
-            .get(path)
-            .map(|r| json!(r.blob))
-            .unwrap_or(Value::Null);
-        reads.push(json!({ "path": path, "blob": blob, "spans": ["<whole file>"] }));
+        reads.push(json!({ "path": path, "blob": blob_of(path), "spans": ["<whole file>"] }));
     }
-    Ok((Intent { ops }, Value::Array(reads)))
+    Value::Array(reads)
 }
 
-/// The annotation one ingested line carries.
-fn annotation(session: &str, author: &str, call: &Call, reads: Value) -> Annotation {
+/// The annotation one ingested line carries: its call's, plus the ids and
+/// prose of the later calls it absorbed, so neither the narrative nor the
+/// record of what landed goes missing with their lines.
+fn annotation(
+    session: &str,
+    author: &str,
+    call: &Call,
+    absorbed: &[&Call],
+    reads: Value,
+) -> Annotation {
+    let prose: Vec<&str> = std::iter::once(call)
+        .chain(absorbed.iter().copied())
+        .filter_map(|c| c.prose.as_deref())
+        .collect();
     Annotation {
         author: author.to_string(),
         provenance: Provenance::Agent,
         session: Some(session.to_string()),
-        prose: call.prose.clone(),
+        prose: (!prose.is_empty()).then(|| prose.join("\n\n")),
         reads: Some(reads),
         harness: Some(HarnessCall {
             harness: HARNESS.to_string(),
             tool: call.tool.clone(),
             entry: call.entry.clone(),
             call: call.id.clone(),
+            absorbed: absorbed.iter().map(|c| c.id.clone()).collect(),
         }),
         ..Annotation::default()
     }
@@ -586,6 +637,7 @@ fn recorded_calls(repo: &Repository, fork: &str) -> Result<BTreeSet<String>> {
             && harness.harness == HARNESS
         {
             ids.insert(harness.call.clone());
+            ids.extend(harness.absorbed.iter().cloned());
         }
     }
     Ok(ids)
@@ -606,78 +658,140 @@ struct Run {
     at: usize,
 }
 
-/// Replace `[at, at + old_len)` with `new_len` bytes owned by `owner`,
-/// keeping every run's seat: a run before the edit stands, a run after it
-/// shifts, and a run the edit bites loses the bitten part — those bytes now
-/// belong to the edit's owner.
-fn edit_runs(
-    runs: &mut Vec<Run>,
-    at: usize,
-    old_len: usize,
-    new_len: usize,
-    owner: (usize, usize),
-) {
-    let end = at + old_len;
-    let delta = new_len as isize - old_len as isize;
-    let shift = |pos: usize| (pos as isize + delta) as usize;
-    let mut out: Vec<Run> = Vec::with_capacity(runs.len() + 1);
-    for run in runs.drain(..) {
-        if run.end <= at {
-            out.push(run);
-        } else if run.start >= end {
-            out.push(Run {
-                start: shift(run.start),
-                end: shift(run.end),
-                ..run
-            });
-        } else {
-            if run.start < at {
+/// What the replay knows about who wrote a path's bytes: the runs, and the
+/// scars — offsets where an op deleted bytes and left nothing to own.  A
+/// stretch of unowned bytes with no scar inside is exactly the stretch the
+/// base (or a whole-file write) carried, contiguous as it was then.
+#[derive(Clone, Debug, Default)]
+struct Track {
+    runs: Vec<Run>,
+    scars: Vec<usize>,
+}
+
+impl Track {
+    /// Replace `[at, at + old_len)` with `new_len` bytes owned by `owner`,
+    /// keeping every run's seat: a run before the edit stands, a run after
+    /// it shifts, and a run the edit bites loses the bitten part — those
+    /// bytes now belong to the edit's owner.  A pure deletion leaves a scar.
+    fn edit(&mut self, at: usize, old_len: usize, new_len: usize, owner: OpSeat) {
+        let end = at + old_len;
+        let delta = new_len as isize - old_len as isize;
+        let shift = |pos: usize| (pos as isize + delta) as usize;
+        let mut out: Vec<Run> = Vec::with_capacity(self.runs.len() + 1);
+        for run in self.runs.drain(..) {
+            if run.end <= at {
+                out.push(run);
+            } else if run.start >= end {
                 out.push(Run {
-                    start: run.start,
-                    end: at,
-                    ..run
-                });
-            }
-            if run.end > end {
-                out.push(Run {
-                    start: at + new_len,
+                    start: shift(run.start),
                     end: shift(run.end),
-                    at: run.at + (end - run.start),
                     ..run
                 });
+            } else {
+                if run.start < at {
+                    out.push(Run {
+                        start: run.start,
+                        end: at,
+                        ..run
+                    });
+                }
+                if run.end > end {
+                    out.push(Run {
+                        start: at + new_len,
+                        end: shift(run.end),
+                        at: run.at + (end - run.start),
+                        ..run
+                    });
+                }
+            }
+        }
+        if new_len > 0 {
+            out.push(Run {
+                start: at,
+                end: at + new_len,
+                call: owner.0,
+                op: owner.1,
+                at: 0,
+            });
+        }
+        out.sort_by_key(|run| run.start);
+        self.runs = out;
+        self.shift_scars(at, end, delta);
+        if new_len == 0 {
+            self.scars.push(at);
+            self.scars.sort_unstable();
+            self.scars.dedup();
+        }
+    }
+
+    /// Replace `[at, at + old_len)`, which lies inside `self.runs[idx]`,
+    /// with `new_len` bytes that join that run: the run's op rewrote part of
+    /// its own `new_str`, so the run grows or shrinks in place and every
+    /// later piece of the same op slides along its `new_str`.
+    fn rewrite_within(&mut self, idx: usize, at: usize, old_len: usize, new_len: usize) {
+        let end = at + old_len;
+        let delta = new_len as isize - old_len as isize;
+        let shift = |pos: usize| (pos as isize + delta) as usize;
+        let owner = self.runs[idx];
+        for (i, run) in self.runs.iter_mut().enumerate() {
+            if i == idx {
+                run.end = shift(run.end);
+                continue;
+            }
+            if run.start >= end {
+                run.start = shift(run.start);
+                run.end = shift(run.end);
+            }
+            if (run.call, run.op) == (owner.call, owner.op) && run.at > owner.at {
+                run.at = (run.at as isize + delta) as usize;
+            }
+        }
+        self.shift_scars(at, end, delta);
+    }
+
+    /// Scars before the edit stand, scars after it shift, and scars inside
+    /// the replaced bytes go with them.
+    fn shift_scars(&mut self, at: usize, end: usize, delta: isize) {
+        self.scars.retain(|&s| s <= at || s >= end);
+        for scar in &mut self.scars {
+            if *scar >= end && *scar > at {
+                *scar = (*scar as isize + delta) as usize;
             }
         }
     }
-    if new_len > 0 {
-        out.push(Run {
-            start: at,
-            end: at + new_len,
-            call: owner.0,
-            op: owner.1,
-            at: 0,
-        });
+
+    /// Whether `[start, end)` holds no run's bytes.
+    fn unowned(&self, start: usize, end: usize) -> bool {
+        !self.runs.iter().any(|r| r.start < end && start < r.end)
     }
-    out.sort_by_key(|run| run.start);
-    *runs = out;
+
+    /// Whether a scar falls within `range`, inclusive of both ends.
+    fn scarred(&self, start: usize, end: usize) -> bool {
+        self.scars.iter().any(|&s| start <= s && s <= end)
+    }
 }
 
 /// A `(call, op)` seat in the plan.
 type OpSeat = (usize, usize);
 
-/// The replacements one op absorbs from the working tree: each
-/// `(seat, range)` pair replaces `new_str[seat]` with `tree[range]`.
-type Absorbed = Vec<(Range<usize>, Range<usize>)>;
-
 /// What the replay made of one call.
 enum PlannedOutcome {
-    /// Land this intent with this read set.  `unaligned` holds the intent as
-    /// the call's own fields wrote it when alignment adjusted a `new_str`,
-    /// so a replay surprise can fall back to it.
+    /// Land `intent` with `reads`.  `faithful` is the intent as the call's
+    /// own fields wrote it, kept so a plan whose rewrites fail to replay
+    /// can fall back to the calls as written.  `aligned` says the working
+    /// tree adjusted the spans; `absorbed` names the later calls (by plan
+    /// seat) folded into this line.
     Land {
         intent: Intent,
+        faithful: Intent,
         reads: Value,
-        unaligned: Option<Intent>,
+        aligned: bool,
+        absorbed: Vec<usize>,
     },
+    /// The call only rewrote bytes one earlier call wrote, so it folded
+    /// into that call's line (which lists it in `absorbed`) and lands none
+    /// of its own.
+    Absorbed { faithful: Intent },
     /// The call's preconditions did not hold in the replay; the
     /// reconciliation carries what the call did, as before.
     Skip(String),
@@ -692,9 +806,10 @@ struct Planned<'a> {
 }
 
 /// Replay the unrecorded calls against `start` in memory and plan the line
-/// each lands, aligning spans with the working tree.  Returns the plan and
-/// the manifest the plan produces — the dry-run preview's state, and the
-/// real run's expectation.
+/// each lands: a later call that only rewrites bytes an earlier call of
+/// this run wrote folds into the earlier call's line, and spans are aligned
+/// with the working tree.  Returns the plan and the manifest it produces —
+/// the dry-run preview's state, and the real run's expectation.
 ///
 /// The replay validates exactly what landing validates.  It does write
 /// blobs — a call after the first reads the content the previous one
@@ -709,13 +824,15 @@ fn plan<'a>(
     recorded: &BTreeSet<String>,
 ) -> Result<(Vec<Planned<'a>>, Manifest)> {
     let blobs = repo.blobs();
-    // Pass 1: replay each call as the harness wrote it, computing its
-    // intent and attributing every byte a span writes to the op that wrote
-    // it.  A call whose preconditions do not hold skips, exactly as it
-    // would at landing.
+    // Pass 1: replay each call as the harness wrote it, attributing every
+    // byte a span writes to the op that wrote it.  A call whose every span
+    // rewrites only bytes one earlier call wrote is absorbed into that call;
+    // the bytes it leaves are the same either way, so the replay goes on
+    // unchanged.  A call whose preconditions do not hold skips, exactly as
+    // it would at landing.
     let mut manifest = start.clone();
     let mut planned: Vec<Planned> = Vec::new();
-    let mut runs: HashMap<String, Vec<Run>> = HashMap::new();
+    let mut tracks: HashMap<String, Track> = HashMap::new();
     let mut contents: HashMap<String, Vec<u8>> = HashMap::new();
     for call in calls {
         if recorded.contains(&call.id) {
@@ -723,7 +840,7 @@ fn plan<'a>(
         }
         let seat = planned.len();
         let outcome = match intent_for(&blobs, &manifest, call) {
-            Ok((intent, reads)) => {
+            Ok(intent) => {
                 // Stage the pre-call content of every path the intent
                 // touches, so attribution can walk the ops against the state
                 // each op met — the state `intent_for` just validated.
@@ -733,11 +850,18 @@ fn plan<'a>(
                         for (_, content) in &realization.new_blobs {
                             blobs.put_unsynced(content)?;
                         }
-                        attribute(&mut runs, &mut contents, seat, &intent);
-                        PlannedOutcome::Land {
-                            intent,
-                            reads,
-                            unaligned: None,
+                        if absorb(&mut planned, &mut tracks, &mut contents, seat, &intent).is_some()
+                        {
+                            PlannedOutcome::Absorbed { faithful: intent }
+                        } else {
+                            attribute(&mut tracks, &mut contents, seat, &intent);
+                            PlannedOutcome::Land {
+                                intent: intent.clone(),
+                                faithful: intent,
+                                reads: Value::Null,
+                                aligned: false,
+                                absorbed: Vec::new(),
+                            }
                         }
                     }
                     Err(Error::Precondition(why)) => PlannedOutcome::Skip(why.to_string()),
@@ -752,58 +876,96 @@ fn plan<'a>(
 
     // Alignment: the working tree is the oracle for what the session's own
     // spans became.  A formatter run inside Bash rewrites bytes an edit
-    // just wrote, and a difference that falls entirely within one op's
-    // `new_str` has an owner — that op — so it folds back into the op
-    // rather than land ownerless in the reconciliation.
-    align(&mut planned, &runs, &contents, repo)?;
+    // just wrote, and a difference that falls within one op's `new_str` —
+    // or within it and the untouched bytes beside it — has an owner, that
+    // op, so it folds back into the op rather than land ownerless in the
+    // reconciliation.
+    align(&mut planned, &tracks, &contents, repo)?;
 
     // Pass 2: replay the plan from the start to produce the state it
-    // promises.  Alignment rewrites only bytes no other op names, so the
-    // content-addressed preconditions cannot have moved — but replay is
-    // cheap and honest: an aligned intent that somehow fails falls back to
-    // the intent as the call wrote it, and a call that still fails skips to
-    // the reconciliation as before.
-    let mut final_manifest = start.clone();
-    for p in &mut planned {
-        let outcome = std::mem::replace(&mut p.outcome, PlannedOutcome::Skip(String::new()));
+    // promises, computing each line's read set against the state it meets.
+    // Absorption and alignment rewrite only bytes no other op names, but an
+    // earlier landing can still change what a later precondition finds
+    // unique.  Replay is cheap and honest: a plan that fails it falls back
+    // to the calls as written, which pass 1 already validated.
+    let final_manifest = match replay(&mut planned, start, &blobs, true)? {
+        Some(manifest) => manifest,
+        None => {
+            unwind(&mut planned);
+            replay(&mut planned, start, &blobs, false)?.expect("a lenient replay never declines")
+        }
+    };
+    Ok((planned, final_manifest))
+}
+
+/// Replay the plan's landing lines against `start`, filling in each line's
+/// read set.  `strict` declines (`None`) on the first precondition failure;
+/// otherwise a failing line skips to the reconciliation.
+fn replay(
+    planned: &mut [Planned],
+    start: &Manifest,
+    blobs: &BlobStore,
+    strict: bool,
+) -> Result<Option<Manifest>> {
+    let mut manifest = start.clone();
+    for i in 0..planned.len() {
         let PlannedOutcome::Land {
-            mut intent,
-            reads,
-            mut unaligned,
-        } = outcome
+            intent, absorbed, ..
+        } = &planned[i].outcome
         else {
-            p.outcome = outcome;
             continue;
         };
-        let mut skip_why = None;
-        loop {
-            match apply_intent(&intent, &mut final_manifest, &blobs) {
-                Ok(realization) => {
-                    for (_, content) in &realization.new_blobs {
-                        blobs.put_unsynced(content)?;
-                    }
-                    break;
+        // An absorbed call's reads travel with the line that carries it.
+        let read_paths = std::iter::once(planned[i].call)
+            .chain(absorbed.iter().map(|&s| planned[s].call))
+            .flat_map(|c| c.reads.iter());
+        let fresh = reads_for(&manifest, intent, read_paths);
+        let applied = apply_intent(intent, &mut manifest, blobs);
+        match applied {
+            Ok(realization) => {
+                for (_, content) in &realization.new_blobs {
+                    blobs.put_unsynced(content)?;
                 }
-                Err(Error::Precondition(_)) if unaligned.is_some() => {
-                    intent = unaligned.take().expect("checked");
+                if let PlannedOutcome::Land { reads, .. } = &mut planned[i].outcome {
+                    *reads = fresh;
                 }
-                Err(Error::Precondition(why)) => {
-                    skip_why = Some(why.to_string());
-                    break;
-                }
-                Err(err) => return Err(err),
             }
+            Err(Error::Precondition(_)) if strict => return Ok(None),
+            Err(Error::Precondition(why)) => planned[i].outcome = PlannedOutcome::Skip(why),
+            Err(err) => return Err(err),
         }
-        p.outcome = match skip_why {
-            None => PlannedOutcome::Land {
-                intent,
-                reads,
-                unaligned,
-            },
-            Some(why) => PlannedOutcome::Skip(why),
-        };
     }
-    Ok((planned, final_manifest))
+    Ok(Some(manifest))
+}
+
+/// Return every call to the intent its own fields wrote: no absorption, no
+/// alignment.
+fn unwind(planned: &mut [Planned]) {
+    for p in planned {
+        match &mut p.outcome {
+            PlannedOutcome::Land {
+                intent,
+                faithful,
+                aligned,
+                absorbed,
+                ..
+            } => {
+                *intent = faithful.clone();
+                *aligned = false;
+                absorbed.clear();
+            }
+            PlannedOutcome::Absorbed { faithful, .. } => {
+                p.outcome = PlannedOutcome::Land {
+                    intent: faithful.clone(),
+                    faithful: faithful.clone(),
+                    reads: Value::Null,
+                    aligned: false,
+                    absorbed: Vec::new(),
+                };
+            }
+            PlannedOutcome::Skip(_) => {}
+        }
+    }
 }
 
 /// The content of every element an intent touches, staged from the manifest
@@ -828,6 +990,104 @@ fn stage(
     }
 }
 
+/// The offset at which `old` replaces uniquely in `content`, and the
+/// content it leaves — one scan finds and proves the occurrence.  `None`
+/// when it does not occur exactly once.
+fn locate(content: &[u8], old: &[u8], new: &[u8]) -> Option<(usize, Vec<u8>)> {
+    let at = find_unique(content, old).ok()?;
+    let mut out = Vec::with_capacity(content.len() - old.len() + new.len());
+    out.extend_from_slice(&content[..at]);
+    out.extend_from_slice(new);
+    out.extend_from_slice(&content[at + old.len()..]);
+    Some((at, out))
+}
+
+/// Fold the call at `seat` into an earlier call when every span it writes
+/// rewrites only bytes that one earlier call of this run wrote: the earlier
+/// call's `new_str`s take the rewrite, and the later call lands nothing of
+/// its own.  `None` when the fold declines, leaving the plan untouched.
+///
+/// Containment is the whole rule.  A span that reaches past the earlier
+/// call's bytes would pull bytes the earlier call never named into its
+/// precondition, so such a call lands as written.
+fn absorb(
+    planned: &mut [Planned],
+    tracks: &mut HashMap<String, Track>,
+    contents: &mut HashMap<String, Vec<u8>>,
+    seat: usize,
+    intent: &Intent,
+) -> Option<()> {
+    let path = intent.ops.first()?.path().to_string();
+    let mut track = tracks.get(&path)?.clone();
+    let mut content = contents.get(&path)?.clone();
+    let mut owner: Option<usize> = None;
+    // The owner's rewritten `new_str`s, by op index.
+    let mut rewritten: BTreeMap<usize, String> = BTreeMap::new();
+    for op in &intent.ops {
+        let Op::Edit {
+            path: op_path,
+            old_str,
+            new_str,
+        } = op
+        else {
+            return None;
+        };
+        if *op_path != path || old_str.is_empty() {
+            return None;
+        }
+        let (at, replaced) = locate(&content, old_str.as_bytes(), new_str.as_bytes())?;
+        let end = at + old_str.len();
+        let idx = track
+            .runs
+            .iter()
+            .position(|r| r.start <= at && end <= r.end)?;
+        let run = track.runs[idx];
+        if *owner.get_or_insert(run.call) != run.call {
+            return None;
+        }
+        let target = match rewritten.get(&run.op) {
+            Some(s) => s.clone(),
+            None => match &planned.get(run.call)?.outcome {
+                PlannedOutcome::Land { intent, .. } => match intent.ops.get(run.op)? {
+                    Op::Edit { new_str, .. } => new_str.clone(),
+                    _ => return None,
+                },
+                _ => return None,
+            },
+        };
+        let seat_start = run.at + (at - run.start);
+        let seat_end = seat_start + old_str.len();
+        if target.get(seat_start..seat_end)? != old_str {
+            return None;
+        }
+        let mut spliced = String::with_capacity(target.len() + new_str.len());
+        spliced.push_str(&target[..seat_start]);
+        spliced.push_str(new_str);
+        spliced.push_str(&target[seat_end..]);
+        rewritten.insert(run.op, spliced);
+        track.rewrite_within(idx, at, old_str.len(), new_str.len());
+        content = replaced;
+    }
+    let into = owner?;
+    let PlannedOutcome::Land {
+        intent: owner_intent,
+        absorbed,
+        ..
+    } = &mut planned[into].outcome
+    else {
+        return None;
+    };
+    for (op_idx, spliced) in rewritten {
+        if let Some(Op::Edit { new_str, .. }) = owner_intent.ops.get_mut(op_idx) {
+            *new_str = spliced;
+        }
+    }
+    absorbed.push(seat);
+    tracks.insert(path.clone(), track);
+    contents.insert(path, content);
+    Some(())
+}
+
 /// Attribute every byte an applied intent's spans write to the op that wrote
 /// it, carrying each touched path's staged content forward to what the
 /// intent left.  Attribution is advisory — a create's wholesale bytes simply
@@ -835,7 +1095,7 @@ fn stage(
 /// ingest; after a successful `apply_intent` the spans sit where validation
 /// put them and the fallback below is unreachable.
 fn attribute(
-    runs: &mut HashMap<String, Vec<Run>>,
+    tracks: &mut HashMap<String, Track>,
     contents: &mut HashMap<String, Vec<u8>>,
     seat: usize,
     intent: &Intent,
@@ -852,23 +1112,14 @@ fn attribute(
                 };
                 // Unreachable after a successful `apply_intent`; degrade to
                 // no runs and no stale content rather than misattribute.
-                let Ok(new_content) =
-                    replace_unique(content, old_str.as_bytes(), new_str.as_bytes())
+                let Some((at, new_content)) =
+                    locate(content, old_str.as_bytes(), new_str.as_bytes())
                 else {
-                    runs.remove(path);
+                    tracks.remove(path);
                     contents.remove(path);
                     continue;
                 };
-                let Some(at) = content
-                    .windows(old_str.len())
-                    .position(|w| w == old_str.as_bytes())
-                else {
-                    runs.remove(path);
-                    contents.remove(path);
-                    continue;
-                };
-                edit_runs(
-                    runs.entry(path.clone()).or_default(),
+                tracks.entry(path.clone()).or_default().edit(
                     at,
                     old_str.len(),
                     new_str.len(),
@@ -880,7 +1131,7 @@ fn attribute(
             // span, so they carry no runs; a delete leaves nothing to
             // attribute.  Either way the staged content is stale afterwards.
             Op::Create { path, .. } | Op::Delete { path, .. } => {
-                runs.remove(path);
+                tracks.remove(path);
                 contents.remove(path);
             }
             Op::Chmod { .. } => {}
@@ -888,26 +1139,75 @@ fn attribute(
     }
 }
 
-/// Fold every working-tree difference that falls entirely within one op's
-/// `new_str` back into that op, so the line lands the way the tree holds
-/// it.  Differences with no owner — bytes the base carried, or churn
-/// crossing a span boundary — stay for the reconciliation, which is what
-/// keeps the formatter's patch honest: it shows only what the session's
-/// edits do not explain.
+/// How one op absorbs the working tree: the untouched bytes it widens over
+/// on either side, and each `(seat, range)` replacement of `seat` — in the
+/// widened `prefix + new_str + suffix` — by `tree[range]`.
+#[derive(Default)]
+struct Alignment {
+    prefix: Option<Range<usize>>,
+    suffix: Option<Range<usize>>,
+    replacements: Vec<(Range<usize>, Range<usize>)>,
+}
+
+/// Narrow a changed-range pair to the bytes that actually differ: the
+/// line-aligned hunk minus its common prefix and suffix.
+fn trim(
+    old: &[u8],
+    new: &[u8],
+    (o, n): (Range<usize>, Range<usize>),
+) -> (Range<usize>, Range<usize>) {
+    let (a, b) = (&old[o.clone()], &new[n.clone()]);
+    let head = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let room = a.len().min(b.len()) - head;
+    let tail = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(room)
+        .take_while(|(x, y)| x == y)
+        .count();
+    (o.start + head..o.end - tail, n.start + head..n.end - tail)
+}
+
+/// The run that owns a changed range outright.
+fn containing(runs: &[Run], o: &Range<usize>) -> Option<Run> {
+    runs.iter()
+        .find(|run| {
+            if o.is_empty() {
+                // An insertion belongs inside the run, not at its edge:
+                // at the edge it may as well be the neighbor's bytes.
+                run.start < o.start && o.start < run.end
+            } else {
+                run.start <= o.start && o.end <= run.end
+            }
+        })
+        .copied()
+}
+
+/// Fold every working-tree difference with an owner back into that op, so
+/// the line lands the way the tree holds it.  A difference has an owner
+/// when its changed bytes fall within one op's `new_str`, or within it and
+/// the untouched bytes immediately beside the op's span — a formatter that
+/// reindents a line the edit began mid-way through.  The op then widens
+/// over those bytes, which it can name because nothing has touched them
+/// since it ran.  Differences with no owner — bytes the base carried, or
+/// churn across two ops — stay for the reconciliation, which is what keeps
+/// the formatter's patch honest: it shows only what the session's edits do
+/// not explain.
 fn align(
     planned: &mut [Planned],
-    runs: &HashMap<String, Vec<Run>>,
+    tracks: &HashMap<String, Track>,
     contents: &HashMap<String, Vec<u8>>,
     repo: &Repository,
 ) -> Result<()> {
     let blobs = repo.blobs();
     // Nothing attributed, nothing to align: spare the working-tree scan.
-    if runs.values().all(|path_runs| path_runs.is_empty()) {
+    if tracks.values().all(|track| track.runs.is_empty()) {
         return Ok(());
     }
     let working = repo.working_tree_manifest()?;
-    for (path, path_runs) in runs {
-        if path_runs.is_empty() {
+    for (path, track) in tracks {
+        if track.runs.is_empty() {
             continue;
         }
         let (Some(replayed), Some(record)) = (contents.get(path), working.get(path)) else {
@@ -920,80 +1220,131 @@ fn align(
         let Some(hunks) = crate::diff::changed_ranges(replayed, &tree) else {
             continue;
         };
-        // The replacements each op absorbs, keyed by (call, op): a hunk
-        // inside a run maps to the run's seat within the op's `new_str`.
-        let mut per_op: BTreeMap<OpSeat, Absorbed> = BTreeMap::new();
-        for (old_range, new_range) in hunks {
-            let owner = path_runs.iter().find(|run| {
-                if old_range.is_empty() {
-                    // An insertion belongs inside the run, not at its edge:
-                    // at the edge it may as well be the neighbor's bytes.
-                    run.start < old_range.start && old_range.start < run.end
-                } else {
-                    run.start <= old_range.start && old_range.end <= run.end
-                }
-            });
-            let Some(owner) = owner else {
+        let mut per_op: BTreeMap<OpSeat, Alignment> = BTreeMap::new();
+        // Owned hunks, in the owner's run coordinates, until every op's
+        // widening is known.
+        let mut owned: Vec<(Run, Range<usize>, Range<usize>)> = Vec::new();
+        for hunk in hunks {
+            if let Some(run) = containing(&track.runs, &hunk.0) {
+                owned.push((run, hunk.0, hunk.1));
+                continue;
+            }
+            let (o, n) = trim(replayed, &tree, hunk);
+            if let Some(run) = containing(&track.runs, &o) {
+                owned.push((run, o, n));
+                continue;
+            }
+            if o.is_empty() {
+                continue;
+            }
+            // Widening: exactly one run overlaps the changed bytes, and
+            // whatever of them lies outside it is unowned and unscarred, at
+            // the very start or end of the op's `new_str`.
+            let mut overlapping = track
+                .runs
+                .iter()
+                .filter(|r| r.start < o.end && o.start < r.end);
+            let (Some(&run), None) = (overlapping.next(), overlapping.next()) else {
                 continue;
             };
-            let seat = owner.at + (old_range.start - owner.start)
-                ..owner.at + (old_range.end - owner.start);
-            per_op
-                .entry((owner.call, owner.op))
-                .or_default()
-                .push((seat, new_range));
+            let Some(Op::Edit { new_str, .. }) = (match &planned[run.call].outcome {
+                PlannedOutcome::Land { intent, .. } => intent.ops.get(run.op),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let alignment = per_op.entry((run.call, run.op)).or_default();
+            if o.start < run.start {
+                if run.at != 0
+                    || alignment.prefix.is_some()
+                    || !track.unowned(o.start, run.start)
+                    || track.scarred(o.start + 1, run.start)
+                {
+                    continue;
+                }
+                alignment.prefix = Some(o.start..run.start);
+            }
+            if o.end > run.end {
+                if run.at + (run.end - run.start) != new_str.len()
+                    || alignment.suffix.is_some()
+                    || !track.unowned(run.end, o.end)
+                    || track.scarred(run.end, o.end - 1)
+                {
+                    continue;
+                }
+                alignment.suffix = Some(run.end..o.end);
+            }
+            owned.push((run, o, n));
         }
-        for ((seat, op_idx), replacements) in per_op {
+        for (run, o, n) in owned {
+            let alignment = per_op.entry((run.call, run.op)).or_default();
+            let lead = alignment.prefix.as_ref().map_or(0, |p| p.len()) + run.at;
+            let seat = lead + o.start - run.start..lead + o.end - run.start;
+            alignment.replacements.push((seat, n));
+        }
+        for ((seat, op_idx), alignment) in per_op {
             let PlannedOutcome::Land {
-                intent, unaligned, ..
+                intent, aligned, ..
             } = &mut planned[seat].outcome
             else {
                 continue;
             };
-            let Some(aligned) = align_op(intent, op_idx, &replacements, &tree) else {
+            if alignment.replacements.is_empty() {
                 continue;
-            };
-            if unaligned.is_none() {
-                *unaligned = Some(std::mem::replace(intent, aligned));
-            } else {
-                *intent = aligned;
+            }
+            if let Some(adjusted) = align_op(intent, op_idx, &alignment, replayed, &tree) {
+                *intent = adjusted;
+                *aligned = true;
             }
         }
     }
     Ok(())
 }
 
-/// The intent with op `op_idx`'s `new_str` spliced: each `(seat, range)`
-/// replaces `new_str[seat]` with `tree[range]`.  `None` when a seat does
-/// not sit on the string's char boundaries — the op then stands as written
-/// and the churn stays with the reconciliation.
+/// The intent with op `op_idx` widened over the alignment's prefix and
+/// suffix and its `new_str` spliced with the tree's bytes.  `None` when a
+/// seat or a widening does not sit on char boundaries — the op then stands
+/// as written and the churn stays with the reconciliation.
 fn align_op(
     intent: &Intent,
     op_idx: usize,
-    replacements: &[(Range<usize>, Range<usize>)],
+    alignment: &Alignment,
+    replayed: &[u8],
     tree: &[u8],
 ) -> Option<Intent> {
     let mut intent = intent.clone();
-    let Op::Edit { new_str, .. } = intent.ops.get_mut(op_idx)? else {
+    let Op::Edit {
+        old_str, new_str, ..
+    } = intent.ops.get_mut(op_idx)?
+    else {
         return None;
     };
-    let mut replacements = replacements.to_vec();
+    let text = |range: &Option<Range<usize>>| -> Option<&str> {
+        match range {
+            Some(r) => std::str::from_utf8(replayed.get(r.clone())?).ok(),
+            None => Some(""),
+        }
+    };
+    let (prefix, suffix) = (text(&alignment.prefix)?, text(&alignment.suffix)?);
+    let widened = format!("{prefix}{new_str}{suffix}");
+    let mut replacements = alignment.replacements.clone();
     replacements.sort_by_key(|(seat, _)| seat.start);
-    let mut out = String::with_capacity(new_str.len());
+    let mut out = String::with_capacity(widened.len());
     let mut at = 0;
     for (seat, range) in replacements {
         if seat.start < at
-            || seat.end > new_str.len()
-            || !new_str.is_char_boundary(seat.start)
-            || !new_str.is_char_boundary(seat.end)
+            || seat.end > widened.len()
+            || !widened.is_char_boundary(seat.start)
+            || !widened.is_char_boundary(seat.end)
         {
             return None;
         }
-        out.push_str(&new_str[at..seat.start]);
+        out.push_str(&widened[at..seat.start]);
         out.push_str(std::str::from_utf8(tree.get(range)?).ok()?);
         at = seat.end;
     }
-    out.push_str(&new_str[at..]);
+    out.push_str(&widened[at..]);
+    *old_str = format!("{prefix}{old_str}{suffix}");
     *new_str = out;
     Some(intent)
 }
@@ -1033,6 +1384,10 @@ pub struct Landed {
     /// within the call's own `new_str`, so the line lands the way the tree
     /// holds it rather than the way the transcript recorded it.
     pub aligned: bool,
+    /// Later calls folded into this line, as labels: each only rewrote
+    /// bytes this line's call wrote, so the line lands their final form and
+    /// they land no line of their own.
+    pub absorbed: Vec<String>,
 }
 
 /// One call the ingest could not replay.
@@ -1172,11 +1527,15 @@ pub fn commit(repo: &Repository, options: &Options) -> Result<Summary> {
         // preview.
         for p in &planned {
             match &p.outcome {
-                PlannedOutcome::Land { unaligned, .. } => summary.landed.push(Landed {
+                PlannedOutcome::Land {
+                    aligned, absorbed, ..
+                } => summary.landed.push(Landed {
                     id: "(dry run)".to_string(),
                     label: p.call.label(),
-                    aligned: unaligned.is_some(),
+                    aligned: *aligned,
+                    absorbed: absorbed.iter().map(|&s| planned[s].call.label()).collect(),
                 }),
+                PlannedOutcome::Absorbed { .. } => {}
                 PlannedOutcome::Skip(why) => summary.skipped.push(Skipped {
                     label: p.call.label(),
                     why: why.clone(),
@@ -1195,11 +1554,16 @@ pub fn commit(repo: &Repository, options: &Options) -> Result<Summary> {
                 label: p.call.label(),
                 why: why.clone(),
             }),
+            // Its line carries it.
+            PlannedOutcome::Absorbed { .. } => {}
             PlannedOutcome::Land {
                 intent,
                 reads,
-                unaligned,
+                aligned,
+                absorbed,
+                ..
             } => {
+                let absorbed: Vec<&Call> = absorbed.iter().map(|&s| planned[s].call).collect();
                 // The intent is planned, but the append re-validates it
                 // against the state under the fork lock: each line is its own
                 // linearization point, and a fork that moved since planning
@@ -1211,13 +1575,14 @@ pub fn commit(repo: &Repository, options: &Options) -> Result<Summary> {
                 let landed = repo.record_observed(
                     &fork,
                     intent.clone(),
-                    annotation(&session, &author, p.call, reads.clone()),
+                    annotation(&session, &author, p.call, &absorbed, reads.clone()),
                 );
                 match landed {
                     Ok(line) => summary.landed.push(Landed {
                         id: line.id,
                         label: p.call.label(),
-                        aligned: unaligned.is_some(),
+                        aligned: *aligned,
+                        absorbed: absorbed.iter().map(|c| c.label()).collect(),
                     }),
                     Err(Error::Precondition(why)) => summary.skipped.push(Skipped {
                         label: p.call.label(),
@@ -1764,31 +2129,54 @@ mod tests {
         assert!(again.residue.is_empty(), "{:?}", again.residue);
     }
 
+    /// An `Edit` of `/src/main.rs` in the repo's tree.
+    fn main_edit(repo: &Repository, id: &str, old: &str, new: &str) -> Value {
+        tool_use(
+            id,
+            "Edit",
+            json!({"file_path": repo.root().join("src/main.rs").to_string_lossy(),
+                   "old_string": old, "new_string": new}),
+        )
+    }
+
+    /// The `(old_str, new_str)` of every op of every line on the fork.
+    fn edits(repo: &Repository, fork: &str) -> Vec<Vec<(String, String)>> {
+        repo.current_state(fork)
+            .unwrap()
+            .lines
+            .iter()
+            .map(|line| {
+                line.intent
+                    .ops
+                    .iter()
+                    .map(|op| match op {
+                        Op::Edit {
+                            old_str, new_str, ..
+                        } => (old_str.clone(), new_str.clone()),
+                        other => panic!("expected an edit, got {other:?}"),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_later_edit_inside_the_span_is_not_stolen() {
-        // Edit 1 writes a body; edit 2 rewrites one line of it; then the
-        // formatter reindents edit 1's region.  Alignment folds the
-        // formatter's churn into edit 1's surviving bytes without taking
-        // edit 2's work: both calls land, and edit 2 keeps its own line.
-        let repo = temp_repo("nosteal");
+    fn a_later_rewrite_of_the_same_bytes_folds_into_one_span() {
+        // Edit 1 writes a body; edit 2 rewrites a call inside it; then the
+        // formatter reindents edit 1's region.  Edit 2 touched only bytes
+        // edit 1 wrote, so it folds into edit 1's line: one span, the
+        // minimal diff, carrying both calls' ids and prose.
+        let repo = temp_repo("absorb");
         seed(&repo, "/src/main.rs", "fn main() {}\n");
-        let session = "s-nosteal";
-        let root = repo.root().to_path_buf();
-        let edit = |id: &str, old: &str, new: &str| {
-            tool_use(
-                id,
-                "Edit",
-                json!({"file_path": root.join("src/main.rs").to_string_lossy(),
-                       "old_string": old, "new_string": new}),
-            )
-        };
+        let session = "s-absorb";
         let entries = vec![
             assistant(
                 &repo,
                 "u1",
                 session,
                 "a body",
-                edit(
+                main_edit(
+                    &repo,
                     "toolu_1",
                     "fn main() {}",
                     "fn main() {\n        alpha();\n    beta();\n}",
@@ -1799,47 +2187,236 @@ mod tests {
                 "u2",
                 session,
                 "rename beta",
-                edit("toolu_2", "beta()", "gamma()"),
+                main_edit(&repo, "toolu_2", "beta()", "gamma()"),
             ),
         ];
-        // The formatter fixed the over-indented alpha line, after both edits.
         std::fs::write(
-            root.join("src/main.rs"),
+            repo.root().join("src/main.rs"),
             "fn main() {\n    alpha();\n    gamma();\n}\n",
         )
         .unwrap();
-        let transcript = write_transcript(&temp_dir("tx-nosteal"), session, &entries);
+        let transcript = write_transcript(&temp_dir("tx-absorb"), session, &entries);
 
         let summary = commit(&repo, &options(&transcript, session)).unwrap();
-        assert_eq!(summary.landed.len(), 2, "{:?}", summary.skipped);
-        assert!(
-            summary.landed[0].aligned,
-            "the formatter's churn is edit 1's"
-        );
-        assert!(
-            !summary.landed[1].aligned,
-            "edit 2 landed exactly as written"
-        );
+        assert_eq!(summary.landed.len(), 1, "{:?}", summary.skipped);
+        assert!(summary.landed[0].aligned, "the formatter's churn folds too");
+        assert_eq!(summary.landed[0].absorbed, vec!["Edit /src/main.rs"]);
         assert!(summary.residue.is_empty(), "{:?}", summary.residue);
         let (expected, actual) = repo.check(&summary.fork).unwrap();
         assert_eq!(expected, actual);
+        assert_eq!(
+            edits(&repo, &summary.fork),
+            vec![vec![(
+                "fn main() {}".to_string(),
+                "fn main() {\n    alpha();\n    gamma();\n}".to_string()
+            )]],
+            "one span, no reconciliation"
+        );
         let lines = repo.current_state(&summary.fork).unwrap().lines;
-        assert_eq!(lines.len(), 2, "no reconciliation");
-        match &lines[0].intent.ops[0] {
-            Op::Edit { new_str, .. } => {
-                assert_eq!(new_str, "fn main() {\n    alpha();\n    beta();\n}")
-            }
-            other => panic!("expected an edit, got {other:?}"),
-        }
-        match &lines[1].intent.ops[0] {
-            Op::Edit {
-                old_str, new_str, ..
-            } => {
-                assert_eq!(old_str, "beta()");
-                assert_eq!(new_str, "gamma()");
-            }
-            other => panic!("expected an edit, got {other:?}"),
-        }
+        let annotation = &lines[0].annotation;
+        let harness = annotation.harness.as_ref().unwrap();
+        assert_eq!(harness.call, "toolu_1");
+        assert_eq!(harness.absorbed, vec!["toolu_2".to_string()]);
+        assert_eq!(annotation.prose.as_deref(), Some("a body\n\nrename beta"));
+        // Idempotent: the absorbed call counts as recorded.
+        let again = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(again.already, 2);
+        assert!(again.landed.is_empty());
+        assert!(again.skipped.is_empty(), "{:?}", again.skipped);
+        assert!(again.residue.is_empty(), "{:?}", again.residue);
+    }
+
+    #[test]
+    fn a_rewrite_reaching_past_the_earlier_span_lands_on_its_own() {
+        // Edit 2's old_string reaches into the base's bytes beyond what
+        // edit 1 wrote.  Folding it would pull bytes edit 1 never named into
+        // edit 1's precondition, so both calls land as written.
+        let repo = temp_repo("overlap");
+        seed(&repo, "/src/main.rs", "fn main() {}\nfn tail() {}\n");
+        let session = "s-overlap";
+        let entries = vec![
+            assistant(
+                &repo,
+                "u1",
+                session,
+                "a body",
+                main_edit(&repo, "toolu_1", "fn main() {}", "fn main() { a(); }"),
+            ),
+            assistant(
+                &repo,
+                "u2",
+                session,
+                "across the seam",
+                main_edit(&repo, "toolu_2", "a(); }\nfn tail", "b(); }\nfn tail2"),
+            ),
+        ];
+        std::fs::write(
+            repo.root().join("src/main.rs"),
+            "fn main() { b(); }\nfn tail2() {}\n",
+        )
+        .unwrap();
+        let transcript = write_transcript(&temp_dir("tx-overlap"), session, &entries);
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 2, "{:?}", summary.skipped);
+        assert!(summary.landed.iter().all(|l| l.absorbed.is_empty()));
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn a_line_after_an_aligned_one_reads_the_blob_the_fork_holds() {
+        // Edit 1 is aligned with the formatter; edit 2, on base bytes of the
+        // same file, met the aligned content when it landed.  Its read set
+        // names that content's blob, not the transcript's unaligned one.
+        let repo = temp_repo("reads");
+        seed(&repo, "/src/main.rs", "fn main() {}\nfn tail() {}\n");
+        let session = "s-reads";
+        let entries = vec![
+            assistant(
+                &repo,
+                "u1",
+                session,
+                "a body",
+                main_edit(
+                    &repo,
+                    "toolu_1",
+                    "fn main() {}",
+                    "fn main() {\n        a();\n}",
+                ),
+            ),
+            assistant(
+                &repo,
+                "u2",
+                session,
+                "rename tail",
+                main_edit(&repo, "toolu_2", "fn tail()", "fn end()"),
+            ),
+        ];
+        std::fs::write(
+            repo.root().join("src/main.rs"),
+            "fn main() {\n    a();\n}\nfn end() {}\n",
+        )
+        .unwrap();
+        let transcript = write_transcript(&temp_dir("tx-reads"), session, &entries);
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 2, "{:?}", summary.skipped);
+        assert!(summary.landed[0].aligned);
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let met = repo
+            .blobs()
+            .put(b"fn main() {\n    a();\n}\nfn tail() {}\n")
+            .unwrap();
+        let lines = repo.current_state(&summary.fork).unwrap().lines;
+        let reads = lines[1].annotation.reads.as_ref().unwrap();
+        assert_eq!(reads[0]["path"], json!("/src/main.rs"));
+        assert_eq!(reads[0]["blob"], json!(met));
+        assert_eq!(reads[0]["spans"], json!(["fn tail()"]));
+    }
+
+    #[test]
+    fn churn_on_the_line_a_mid_line_span_began_widens_the_span() {
+        // The edit began mid-line, and the formatter changed bytes both
+        // inside its span and just before it on the same line.  The bytes
+        // before it are the base's, untouched since, so the span widens over
+        // them and the churn folds back.
+        let repo = temp_repo("widen");
+        seed(&repo, "/src/main.rs", "let x  =  old();\nkeep();\n");
+        let session = "s-widen";
+        let entries = vec![assistant(
+            &repo,
+            "u1",
+            session,
+            "call new",
+            main_edit(&repo, "toolu_1", "old();", "new( );"),
+        )];
+        std::fs::write(repo.root().join("src/main.rs"), "let x = new();\nkeep();\n").unwrap();
+        let transcript = write_transcript(&temp_dir("tx-widen"), session, &entries);
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 1, "{:?}", summary.skipped);
+        assert!(summary.landed[0].aligned);
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
+        assert_eq!(
+            edits(&repo, &summary.fork),
+            vec![vec![(" =  old();".to_string(), "= new();".to_string())]]
+        );
+    }
+
+    #[test]
+    fn a_fold_that_breaks_a_later_precondition_falls_back_to_the_calls() {
+        // Edit 3 rewrites bytes edit 1 wrote, so it would fold into edit 1 —
+        // but the folded edit 1 writes `y();` before edit 2 runs, and edit
+        // 2's `y();` is then no longer unique.  The plan's replay catches it
+        // and every call lands as written.
+        let repo = temp_repo("fallback");
+        seed(&repo, "/src/main.rs", "fn a() {}\ny();\n");
+        let session = "s-fallback";
+        let entries = vec![
+            assistant(
+                &repo,
+                "u1",
+                session,
+                "one",
+                main_edit(&repo, "toolu_1", "fn a() {}", "fn a() { z(); }"),
+            ),
+            assistant(
+                &repo,
+                "u2",
+                session,
+                "two",
+                main_edit(&repo, "toolu_2", "y();", "w();"),
+            ),
+            assistant(
+                &repo,
+                "u3",
+                session,
+                "three",
+                main_edit(&repo, "toolu_3", "z()", "y()"),
+            ),
+        ];
+        std::fs::write(repo.root().join("src/main.rs"), "fn a() { y(); }\nw();\n").unwrap();
+        let transcript = write_transcript(&temp_dir("tx-fallback"), session, &entries);
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 3, "{:?}", summary.skipped);
+        assert!(summary.landed.iter().all(|l| l.absorbed.is_empty()));
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn churn_spanning_two_calls_stays_with_the_reconciliation() {
+        // Two calls wrote neighbouring spans; the formatter changed bytes
+        // across both.  Neither owns the change, so it is reconciled.
+        let repo = temp_repo("two-owners");
+        seed(&repo, "/src/main.rs", "a(); b();\n");
+        let session = "s-two-owners";
+        let entries = vec![
+            assistant(
+                &repo,
+                "u1",
+                session,
+                "first",
+                main_edit(&repo, "toolu_1", "a();", "aa( );"),
+            ),
+            assistant(
+                &repo,
+                "u2",
+                session,
+                "second",
+                main_edit(&repo, "toolu_2", " b();", " bb( );"),
+            ),
+        ];
+        std::fs::write(repo.root().join("src/main.rs"), "aa(); bb();\n").unwrap();
+        let transcript = write_transcript(&temp_dir("tx-two-owners"), session, &entries);
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 2, "{:?}", summary.skipped);
+        assert!(summary.landed.iter().all(|l| !l.aligned));
+        assert_eq!(summary.residue, vec!["M /src/main.rs".to_string()]);
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
     }
 
     #[test]
