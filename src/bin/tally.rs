@@ -578,7 +578,12 @@ fn print_claude_summary(summary: &tally::claude::Summary) {
         summary.observed, summary.already
     );
     for landed in &summary.landed {
-        println!("  {}  {}", short(&landed.id), landed.label);
+        let aligned = if landed.aligned {
+            "  (aligned with the working tree)"
+        } else {
+            ""
+        };
+        println!("  {}  {}{}", short(&landed.id), landed.label, aligned);
     }
     for skipped in &summary.skipped {
         // Not an error: the call happened, its precondition has since moved,

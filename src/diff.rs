@@ -8,6 +8,7 @@
 //! without inspecting a single byte of content.
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 use crate::ident::{ElementRecord, Sum};
 use crate::manifest::Manifest;
@@ -183,6 +184,65 @@ pub fn changed_old_lines(old: &[u8], new: &[u8]) -> Option<BTreeSet<usize>> {
         }
     }
     Some(changed)
+}
+
+/// The changed regions between `old` and `new`, as half-open byte ranges:
+/// each entry is an `(old_range, new_range)` pair, and outside the ranges
+/// the two are byte-identical, so splicing every `new_range`'s bytes into
+/// `old` at its `old_range` reproduces `new` exactly.  Ranges fall on line
+/// boundaries and ascend; a pure insertion has an empty old range at the
+/// insertion point, a pure deletion an empty new range.  `None` when either
+/// side is not UTF-8, the same fallback [`changed_old_lines`] makes.
+pub fn changed_ranges(old: &[u8], new: &[u8]) -> Option<Vec<(Range<usize>, Range<usize>)>> {
+    let (old_s, new_s) = (
+        std::str::from_utf8(old).ok()?,
+        std::str::from_utf8(new).ok()?,
+    );
+    let old_lines = split_keep_lines(old_s);
+    let new_lines = split_keep_lines(new_s);
+    // The byte offset at which each line begins, with the content's length
+    // as the sentinel end.
+    let offsets = |lines: &[&str], total: usize| -> Vec<usize> {
+        let mut offsets = Vec::with_capacity(lines.len() + 1);
+        let mut at = 0;
+        for line in lines {
+            offsets.push(at);
+            at += line.len();
+        }
+        offsets.push(total);
+        offsets
+    };
+    let old_off = offsets(&old_lines, old.len());
+    let new_off = offsets(&new_lines, new.len());
+    // Walk the edit script, opening a hunk on the first non-equal line and
+    // closing it on the next equal one.  `oi`/`ni` are the line indices the
+    // walk has reached on each side.
+    let mut ranges = Vec::new();
+    let mut open: Option<(usize, usize)> = None;
+    let (mut oi, mut ni) = (0, 0);
+    for edit in lcs_edits(&old_lines, &new_lines) {
+        match edit {
+            Edit::Equal(_, _) => {
+                if let Some((os, ns)) = open.take() {
+                    ranges.push((old_off[os]..old_off[oi], new_off[ns]..new_off[ni]));
+                }
+                oi += 1;
+                ni += 1;
+            }
+            Edit::Delete(_) => {
+                open.get_or_insert((oi, ni));
+                oi += 1;
+            }
+            Edit::Insert(_) => {
+                open.get_or_insert((oi, ni));
+                ni += 1;
+            }
+        }
+    }
+    if let Some((os, ns)) = open {
+        ranges.push((old_off[os]..old_off[oi], new_off[ns]..new_off[ni]));
+    }
+    Some(ranges)
 }
 
 /// Split into lines, keeping enough to distinguish a missing final newline.
@@ -639,6 +699,51 @@ mod tests {
     #[test]
     fn changed_old_lines_is_none_on_non_utf8() {
         assert!(changed_old_lines(&[0xff, 0xfe], b"ok\n").is_none());
+    }
+
+    /// Splice every range pair: `old` with each `old_range` replaced by the
+    /// bytes `new` carries in the paired `new_range`.
+    fn splice(old: &[u8], new: &[u8], ranges: &[(Range<usize>, Range<usize>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        for (rold, rnew) in ranges {
+            assert!(rold.start >= at, "ranges must ascend and not overlap");
+            out.extend_from_slice(&old[at..rold.start]);
+            out.extend_from_slice(&new[rnew.clone()]);
+            at = rold.end;
+        }
+        out.extend_from_slice(&old[at..]);
+        out
+    }
+
+    #[test]
+    fn changed_ranges_splice_back_to_new_exactly() {
+        // Scattered changes, an insertion, a deletion, and a missing final
+        // newline: the pairs partition the difference, so splicing them
+        // back reproduces `new` byte for byte.
+        let old = b"one\ntwo\nthree\nfour\nfive\nsix";
+        let new = b"one\nTWO\nthree\nthree-point-five\nfive\n";
+        let ranges = changed_ranges(old, new).unwrap();
+        assert_eq!(splice(old, new, &ranges), new.to_vec());
+        // Identical content has no ranges, and binary declines.
+        assert!(changed_ranges(old, old).unwrap().is_empty());
+        assert!(changed_ranges(&[0xff, 0xfe], b"ok\n").is_none());
+    }
+
+    #[test]
+    fn changed_ranges_are_line_aligned_and_empty_at_pure_insertions() {
+        let old = b"a\nb\nc\n";
+        let new = b"a\nx\ny\nb\nc\n";
+        let ranges = changed_ranges(old, new).unwrap();
+        assert_eq!(ranges.len(), 1);
+        let (rold, rnew) = &ranges[0];
+        assert_eq!(rold.start, rold.end, "a pure insertion consumes nothing");
+        assert_eq!(
+            &old[rold.start..],
+            "b\nc\n".as_bytes(),
+            "at a line boundary"
+        );
+        assert_eq!(&new[rnew.clone()], "x\ny\n".as_bytes(), "whole lines only");
     }
 
     #[test]

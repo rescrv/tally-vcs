@@ -40,6 +40,20 @@
 //! none was observed.  The fork then *equals* the working tree, which is the
 //! reconciliation the operation promises.
 //!
+//! **What a shell run rewrote of the session's own spans folds back into
+//! the span's line.**  A formatter is the common case: the session writes
+//! an edit, a `cargo fmt` inside `Bash` (or a hook, which the transcript
+//! cannot tell from one) reformats exactly what the edit wrote, and the
+//! reconciling line ends up re-touching lines the session just landed —
+//! churn with an owner, recorded ownerless.  So before landing, the replay
+//! diffs its reconstruction against the working tree and *aligns* each
+//! difference that falls entirely within one op's `new_str` back into that
+//! op: the edit lands the way the tree holds it, and the reconciling patch
+//! keeps only what no edit explains — the formatter's footprint on
+//! pre-existing code, if any.  Alignment never invents: it rewrites only
+//! bytes no other call names, the replay re-validates the aligned intent,
+//! and a landed line that was adjusted says so ([`Landed::aligned`]).
+//!
 //! Every line records the call behind it ([`HarnessCall`]), so a second run
 //! over the same session appends only what is new.
 //!
@@ -50,7 +64,8 @@
 //! same bytes (see [`crate::patch::anchored_replace_all`]).  The resulting
 //! line still re-validates span by span, which is what lets it travel.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -576,6 +591,413 @@ fn recorded_calls(repo: &Repository, fork: &str) -> Result<BTreeSet<String>> {
     Ok(ids)
 }
 
+/////////////////////////////////////////////// plan ////////////////////////////////////////////
+
+/// A run of bytes in a replayed path that one planned op wrote:
+/// `content[start..end]` is `new_str[at..at + (end - start)]` of the
+/// `op`-th op of the `call`-th planned call.  Bytes no landed-this-run op
+/// wrote — the base's bytes, and whole-file `Write` content — carry no run.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    start: usize,
+    end: usize,
+    call: usize,
+    op: usize,
+    at: usize,
+}
+
+/// Replace `[at, at + old_len)` with `new_len` bytes owned by `owner`,
+/// keeping every run's seat: a run before the edit stands, a run after it
+/// shifts, and a run the edit bites loses the bitten part — those bytes now
+/// belong to the edit's owner.
+fn edit_runs(
+    runs: &mut Vec<Run>,
+    at: usize,
+    old_len: usize,
+    new_len: usize,
+    owner: (usize, usize),
+) {
+    let end = at + old_len;
+    let delta = new_len as isize - old_len as isize;
+    let shift = |pos: usize| (pos as isize + delta) as usize;
+    let mut out: Vec<Run> = Vec::with_capacity(runs.len() + 1);
+    for run in runs.drain(..) {
+        if run.end <= at {
+            out.push(run);
+        } else if run.start >= end {
+            out.push(Run {
+                start: shift(run.start),
+                end: shift(run.end),
+                ..run
+            });
+        } else {
+            if run.start < at {
+                out.push(Run {
+                    start: run.start,
+                    end: at,
+                    ..run
+                });
+            }
+            if run.end > end {
+                out.push(Run {
+                    start: at + new_len,
+                    end: shift(run.end),
+                    at: run.at + (end - run.start),
+                    ..run
+                });
+            }
+        }
+    }
+    if new_len > 0 {
+        out.push(Run {
+            start: at,
+            end: at + new_len,
+            call: owner.0,
+            op: owner.1,
+            at: 0,
+        });
+    }
+    out.sort_by_key(|run| run.start);
+    *runs = out;
+}
+
+/// A `(call, op)` seat in the plan.
+type OpSeat = (usize, usize);
+
+/// The replacements one op absorbs from the working tree: each
+/// `(seat, range)` pair replaces `new_str[seat]` with `tree[range]`.
+type Absorbed = Vec<(Range<usize>, Range<usize>)>;
+
+/// What the replay made of one call.
+enum PlannedOutcome {
+    /// Land this intent with this read set.  `unaligned` holds the intent as
+    /// the call's own fields wrote it when alignment adjusted a `new_str`,
+    /// so a replay surprise can fall back to it.
+    Land {
+        intent: Intent,
+        reads: Value,
+        unaligned: Option<Intent>,
+    },
+    /// The call's preconditions did not hold in the replay; the
+    /// reconciliation carries what the call did, as before.
+    Skip(String),
+}
+
+/// One call's plan for landing.
+struct Planned<'a> {
+    /// The call it plans for.
+    call: &'a Call,
+    /// What the replay made of it.
+    outcome: PlannedOutcome,
+}
+
+/// Replay the unrecorded calls against `start` in memory and plan the line
+/// each lands, aligning spans with the working tree.  Returns the plan and
+/// the manifest the plan produces — the dry-run preview's state, and the
+/// real run's expectation.
+///
+/// The replay validates exactly what landing validates.  It does write
+/// blobs — a call after the first reads the content the previous one
+/// produced, so that content has to be somewhere, and the pool is where
+/// content lives.  This is what `tally sum` already does with the bytes it
+/// hashes: pooling is not committing, the pool is content-addressed and
+/// idempotent, and `gc-blobs` collects whatever no fork ends up reaching.
+fn plan<'a>(
+    repo: &Repository,
+    start: &Manifest,
+    calls: &'a [Call],
+    recorded: &BTreeSet<String>,
+) -> Result<(Vec<Planned<'a>>, Manifest)> {
+    let blobs = repo.blobs();
+    // Pass 1: replay each call as the harness wrote it, computing its
+    // intent and attributing every byte a span writes to the op that wrote
+    // it.  A call whose preconditions do not hold skips, exactly as it
+    // would at landing.
+    let mut manifest = start.clone();
+    let mut planned: Vec<Planned> = Vec::new();
+    let mut runs: HashMap<String, Vec<Run>> = HashMap::new();
+    let mut contents: HashMap<String, Vec<u8>> = HashMap::new();
+    for call in calls {
+        if recorded.contains(&call.id) {
+            continue;
+        }
+        let seat = planned.len();
+        let outcome = match intent_for(&blobs, &manifest, call) {
+            Ok((intent, reads)) => {
+                // Stage the pre-call content of every path the intent
+                // touches, so attribution can walk the ops against the state
+                // each op met — the state `intent_for` just validated.
+                stage(&mut contents, &blobs, &manifest, &intent);
+                match apply_intent(&intent, &mut manifest, &blobs) {
+                    Ok(realization) => {
+                        for (_, content) in &realization.new_blobs {
+                            blobs.put_unsynced(content)?;
+                        }
+                        attribute(&mut runs, &mut contents, seat, &intent);
+                        PlannedOutcome::Land {
+                            intent,
+                            reads,
+                            unaligned: None,
+                        }
+                    }
+                    Err(Error::Precondition(why)) => PlannedOutcome::Skip(why.to_string()),
+                    Err(err) => return Err(err),
+                }
+            }
+            Err(Error::Precondition(why)) => PlannedOutcome::Skip(why.to_string()),
+            Err(err) => return Err(err),
+        };
+        planned.push(Planned { call, outcome });
+    }
+
+    // Alignment: the working tree is the oracle for what the session's own
+    // spans became.  A formatter run inside Bash rewrites bytes an edit
+    // just wrote, and a difference that falls entirely within one op's
+    // `new_str` has an owner — that op — so it folds back into the op
+    // rather than land ownerless in the reconciliation.
+    align(&mut planned, &runs, &contents, repo)?;
+
+    // Pass 2: replay the plan from the start to produce the state it
+    // promises.  Alignment rewrites only bytes no other op names, so the
+    // content-addressed preconditions cannot have moved — but replay is
+    // cheap and honest: an aligned intent that somehow fails falls back to
+    // the intent as the call wrote it, and a call that still fails skips to
+    // the reconciliation as before.
+    let mut final_manifest = start.clone();
+    for p in &mut planned {
+        let outcome = std::mem::replace(&mut p.outcome, PlannedOutcome::Skip(String::new()));
+        let PlannedOutcome::Land {
+            mut intent,
+            reads,
+            mut unaligned,
+        } = outcome
+        else {
+            p.outcome = outcome;
+            continue;
+        };
+        let mut skip_why = None;
+        loop {
+            match apply_intent(&intent, &mut final_manifest, &blobs) {
+                Ok(realization) => {
+                    for (_, content) in &realization.new_blobs {
+                        blobs.put_unsynced(content)?;
+                    }
+                    break;
+                }
+                Err(Error::Precondition(_)) if unaligned.is_some() => {
+                    intent = unaligned.take().expect("checked");
+                }
+                Err(Error::Precondition(why)) => {
+                    skip_why = Some(why.to_string());
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        p.outcome = match skip_why {
+            None => PlannedOutcome::Land {
+                intent,
+                reads,
+                unaligned,
+            },
+            Some(why) => PlannedOutcome::Skip(why),
+        };
+    }
+    Ok((planned, final_manifest))
+}
+
+/// The content of every element an intent touches, staged from the manifest
+/// the intent was validated against, so attribution can walk the ops against
+/// the state each op meets.
+fn stage(
+    contents: &mut HashMap<String, Vec<u8>>,
+    blobs: &BlobStore,
+    manifest: &Manifest,
+    intent: &Intent,
+) {
+    for op in &intent.ops {
+        if contents.contains_key(op.path()) {
+            continue;
+        }
+        let Some(record) = manifest.get(op.path()) else {
+            continue;
+        };
+        if let Ok(content) = blobs.get(&record.blob) {
+            contents.insert(op.path().to_string(), content);
+        }
+    }
+}
+
+/// Attribute every byte an applied intent's spans write to the op that wrote
+/// it, carrying each touched path's staged content forward to what the
+/// intent left.  Attribution is advisory — a create's wholesale bytes simply
+/// start unattributed — so a surprise degrades to no runs, never to a failed
+/// ingest; after a successful `apply_intent` the spans sit where validation
+/// put them and the fallback below is unreachable.
+fn attribute(
+    runs: &mut HashMap<String, Vec<Run>>,
+    contents: &mut HashMap<String, Vec<u8>>,
+    seat: usize,
+    intent: &Intent,
+) {
+    for (op_idx, op) in intent.ops.iter().enumerate() {
+        match op {
+            Op::Edit {
+                path,
+                old_str,
+                new_str,
+            } => {
+                let Some(content) = contents.get_mut(path) else {
+                    continue;
+                };
+                // Unreachable after a successful `apply_intent`; degrade to
+                // no runs and no stale content rather than misattribute.
+                let Ok(new_content) =
+                    replace_unique(content, old_str.as_bytes(), new_str.as_bytes())
+                else {
+                    runs.remove(path);
+                    contents.remove(path);
+                    continue;
+                };
+                let Some(at) = content
+                    .windows(old_str.len())
+                    .position(|w| w == old_str.as_bytes())
+                else {
+                    runs.remove(path);
+                    contents.remove(path);
+                    continue;
+                };
+                edit_runs(
+                    runs.entry(path.clone()).or_default(),
+                    at,
+                    old_str.len(),
+                    new_str.len(),
+                    (seat, op_idx),
+                );
+                *content = new_content;
+            }
+            // A create's bytes are the harness's whole-file write, not a
+            // span, so they carry no runs; a delete leaves nothing to
+            // attribute.  Either way the staged content is stale afterwards.
+            Op::Create { path, .. } | Op::Delete { path, .. } => {
+                runs.remove(path);
+                contents.remove(path);
+            }
+            Op::Chmod { .. } => {}
+        }
+    }
+}
+
+/// Fold every working-tree difference that falls entirely within one op's
+/// `new_str` back into that op, so the line lands the way the tree holds
+/// it.  Differences with no owner — bytes the base carried, or churn
+/// crossing a span boundary — stay for the reconciliation, which is what
+/// keeps the formatter's patch honest: it shows only what the session's
+/// edits do not explain.
+fn align(
+    planned: &mut [Planned],
+    runs: &HashMap<String, Vec<Run>>,
+    contents: &HashMap<String, Vec<u8>>,
+    repo: &Repository,
+) -> Result<()> {
+    let blobs = repo.blobs();
+    // Nothing attributed, nothing to align: spare the working-tree scan.
+    if runs.values().all(|path_runs| path_runs.is_empty()) {
+        return Ok(());
+    }
+    let working = repo.working_tree_manifest()?;
+    for (path, path_runs) in runs {
+        if path_runs.is_empty() {
+            continue;
+        }
+        let (Some(replayed), Some(record)) = (contents.get(path), working.get(path)) else {
+            continue;
+        };
+        let tree = blobs.get(&record.blob)?;
+        if *replayed == tree {
+            continue;
+        }
+        let Some(hunks) = crate::diff::changed_ranges(replayed, &tree) else {
+            continue;
+        };
+        // The replacements each op absorbs, keyed by (call, op): a hunk
+        // inside a run maps to the run's seat within the op's `new_str`.
+        let mut per_op: BTreeMap<OpSeat, Absorbed> = BTreeMap::new();
+        for (old_range, new_range) in hunks {
+            let owner = path_runs.iter().find(|run| {
+                if old_range.is_empty() {
+                    // An insertion belongs inside the run, not at its edge:
+                    // at the edge it may as well be the neighbor's bytes.
+                    run.start < old_range.start && old_range.start < run.end
+                } else {
+                    run.start <= old_range.start && old_range.end <= run.end
+                }
+            });
+            let Some(owner) = owner else {
+                continue;
+            };
+            let seat = owner.at + (old_range.start - owner.start)
+                ..owner.at + (old_range.end - owner.start);
+            per_op
+                .entry((owner.call, owner.op))
+                .or_default()
+                .push((seat, new_range));
+        }
+        for ((seat, op_idx), replacements) in per_op {
+            let PlannedOutcome::Land {
+                intent, unaligned, ..
+            } = &mut planned[seat].outcome
+            else {
+                continue;
+            };
+            let Some(aligned) = align_op(intent, op_idx, &replacements, &tree) else {
+                continue;
+            };
+            if unaligned.is_none() {
+                *unaligned = Some(std::mem::replace(intent, aligned));
+            } else {
+                *intent = aligned;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The intent with op `op_idx`'s `new_str` spliced: each `(seat, range)`
+/// replaces `new_str[seat]` with `tree[range]`.  `None` when a seat does
+/// not sit on the string's char boundaries — the op then stands as written
+/// and the churn stays with the reconciliation.
+fn align_op(
+    intent: &Intent,
+    op_idx: usize,
+    replacements: &[(Range<usize>, Range<usize>)],
+    tree: &[u8],
+) -> Option<Intent> {
+    let mut intent = intent.clone();
+    let Op::Edit { new_str, .. } = intent.ops.get_mut(op_idx)? else {
+        return None;
+    };
+    let mut replacements = replacements.to_vec();
+    replacements.sort_by_key(|(seat, _)| seat.start);
+    let mut out = String::with_capacity(new_str.len());
+    let mut at = 0;
+    for (seat, range) in replacements {
+        if seat.start < at
+            || seat.end > new_str.len()
+            || !new_str.is_char_boundary(seat.start)
+            || !new_str.is_char_boundary(seat.end)
+        {
+            return None;
+        }
+        out.push_str(&new_str[at..seat.start]);
+        out.push_str(std::str::from_utf8(tree.get(range)?).ok()?);
+        at = seat.end;
+    }
+    out.push_str(&new_str[at..]);
+    *new_str = out;
+    Some(intent)
+}
+
 /////////////////////////////////////////////// commit ////////////////////////////////////////////
 
 /// What to ingest, and where.
@@ -606,6 +1028,11 @@ pub struct Landed {
     pub id: String,
     /// The call it came from, as a label.
     pub label: String,
+    /// The line's spans were aligned with the working tree: a shell-side
+    /// rewrite (a formatter, a hook) had adjusted bytes that fall entirely
+    /// within the call's own `new_str`, so the line lands the way the tree
+    /// holds it rather than the way the transcript recorded it.
+    pub aligned: bool,
 }
 
 /// One call the ingest could not replay.
@@ -660,7 +1087,11 @@ pub struct Summary {
 /// call from the session's unique origin onward, then one reconciling line for
 /// whatever the working tree holds that the session's calls do not explain.
 ///
-/// The replay uses [`Repository::record_observed`], not
+/// The session is planned in memory first ([`plan`]): replayed, aligned with
+/// the working tree where a shell-side rewrite fell entirely within a call's
+/// own span, and re-validated.  The landing then appends the plan's lines.
+///
+/// The landing uses [`Repository::record_observed`], not
 /// [`Repository::apply`]: the edits have already landed on disk, and a
 /// working-tree refresh here would rewrite a file from tally's reconstruction
 /// of it — clobbering a later edit the ingest has not reached yet.  Recording
@@ -727,77 +1158,74 @@ pub fn commit(repo: &Repository, options: &Options) -> Result<Summary> {
         dry_run: options.dry_run,
     };
 
+    // Plan the session against the state it meets: the same replay for the
+    // preview and for the landing, so the dry run prints the plan, not a
+    // guess.  Already-recorded calls are the state the plan starts from.
+    let start = repo
+        .current_state(if exists { &fork } else { &base })?
+        .manifest;
+    let (planned, planned_manifest) = plan(repo, &start, &calls, &recorded)?;
+    summary.already = calls.len() - planned.len();
+
     if options.dry_run {
-        // The same replay, against a manifest in memory: no fork, no log line,
-        // no linearization point.  `apply_intent` validates exactly what the
-        // real path validates, so the preview is the plan, not a guess.
-        //
-        // The one thing the preview does write is blobs — a call after the
-        // first reads the content the previous one produced, so that content
-        // has to be somewhere, and the pool is where content lives.  This is
-        // what `tally sum` already does with the bytes it hashes: pooling is
-        // not committing, the pool is content-addressed and idempotent, and
-        // `gc-blobs` collects whatever no fork ends up reaching.
-        let mut manifest = repo
-            .current_state(if exists { &fork } else { &base })?
-            .manifest;
-        let blobs = repo.blobs();
-        for call in &calls {
-            if recorded.contains(&call.id) {
-                summary.already += 1;
-                continue;
-            }
-            let simulated = intent_for(&blobs, &manifest, call)
-                .and_then(|(intent, _)| apply_intent(&intent, &mut manifest, &blobs));
-            match simulated {
-                Ok(realization) => {
-                    for (_, content) in &realization.new_blobs {
-                        blobs.put_unsynced(content)?;
-                    }
-                    summary.landed.push(Landed {
-                        id: "(dry run)".to_string(),
-                        label: call.label(),
-                    });
-                }
-                Err(err) => summary.skipped.push(Skipped {
-                    label: call.label(),
-                    why: err.to_string(),
+        // No fork, no log line, no linearization point: the plan is the
+        // preview.
+        for p in &planned {
+            match &p.outcome {
+                PlannedOutcome::Land { unaligned, .. } => summary.landed.push(Landed {
+                    id: "(dry run)".to_string(),
+                    label: p.call.label(),
+                    aligned: unaligned.is_some(),
+                }),
+                PlannedOutcome::Skip(why) => summary.skipped.push(Skipped {
+                    label: p.call.label(),
+                    why: why.clone(),
                 }),
             }
         }
-        summary.residue = residue(repo, &manifest)?;
-        summary.head = manifest.sum().hexdigest();
+        summary.residue = residue(repo, &planned_manifest)?;
+        summary.head = planned_manifest.sum().hexdigest();
         return Ok(summary);
     }
 
     summary.created = repo.ensure_fork(&fork, &base)?;
-    for call in &calls {
-        if recorded.contains(&call.id) {
-            summary.already += 1;
-            continue;
-        }
-        // The state the call met: read fresh each time, because each line is
-        // its own linearization point and a concurrent writer may have moved
-        // the fork since the last one.
-        let state = repo.current_state(&fork)?;
-        let landed =
-            intent_for(&repo.blobs(), &state.manifest, call).and_then(|(intent, reads)| {
-                repo.record_observed(&fork, intent, annotation(&session, &author, call, reads))
-            });
-        match landed {
-            Ok(line) => summary.landed.push(Landed {
-                id: line.id,
-                label: call.label(),
+    for p in &planned {
+        match &p.outcome {
+            PlannedOutcome::Skip(why) => summary.skipped.push(Skipped {
+                label: p.call.label(),
+                why: why.clone(),
             }),
-            // A precondition that no longer holds is the expected failure, not
-            // an error: the file drifted (a `Bash` run, a `replace_all` that
-            // hit twice, an edit the transcript did not see).  The call's
-            // effect is still on disk, and the reconciliation carries it.
-            Err(Error::Precondition(why)) => summary.skipped.push(Skipped {
-                label: call.label(),
-                why,
-            }),
-            Err(err) => return Err(err),
+            PlannedOutcome::Land {
+                intent,
+                reads,
+                unaligned,
+            } => {
+                // The intent is planned, but the append re-validates it
+                // against the state under the fork lock: each line is its own
+                // linearization point, and a fork that moved since planning
+                // fails the precondition.  That is the expected failure, not
+                // an error: the file drifted (a `Bash` run, a `replace_all`
+                // that hit twice, an edit the transcript did not see).  The
+                // call's effect is still on disk, and the reconciliation
+                // carries it.
+                let landed = repo.record_observed(
+                    &fork,
+                    intent.clone(),
+                    annotation(&session, &author, p.call, reads.clone()),
+                );
+                match landed {
+                    Ok(line) => summary.landed.push(Landed {
+                        id: line.id,
+                        label: p.call.label(),
+                        aligned: unaligned.is_some(),
+                    }),
+                    Err(Error::Precondition(why)) => summary.skipped.push(Skipped {
+                        label: p.call.label(),
+                        why,
+                    }),
+                    Err(err) => return Err(err),
+                }
+            }
         }
     }
 
@@ -1276,5 +1704,326 @@ mod tests {
                 &format!("claude-{child}")
             ]
         );
+    }
+
+    #[test]
+    fn a_shell_rewrite_within_the_span_folds_back_into_the_edit() {
+        // The session writes an edit; a `cargo fmt` inside Bash then
+        // reformats exactly what the edit wrote.  The transcript cannot see
+        // the formatter, but the churn has an owner — the edit — so it
+        // folds back into the edit's line and no reconciliation is needed.
+        let repo = temp_repo("align");
+        seed(&repo, "/src/main.rs", "fn main() {}\n");
+        let session = "s-align";
+        let root = repo.root().to_path_buf();
+        let entries = vec![assistant(
+            &repo,
+            "u1",
+            session,
+            "give main a body",
+            tool_use(
+                "toolu_1",
+                "Edit",
+                json!({"file_path": root.join("src/main.rs").to_string_lossy(),
+                       "old_string": "fn main() {}",
+                       "new_string": "fn main() {\n        hello();\n}"}),
+            ),
+        )];
+        // What the formatter left: the same body, reindented.
+        std::fs::write(root.join("src/main.rs"), "fn main() {\n    hello();\n}\n").unwrap();
+        let transcript = write_transcript(&temp_dir("tx-align"), session, &entries);
+
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 1, "{:?}", summary.skipped);
+        assert!(
+            summary.landed[0].aligned,
+            "the formatter's churn folds back"
+        );
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        assert!(summary.reconciled.is_none(), "nothing left to reconcile");
+        // The fork is the working tree, and the line lands the span the way
+        // the tree holds it, not the way the transcript recorded it.
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
+        let lines = repo.current_state(&summary.fork).unwrap().lines;
+        assert_eq!(lines.len(), 1);
+        match &lines[0].intent.ops[0] {
+            Op::Edit {
+                old_str, new_str, ..
+            } => {
+                assert_eq!(old_str, "fn main() {}");
+                assert_eq!(new_str, "fn main() {\n    hello();\n}");
+            }
+            other => panic!("expected an edit, got {other:?}"),
+        }
+        // Idempotent: the aligned line records its call, so a second ingest
+        // plans nothing new.
+        let again = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(again.already, 1);
+        assert!(again.landed.is_empty());
+        assert!(again.residue.is_empty(), "{:?}", again.residue);
+    }
+
+    #[test]
+    fn a_later_edit_inside_the_span_is_not_stolen() {
+        // Edit 1 writes a body; edit 2 rewrites one line of it; then the
+        // formatter reindents edit 1's region.  Alignment folds the
+        // formatter's churn into edit 1's surviving bytes without taking
+        // edit 2's work: both calls land, and edit 2 keeps its own line.
+        let repo = temp_repo("nosteal");
+        seed(&repo, "/src/main.rs", "fn main() {}\n");
+        let session = "s-nosteal";
+        let root = repo.root().to_path_buf();
+        let edit = |id: &str, old: &str, new: &str| {
+            tool_use(
+                id,
+                "Edit",
+                json!({"file_path": root.join("src/main.rs").to_string_lossy(),
+                       "old_string": old, "new_string": new}),
+            )
+        };
+        let entries = vec![
+            assistant(
+                &repo,
+                "u1",
+                session,
+                "a body",
+                edit(
+                    "toolu_1",
+                    "fn main() {}",
+                    "fn main() {\n        alpha();\n    beta();\n}",
+                ),
+            ),
+            assistant(
+                &repo,
+                "u2",
+                session,
+                "rename beta",
+                edit("toolu_2", "beta()", "gamma()"),
+            ),
+        ];
+        // The formatter fixed the over-indented alpha line, after both edits.
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() {\n    alpha();\n    gamma();\n}\n",
+        )
+        .unwrap();
+        let transcript = write_transcript(&temp_dir("tx-nosteal"), session, &entries);
+
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 2, "{:?}", summary.skipped);
+        assert!(
+            summary.landed[0].aligned,
+            "the formatter's churn is edit 1's"
+        );
+        assert!(
+            !summary.landed[1].aligned,
+            "edit 2 landed exactly as written"
+        );
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
+        let lines = repo.current_state(&summary.fork).unwrap().lines;
+        assert_eq!(lines.len(), 2, "no reconciliation");
+        match &lines[0].intent.ops[0] {
+            Op::Edit { new_str, .. } => {
+                assert_eq!(new_str, "fn main() {\n    alpha();\n    beta();\n}")
+            }
+            other => panic!("expected an edit, got {other:?}"),
+        }
+        match &lines[1].intent.ops[0] {
+            Op::Edit {
+                old_str, new_str, ..
+            } => {
+                assert_eq!(old_str, "beta()");
+                assert_eq!(new_str, "gamma()");
+            }
+            other => panic!("expected an edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn formatter_churn_outside_any_span_stays_with_the_reconciliation() {
+        // The formatter fixed the indentation of both the function the
+        // session wrote and a pre-existing one.  The session's own span
+        // folds back into its line; the pre-existing churn is nobody's
+        // span, so it stays with the reconciliation.
+        let repo = temp_repo("split");
+        seed(
+            &repo,
+            "/src/main.rs",
+            "fn helper() {\n        help();\n}\n\nfn main() {}\n",
+        );
+        let session = "s-split";
+        let root = repo.root().to_path_buf();
+        let entries = vec![assistant(
+            &repo,
+            "u1",
+            session,
+            "give main a body",
+            tool_use(
+                "toolu_1",
+                "Edit",
+                json!({"file_path": root.join("src/main.rs").to_string_lossy(),
+                       "old_string": "fn main() {}",
+                       "new_string": "fn main() {\n        work();\n}"}),
+            ),
+        )];
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn helper() {\n    help();\n}\n\nfn main() {\n    work();\n}\n",
+        )
+        .unwrap();
+        let transcript = write_transcript(&temp_dir("tx-split"), session, &entries);
+
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 1, "{:?}", summary.skipped);
+        assert!(summary.landed[0].aligned);
+        assert_eq!(summary.residue, vec!["M /src/main.rs".to_string()]);
+        assert!(summary.reconciled.is_some());
+        let (expected, actual) = repo.check(&summary.fork).unwrap();
+        assert_eq!(expected, actual);
+        // The reconciling line is the formatter's own footprint: one small
+        // span that does not re-touch the line the session wrote.
+        let lines = repo.current_state(&summary.fork).unwrap().lines;
+        assert_eq!(lines.len(), 2);
+        let mut carried = String::new();
+        for op in &lines[1].intent.ops {
+            match op {
+                Op::Edit {
+                    old_str, new_str, ..
+                } => {
+                    carried.push_str(old_str);
+                    carried.push_str(new_str);
+                }
+                other => panic!("expected an edit, got {other:?}"),
+            }
+        }
+        assert!(
+            !carried.contains("work();"),
+            "the reconciliation leaves the session's line alone: {carried:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_edit_aligns_each_span_the_formatter_touched() {
+        let repo = temp_repo("multi");
+        seed(&repo, "/src/lib.rs", "fn a() {}\n\nfn b() {}\n");
+        let session = "s-multi";
+        let root = repo.root().to_path_buf();
+        let entries = vec![assistant(
+            &repo,
+            "u1",
+            session,
+            "bodies for both",
+            tool_use(
+                "toolu_1",
+                "MultiEdit",
+                json!({"file_path": root.join("src/lib.rs").to_string_lossy(),
+                "edits": [
+                    {"old_string": "fn a() {}",
+                     "new_string": "fn a() {\n        alpha();\n}"},
+                    {"old_string": "fn b() {}",
+                     "new_string": "fn b() {\n        beta();\n}"},
+                ]}),
+            ),
+        )];
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "fn a() {\n    alpha();\n}\n\nfn b() {\n    beta();\n}\n",
+        )
+        .unwrap();
+        let transcript = write_transcript(&temp_dir("tx-multi"), session, &entries);
+
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 1, "{:?}", summary.skipped);
+        assert!(summary.landed[0].aligned);
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let lines = repo.current_state(&summary.fork).unwrap().lines;
+        assert_eq!(lines.len(), 1, "no reconciliation");
+        let news: Vec<&str> = lines[0]
+            .intent
+            .ops
+            .iter()
+            .map(|op| match op {
+                Op::Edit { new_str, .. } => new_str.as_str(),
+                other => panic!("expected an edit, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            news,
+            vec!["fn a() {\n    alpha();\n}", "fn b() {\n    beta();\n}"]
+        );
+    }
+
+    #[test]
+    fn a_formatter_insertion_inside_the_span_folds_back() {
+        // A pure insertion inside the written span — the formatter spaced
+        // the two calls apart — belongs to the span's owner.
+        let repo = temp_repo("align-ins");
+        seed(&repo, "/src/main.rs", "fn main() {}\n");
+        let session = "s-align-ins";
+        let root = repo.root().to_path_buf();
+        let entries = vec![assistant(
+            &repo,
+            "u1",
+            session,
+            "two calls",
+            tool_use(
+                "toolu_1",
+                "Edit",
+                json!({"file_path": root.join("src/main.rs").to_string_lossy(),
+                       "old_string": "fn main() {}",
+                       "new_string": "fn main() {\n    one();\n    two();\n}"}),
+            ),
+        )];
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() {\n    one();\n\n    two();\n}\n",
+        )
+        .unwrap();
+        let transcript = write_transcript(&temp_dir("tx-align-ins"), session, &entries);
+
+        let summary = commit(&repo, &options(&transcript, session)).unwrap();
+        assert_eq!(summary.landed.len(), 1, "{:?}", summary.skipped);
+        assert!(summary.landed[0].aligned);
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        let lines = repo.current_state(&summary.fork).unwrap().lines;
+        match &lines[0].intent.ops[0] {
+            Op::Edit { new_str, .. } => {
+                assert_eq!(new_str, "fn main() {\n    one();\n\n    two();\n}")
+            }
+            other => panic!("expected an edit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dry_run_previews_the_same_alignment() {
+        let repo = temp_repo("align-dry");
+        seed(&repo, "/src/main.rs", "fn main() {}\n");
+        let session = "s-align-dry";
+        let root = repo.root().to_path_buf();
+        let entries = vec![assistant(
+            &repo,
+            "u1",
+            session,
+            "a body",
+            tool_use(
+                "toolu_1",
+                "Edit",
+                json!({"file_path": root.join("src/main.rs").to_string_lossy(),
+                       "old_string": "fn main() {}",
+                       "new_string": "fn main() {\n        hello();\n}"}),
+            ),
+        )];
+        std::fs::write(root.join("src/main.rs"), "fn main() {\n    hello();\n}\n").unwrap();
+        let transcript = write_transcript(&temp_dir("tx-align-dry"), session, &entries);
+        let mut opts = options(&transcript, session);
+        opts.dry_run = true;
+        let summary = commit(&repo, &opts).unwrap();
+        assert_eq!(summary.landed.len(), 1);
+        assert!(summary.landed[0].aligned, "the preview is the plan");
+        assert!(summary.residue.is_empty(), "{:?}", summary.residue);
+        assert!(!repo.fork_exists(&format!("claude-{session}")).unwrap());
     }
 }

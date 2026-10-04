@@ -60,6 +60,12 @@ span rather than a whole file.
   `sed`, or heredoc rewrite inside `Bash` is invisible to the transcript, so it
   lands in the reconciling line with no read set and no span. Edits made through
   the editing tools land as patches with their preconditions intact.
+- **Run formatters without ceremony.** A `cargo fmt` (or prettier, or a hook)
+  rewrites inside `Bash`, which the transcript cannot see — but when its churn
+  falls entirely within a span one of your edits wrote, `tally claude commit`
+  folds it back into that edit's line and marks the line `(aligned with the
+  working tree)`. The reconciling line then carries only the formatter's
+  footprint on code the session did not write.
 - **Write a sentence before a change.** The prose in a turn becomes the
   narrative of that turn's first patch; `tally log` is read by humans.
 
